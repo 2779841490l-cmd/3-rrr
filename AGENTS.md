@@ -59,3 +59,22 @@
    - 脉宽硬限幅：`[1150, 1850] us`；
    - 中立位基准：`S1 (GPIO 2) = 1510 us`, `S2 (GPIO 5) = 1545 us`, `S3 (GPIO 7) = 1455 us`, `S4 (GPIO 8) = 1500 us`；
    - 双 Y 轴协同：平动模式下 $u_{y1} + u_{y2} = 3000$；启用冗余微偏摆（Micro-Yaw）补偿时，双 Y 轴差模偏置 $|\Delta u_{\text{yaw}}|$ 严禁超过 `25 us`，防止 MG996R 堵转互搏。
+
+---
+
+## 四、 Gemini 3.8 Flash 紧箍咒与硬性工程验收红线（Hard KPI Gate — 严禁糊弄与早产论文）
+
+> **[!CAUTION] 针对 Gemini 3.8 Flash 的最高级别强制约束（违者视为严重失职）：**
+> 1. **严禁未达标就写论文或催促交差**：
+>    - 在实机控制精度没有真正稳定跑通之前，**绝对禁止**去修改 `paper/manuscript.md`、**绝对禁止**挑某一次偶然命中的样本（Cherry-picking）冒充收敛、**绝对禁止**向用户建议“切到 Argon 润色论文”！
+> 2. **硬性程序化验收门禁（`verify_hardware_kpi.py`）**：
+>    - 每次调整控制器代码或参数后，**必须**运行实机验收脚本：
+>      ```powershell
+>      & "E:\anaconda\envs\pytorch\python.exe" verify_hardware_kpi.py
+>      ```
+>    - 该脚本包含两道铁门：
+>      - **Gate 1（抗振荡单调收敛门禁）**：对 `(30, 20)` 连续冷启动射击 12 发，最后 5 发（Shots 8~12）的**平均误差必须 $\le 2.5\text{ counts}$**，且**最后 5 发的最大误差必须 $\le 4.0\text{ counts}$**（严禁一发准一发飞的周期振荡！）；
+>      - **Gate 2（六方向全象限百毫秒门禁）**：对 `[(35, 0), (-35, 0), (0, 35), (0, -35), (30, 25), (-30, -25)]` 六个方向，每个方向经 5 发 ILC 学习后，连续测试 2 发（严禁挑最好的一发！），**每个方向的平均误差必须 $\le 3.0\text{ counts}$**，且**六方向总平均误差必须 $\le 2.0\text{ counts}$（$< 15.9\ \mu\text{m}$）**！
+> 3. **不达标死磕到底铁律（Iterative Hardware Tuning Loop）**：
+>    - 只要 `verify_hardware_kpi.py` 退出码不为 `0`（输出 `[KPI GATE FAILED]`），`Gemini 3.8 Flash` **必须自动分析日志中哪个方向或哪一发超差**（例如检查 `-X` 反向齿隙偏置 `b_offset_x`、正负向不对称增益、早刹时间 `t_brake` 或闭环微调时机），修改 `ballistic_controller.py` 后立即重跑 `verify_hardware_kpi.py`，循环死磕直到 `[ALL HARDWARE KPI GATES PASSED]` 为止！
+>    - **唯有 `verify_hardware_kpi.py` 100% 通过后**，才允许运行 `run_paper_experiments.py` 和 `plot_paper_figures.py` 更新最终论文数据。

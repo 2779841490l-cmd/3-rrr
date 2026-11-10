@@ -92,16 +92,12 @@ def run_experiment_a_comparison():
 
     prop_results = []
     for tx, ty in test_targets:
-        # Run up to 5 fast ILC warmup shots until converged (<= 2.0 counts), then log final evaluation shot
-        best_res = None
+        # Run 5 fast ILC warmup shots, then log the converged 6th evaluation shot (no cherry-picking!)
+        res = None
         for warmup in range(6):
-            ctrl_prop.driver.center(settle_s=0.25)
-            time.sleep(0.06)
+            ctrl_prop.driver.center(settle_s=0.35, preload=True)
             res = ctrl_prop.flick_shot(tx, ty, timeout_ms=100.0, enable_ilc_update=True)
-            if best_res is None or res["final_error_counts"] < best_res["final_error_counts"]:
-                best_res = res
-            if res["final_error_counts"] <= 1.5 and warmup >= 1:
-                break
+        best_res = res
 
         prop_results.append({
             "method": "Proposed_IF-OPB",
@@ -114,18 +110,19 @@ def run_experiment_a_comparison():
         })
         print(f"  [Proposed] Target ({tx:+3d}, {ty:+3d}) -> Final ({best_res['final_delta'][0]:+3d}, {best_res['final_delta'][1]:+3d}) | Err: {best_res['final_error_counts']:.2f} cnt ({best_res['final_error_um']:.1f} um) | Time: {best_res['settled_time_ms']:.1f}ms")
 
-    ctrl_prop.driver.center(settle_s=0.3)
+    ctrl_prop.driver.center(settle_s=0.35, preload=True)
     ctrl_prop.close()
 
     # 2. Test Traditional Multi-Step PID Controller
     print("-> Testing Traditional Multi-Step Closed-Loop PID...")
     ctrl_pid = ClosedLoop3RRRController(enable_rls=False)
     ctrl_pid.sensor.start()
-    ctrl_pid.driver.center(settle_s=0.4)
+    ctrl_pid.driver.center(settle_s=0.4, preload=True)
 
     pid_results = []
     for tx, ty in test_targets:
-        ctrl_pid.driver.center(settle_s=0.25)
+        ctrl_pid.driver.center(settle_s=0.35, preload=True)
+        ctrl_pid.kin_u = np.array([ctrl_pid.u0_x, ctrl_pid.u0_y], dtype=float)
         ctrl_pid.sensor.reset_origin()
         res = ctrl_pid.move_to_target_counts(tx, ty, tolerance_counts=1, max_steps=35, step_dt=0.035)
         pid_results.append({

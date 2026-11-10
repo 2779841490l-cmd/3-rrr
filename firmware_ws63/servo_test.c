@@ -61,7 +61,8 @@ static volatile uint32_t g_cmd_s1_us = DEFAULT_UX_NEUTRAL;
 static volatile uint32_t g_cmd_s2_us = DEFAULT_UY1_NEUTRAL;
 static volatile uint32_t g_cmd_s3_us = DEFAULT_UY2_NEUTRAL;
 static volatile uint32_t g_cmd_s4_us = DEFAULT_S4_NEUTRAL;
-static volatile uint32_t g_pwm_period_us = 20000; // Default 50Hz (20,000us), supports up to 200Hz (5,000us) overclock
+static volatile uint32_t g_pwm_period_us = 5000;  // Default 200Hz (5,000us) high-frequency mode; switchable via "F <us>\n"
+static volatile uint8_t  g_cmd_updated = 0;       // Event-triggered immediate pulse flag on UART RX
 
 // Non-blocking UART buffer
 static char g_line_buf[64];
@@ -99,12 +100,14 @@ static void parse_uart_line(const char *line)
             if (val[1] >= 500 && val[1] <= 2500) g_cmd_s2_us = (uint32_t)val[1];
             if (val[2] >= 500 && val[2] <= 2500) g_cmd_s3_us = (uint32_t)val[2];
             if (val[3] >= 500 && val[3] <= 2500) g_cmd_s4_us = (uint32_t)val[3];
+            g_cmd_updated = 1;
         } else if (count == 3) {
             // 3-axis backward compatibility
             if (val[0] >= 500 && val[0] <= 2500) g_cmd_s1_us = (uint32_t)val[0];
             if (val[1] >= 500 && val[1] <= 2500) g_cmd_s2_us = (uint32_t)val[1];
             if (val[2] >= 500 && val[2] <= 2500) g_cmd_s3_us = (uint32_t)val[2];
             g_cmd_s4_us = DEFAULT_S4_NEUTRAL;
+            g_cmd_updated = 1;
         }
     } else if (line[0] == 'C' || line[0] == 'c') {
         // Center all to neutral
@@ -112,6 +115,7 @@ static void parse_uart_line(const char *line)
         g_cmd_s2_us = DEFAULT_UY1_NEUTRAL;
         g_cmd_s3_us = DEFAULT_UY2_NEUTRAL;
         g_cmd_s4_us = DEFAULT_S4_NEUTRAL;
+        g_cmd_updated = 1;
     } else if (line[0] == 'F' || line[0] == 'f') {
         // Dynamic PWM Period / Frequency command: "F <period_us>\n"
         // e.g. "F 5000\n" -> 200Hz overclock, "F 20000\n" -> 50Hz standard
@@ -274,10 +278,20 @@ static void output_pulse_4axis_atomic(uint32_t s1, uint32_t s2, uint32_t s3, uin
     // CRITICAL SECTION END
     // -------------------------------------------------------------------------
 
-    // Fill the remaining time to maintain strict configured period (default 50Hz = 20,000us, 200Hz = 5,000us)
+    // Event-Triggered Low-Pulse Recovery:
+    // Enforce minimum 2500us inter-pulse gap, then poll in 50us slices so any
+    // incoming UART "P" command triggers a new PWM frame within <50us (zero phase lottery).
     uint32_t max_pulse = items[3].pulse;
     if (max_pulse < g_pwm_period_us) {
-        uapi_tcxo_delay_us(g_pwm_period_us - max_pulse);
+        uint32_t total_low_us = g_pwm_period_us - max_pulse;
+        uint32_t min_gap_us = (total_low_us > 2500) ? 2500 : total_low_us;
+        uapi_tcxo_delay_us(min_gap_us);
+        uint32_t rem_us = total_low_us - min_gap_us;
+        while (rem_us > 0 && !g_cmd_updated) {
+            uint32_t step = (rem_us > 50) ? 50 : rem_us;
+            uapi_tcxo_delay_us(step);
+            rem_us -= step;
+        }
     }
 
     uapi_watchdog_kick();
@@ -292,7 +306,8 @@ static void *servo_test_task(const char *arg)
     servo_hardware_init();
 
     while (1) {
-        // Continuous 50Hz generation holding current commanded positions
+        g_cmd_updated = 0;
+        // Continuous 200Hz / Event-Triggered generation holding current commanded positions
         output_pulse_4axis_atomic(g_cmd_s1_us, g_cmd_s2_us, g_cmd_s3_us, g_cmd_s4_us);
     }
 

@@ -148,19 +148,24 @@ class WS63ServoDriver:
     def center(self, settle_s: float = 0.5, preload: bool = True):
         """
         Return all servos to calibrated neutral positions.
-        When preload=True, approaches neutral deterministically from (-40us, -40us)
-        so gear teeth always engage on the positive flank (eliminating 50us random backlash state).
+        When preload=True, executes a robust 3-step sequence:
+        1. Returns to neutral to cancel arbitrary shot displacements
+        2. Steps back by (-45us, -45us) with 0.30s settling
+        3. Approaches neutral deterministically from the negative side with 0.40s settling.
+        Ensures 100% deterministic positive gear flank engagement at complete rest.
         """
         if preload:
-            self.send_raw_pulses(self.NEUTRAL_S1 - 40.0, self.NEUTRAL_S2 - 40.0)
-            time.sleep(0.12)
+            self.send_raw_pulses(self.NEUTRAL_S1, self.NEUTRAL_S2, self.NEUTRAL_S3, self.NEUTRAL_S4)
+            time.sleep(0.15)
+            self.send_raw_pulses(self.NEUTRAL_S1 - 45.0, self.NEUTRAL_S2 - 45.0)
+            time.sleep(0.30)
         self.play_x.reset(self.NEUTRAL_S1)
         self.play_y.reset(self.NEUTRAL_S2)
         self.play_x.last_dir = 1
         self.play_y.last_dir = 1
         self.send_raw_pulses(self.NEUTRAL_S1, self.NEUTRAL_S2, self.NEUTRAL_S3, self.NEUTRAL_S4)
         if settle_s > 0:
-            time.sleep(settle_s)
+            time.sleep(max(0.40, settle_s))
 
     def move_smooth_raw(
         self, target_s1: float, target_s2: float, duration_s: float = 0.25, rate_hz: float = 50.0
