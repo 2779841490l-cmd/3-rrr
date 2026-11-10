@@ -19,6 +19,25 @@ from typing import Tuple
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
 
+# Configure 64-bit Windows API argument and return types
+user32.DefWindowProcW.argtypes = [wintypes.HWND, ctypes.c_uint, wintypes.WPARAM, wintypes.LPARAM]
+user32.DefWindowProcW.restype = ctypes.c_ssize_t
+
+user32.GetRawInputData.argtypes = [
+    wintypes.HANDLE,
+    ctypes.c_uint,
+    ctypes.c_void_p,
+    ctypes.POINTER(ctypes.c_uint),
+    ctypes.c_uint,
+]
+user32.GetRawInputData.restype = ctypes.c_uint
+
+user32.PostMessageW.argtypes = [wintypes.HWND, ctypes.c_uint, wintypes.WPARAM, wintypes.LPARAM]
+user32.PostMessageW.restype = wintypes.BOOL
+
+user32.RegisterRawInputDevices.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_uint]
+user32.RegisterRawInputDevices.restype = wintypes.BOOL
+
 # Windows RawInput Constants
 WM_INPUT = 0x00FF
 WM_DESTROY = 0x0002
