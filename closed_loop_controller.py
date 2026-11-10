@@ -35,10 +35,10 @@ class SpatialInverseJacobian2ndOrder:
                 return json.load(f)
         # Default fallback
         return {
-            "K11": {"Const": 1.0251, "dUx": -0.00238, "dUy": -0.00181, "dUx^2/1k": -0.0126, "dUy^2/1k": 0.0119, "dUx*dUy/1k": 0.0202},
-            "K12": {"Const": -0.9797, "dUx": 0.00102, "dUy": -0.00545, "dUx^2/1k": 0.0065, "dUy^2/1k": -0.0910, "dUx*dUy/1k": -0.0287},
-            "K21": {"Const": -0.1074, "dUx": -0.00037, "dUy": -0.00205, "dUx^2/1k": -0.0057, "dUy^2/1k": -0.0074, "dUx*dUy/1k": 0.0045},
-            "K22": {"Const": -0.5546, "dUx": -0.00033, "dUy": -0.00291, "dUx^2/1k": -0.0056, "dUy^2/1k": -0.0914, "dUx*dUy/1k": -0.0061},
+            "K11": {"Const": 1.1000, "dUx": -0.001996, "dUy": -0.000409, "dUx^2/1k": -0.02508, "dUy^2/1k": -0.00376, "dUx*dUy/1k": 0.000939},
+            "K12": {"Const": -1.1265, "dUx": 0.000148, "dUy": -0.008647, "dUx^2/1k": 0.06344, "dUy^2/1k": -0.09547, "dUx*dUy/1k": -0.01992},
+            "K21": {"Const": -0.1284, "dUx": -0.000855, "dUy": -0.001552, "dUx^2/1k": -0.00688, "dUy^2/1k": -0.00399, "dUx*dUy/1k": -0.00340},
+            "K22": {"Const": -0.6332, "dUx": -0.000739, "dUy": -0.004696, "dUx^2/1k": 0.02566, "dUy^2/1k": -0.10730, "dUx*dUy/1k": -0.01146},
         }
 
     def evaluate(self, du_x: float, du_y: float) -> np.ndarray:
@@ -112,9 +112,9 @@ class ClosedLoop3RRRController:
         return {
             "dpi": 3200,
             "neutral_us": {"s1_x": 1510, "s2_y1": 1545, "s3_y2": 1455, "s4_aux": 1500},
-            "deadband_us": {"x_pos": 13.0, "x_neg": 10.0, "y_pos": 8.0, "y_neg": 8.0},
-            "backlash_play_radius_us": {"x_pos": 23.0, "x_neg": 23.0, "y_pos": 18.0, "y_neg": 19.0},
-            "inverse_jacobian_center_us_per_px": [[1.0341, -1.0967], [-0.1222, -0.7358]],
+            "deadband_us": {"x_pos": 8.0, "x_neg": 9.0, "y_pos": 9.0, "y_neg": 9.0},
+            "backlash_play_radius_us": {"x_pos": 22.0, "x_neg": 28.0, "y_pos": 11.0, "y_neg": 11.0},
+            "inverse_jacobian_center_us_per_px": [[1.0382, -1.0469], [-0.1388, -0.7375]],
         }
 
     @staticmethod
