@@ -68,9 +68,20 @@ if ($Status) {
 # 6. Push to GitHub if remote 'origin' is configured
 $Remotes = git remote
 if ($Remotes -contains "origin") {
+    # Prefer HTTPS (port 443) over SSH (port 22) to avoid corporate/firewall port-22 timeouts
+    $OriginUrl = git remote get-url origin
+    if ($OriginUrl -match "^git@github\.com:(.+)$") {
+        $HttpsUrl = "https://github.com/$($Matches[1])"
+        Write-Host "[GitSync] Rewriting SSH remote -> HTTPS ($HttpsUrl) to bypass port-22 blocking..." -ForegroundColor Yellow
+        git remote set-url origin $HttpsUrl
+    }
     Write-Host "[GitSync] Pushing to GitHub (origin/main)..." -ForegroundColor Cyan
     git push -u origin main
-    Write-Host "[GitSync] Successfully pushed to GitHub!" -ForegroundColor Green
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "[GitSync] Successfully pushed to GitHub!" -ForegroundColor Green
+    } else {
+        Write-Host "[GitSync] Push FAILED (exit $LASTEXITCODE). Commit is safe locally; retry when network is available." -ForegroundColor Red
+    }
 } else {
     Write-Host "[GitSync] Local commit saved. Note: GitHub remote 'origin' not yet bound. Run: git remote add origin <YOUR_GITHUB_REPO_URL>" -ForegroundColor Magenta
 }
