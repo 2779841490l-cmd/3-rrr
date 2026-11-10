@@ -1,0 +1,11 @@
+Method,TargetX,TargetY,FinalX,FinalY,ErrorCounts,ErrorMicrons,SettlingTimeMs
+Proposed_IF-OPB,35,0,25,9,13.45,106.79,100.0
+Proposed_IF-OPB,-35,0,-62,-4,27.29,216.65,100.0
+Proposed_IF-OPB,0,35,-5,44,10.3,81.72,68.6
+Proposed_IF-OPB,0,-35,7,-46,13.04,103.49,100.0
+Proposed_IF-OPB,30,25,34,27,4.47,35.5,91.0
+Traditional_PID,35,0,80,37,58.26,462.42,1245.1
+Traditional_PID,-35,0,2,-46,59.03,468.58,1243.7
+Traditional_PID,0,35,-21,89,57.94,459.9,1245.9
+Traditional_PID,0,-35,44,-48,45.88,364.17,1244.8
+Traditional_PID,30,25,31,25,1.0,7.94,249.3
