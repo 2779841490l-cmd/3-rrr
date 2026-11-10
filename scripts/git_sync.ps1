@@ -74,3 +74,4 @@ if ($Remotes -contains "origin") {
 } else {
     Write-Host "[GitSync] Local commit saved. Note: GitHub remote 'origin' not yet bound. Run: git remote add origin <YOUR_GITHUB_REPO_URL>" -ForegroundColor Magenta
 }
+

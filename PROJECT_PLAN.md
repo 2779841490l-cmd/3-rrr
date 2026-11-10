@@ -112,3 +112,4 @@ flowchart TD
      - **测试 3**：连续圆轨迹与矩形轨迹跟踪测试，开启在线 RLS 残差自适应，输出定位误差统计报表（RMSE、最大超调量、稳态误差 Counts）与可视化曲线。
 - **准出检查点（Git Checkpoint 5）**：
   - 运行 `.\scripts\git_sync.ps1 "feat(control): 完成3200DPI闭环控制律合入与实机打靶验证"`。
+
