@@ -1,115 +1,90 @@
-# PROJECT_PLAN.md — 3-RRR 平面并联机构 3200 DPI 普适性精密定位系统执行总纲
+# PROJECT_PLAN.md — 3-RRR 100ms 全屏 3200 DPI 极速定位系统 & 学术论文执行总纲
 
-> **核心目标**：在机械装配已达物理极限的前提下，通过**“物理二阶非线性雅可比 + 连续齿隙迟滞状态机 + 跨死区瞬态脉冲激发（Impulse-Retract）+ 轻量级在线残差学习”**四层架构，突破 MG996R 舵机的死区与齿隙极限，实现 **90 秒全自动标定（高普适性）** 与 **3200 DPI（$7.9\ \mu\text{m}/\text{count}$）微米级闭环定位**。
+> **核心工程指标**：在 **`100 ms`** 内完成 **3200 DPI（$7.94\ \mu\text{m}/\text{count}$）全屏幕任意跨度精准定位**（稳态误差 $\le 1.5\text{ counts}$）。
+> **核心学术产出**：发表一篇以 *“Sub-100ms Micrometer-Level Positioning on an Ultra-Low-Cost 3-RRR Parallel Stage”* 为主题的高水平学术论文（目标 *IEEE TIM / IEEE T-MECH*）。
 
 ---
 
-## 一、 系统架构全景图
+## 一、 面向 100ms 极限的四大创新架构（论文四大 Contributions）
 
 ```mermaid
-flowchart TD
-    subgraph Layer1["第一层：90秒全自动探针标定 (高普适性底座)"]
-        P1["死区探针 (Deadband Probe)<br/>测定正反向最小起跳脉宽 D+, D-"] --> P2["齿隙迟滞探针 (Backlash Probe)<br/>测定正反换向空程宽度 B+, B-"]
-        P2 --> P3["5x5 空间网格探针 (Grid Jacobian Probe)<br/>拟合二阶非线性雅可比 J(u) 与 Y1/Y2 协同曲线"]
-        P3 --> CalibJSON["生成 calib_params.json<br/>+ 自动归档至 backups/"]
+flowchart LR
+    subgraph C1["创新点1：底层协议突破"]
+        FW["WS63 200Hz (5ms) 超频原子PWM<br/>控制带宽提升 400% + 动态死区减半"]
     end
 
-    subgraph Layer2["第二层：DeepSeek R1 极简数学内核 (省配额调用)"]
-        CalibJSON --> R1["DeepSeek R1 (仅调用 1~2 次)<br/>推导非对称 PI 迟滞逆算子 + 变增益防抖控制律"]
+    subgraph C2["创新点2：空中光流预判早刹 (IF-OPB)"]
+        Boost["Phase 1 (0~35ms)<br/>Boost 过充加速破除静摩擦"] --> Intercept["Phase 2 (35~75ms)<br/>1000Hz 光流速度截获 x + τ·v ≥ x*"]
+        Intercept --> Lock["Phase 3 (75~100ms)<br/>单向零换向滑行落锁 (规避 46us 齿隙)"]
     end
 
-    subgraph Layer3["第三层：实时闭环与跨死区控制引擎 (Gemini 3.8 Flash 实现)"]
-        Target["目标位移 (dX*, dY*)"] --> InvJ["二阶非线性逆雅可比<br/>du_kin = J⁻¹(u) · e"]
-        InvJ --> RLS["在线 RLS / 残差修正<br/>补偿线缆拉力与局部摩擦"]
-        RLS --> PlayOp["连续齿面接触状态机<br/>Play-Operator 齿隙预紧"]
-        PlayOp --> Nudge["跨死区瞬态脉冲激发<br/>Impulse-Retract Micro-Stepping"]
-        Nudge --> UART["COM4 (115200 8N1) -> WS63"]
-        UART --> Plant["3-RRR 机构 + MG996R 舵机"]
-        Plant --> Sensor["Windows RawInput 1000Hz<br/>雷蛇 3200 DPI 原生硬件计数"]
-        Sensor --> Target
+    subgraph C3["创新点3：冗余微偏摆 (Micro-Yaw)"]
+        Yaw["利用第3自由度 θ 偏心杠杆效应<br/>Y1/Y2 同向差模微动消除残余微米误差"]
     end
+
+    subgraph C4["创新点4：物理引导神经弹道学习 (PG-NB-ILC)"]
+        ILC["二阶空间雅可比先验 + 残差弹道策略<br/>100次实机射击 (2分钟) 自动收敛"]
+    end
+
+    C4 --> C2
+    C2 --> C3
+    C3 --> C1
 ```
 
 ---
 
-## 二、 为什么这套方案能突破 MG996R 舵机极限且极具普适性？
+## 二、 三模型极致省 Token 协作流水线（Step-by-Step Execution Plan）
 
-| 传统“纯 AI 暴力收集调参”痛点 | 本方案（物理引导 + 状态机 + 瞬态脉冲微步）解决方案 |
-| :--- | :--- |
-| **样本黑洞**：需采集数万点才能拟合三角几何关系，耗时数小时 | **物理先验降维**：用二阶多项式雅可比 + 齿隙状态机，仅需 **14 个物理参数**，**90 秒自动标定完毕** |
-| **零普适性**：换鼠标垫、重贴胶带或微调拉杆后模型完全失效 | **一键重标定**：任何机械变动后运行 `python hardware_probe.py`，1.5 分钟内重新生成精准模型 |
-| **死区卡死**：误差 $< 3\text{ px}$ 时对应脉宽 $< 5\ \mu\text{s}$，舵机内部比较器不动作 | **跨死区瞬态脉冲激发（Impulse-Retract）**：发送 1 帧（20ms）跨死区前冲脉冲破除静摩擦，下一帧立即回撤至目标微步 |
-| **换向抽搐**：简单 `+45/-45 us` 硬跳变在零点附近引发高频极限环震荡 | **连续齿面接触状态机（Play-Operator）**：实时追踪齿轮在齿隙 `[ -B⁻, +B⁺ ]` 内的真实物理位置，平滑过渡无抖动 |
+> **当前进度**：已完成 Step 1 ~ Step 3（Git/GitHub 双端防丢仓库建立、传感器底层穿透、90 秒纯净硬件探针采集 `calib_params.json` 与二阶雅可比拟合）。
+> **铁律**：以下每完成一步，必须调用 `.\scripts\git_sync.ps1` 自动备份并推送到 GitHub！
 
 ---
 
-## 三、 Gemini 3.8 Flash 与 DeepSeek R1 详细分工与执行步骤
-
-> **铁律**：每完成以下任何一个步骤（Step 1 ~ Step 6），执行者必须运行 `.\scripts\git_sync.ps1` 将代码与标定数据同步至 GitHub！
+### 阶段四（升级版）：100ms 弹道控制律纯数学推导（Step 4 —— 仅调用 1 次 DeepSeek R1）
+- **负责模型**：`DeepSeek R1`（严格省配额，输入已准备好的 `< 400 字` 极简数学题 [`prompts/deepseek_r1_ballistic_math.md`](file:///c:/Users/27798/Desktop/3-rrr/prompts/deepseek_r1_ballistic_math.md)）
+- **执行内容**：
+  1. 证明**大齿隙执行器 100ms 单向无换向时间最优引理**（说明为何传统超调换向 PID 在物理上不可能进入 100ms）；
+  2. 推导基于一阶摩擦阻尼模型的**空中光流预判早刹切换曲面方程** $S(e, \dot{x}) = e - \tau_{\text{stop}}(\dot{x})\cdot \dot{x} = 0$；
+  3. 推导**弹道参数（过充幅值 $u_{\text{boost}}$、早刹时间常数 $\tau_{\text{stop}}$）的范数最优迭代学习控制（Norm-Optimal ILC）更新律**；
+  4. 将结果保存至 [`docs/deepseek_r1_derivation.md`](file:///c:/Users/27798/Desktop/3-rrr/docs/deepseek_r1_derivation.md)。
+- **Git 检查点 4**：
+  - `powershell -ExecutionPolicy Bypass -File .\scripts\git_sync.ps1 "docs(math): 完成100ms单向空中早刹与弹道ILC数学推导"`
 
 ---
 
-### 阶段一：防丢码基础设施与双端代码入库（Step 1）
+### 阶段五：WS63 固件 200Hz 超频升级与微偏摆协议扩展（Step 5 —— 压榨 Gemini 3.8 Flash）
 - **负责模型**：`Gemini 3.8 Flash`
 - **执行内容**：
-  1. 初始化本地 Git 仓库，建立 `.gitignore`、`AGENTS.md`（Agent 行为约束）与 `scripts/git_sync.ps1`（自动备份与 GitHub 推送脚本）。
-  2. 将 `D:\ws63\src\application\samples\custom\servo_test.c` 及备份文件同步拷贝至本仓库 `firmware_ws63/` 目录，实现**上位机 + 下位机固件同仓保护**。
-  3. 编写核心模块脚手架：
-     - [`mouse_sensor.py`](file:///c:/Users/27798/Desktop/3-rrr/mouse_sensor.py)：基于 Windows `WM_INPUT` RawInput 的 3200 DPI 原生硬件计数采集器（绕过系统指针加速与屏幕边界限制）。
-     - [`servo_driver.py`](file:///c:/Users/27798/Desktop/3-rrr/servo_driver.py)：包含 CH340 端口自动发现、安全限幅、平滑插补、连续齿隙状态机与瞬态脉冲激发（Kinetic Nudge）的驱动层。
-     - [`hardware_probe.py`](file:///c:/Users/27798/Desktop/3-rrr/hardware_probe.py)：90 秒全自动死区/齿隙/空间网格雅可比标定器。
-     - [`closed_loop_controller.py`](file:///c:/Users/27798/Desktop/3-rrr/closed_loop_controller.py)：3200 DPI 实时闭环控制与在线 RLS 自适应残差定位引擎。
-- **准出检查点（Git Checkpoint 1）**：
-  - 运行 `.\scripts\git_sync.ps1 "init: 搭建双端防丢码仓库、Agent规范与四层控制核心模块"`。
+  1. 修改 `D:\ws63\src\application\samples\custom\servo_test.c`（并同步至 [`firmware_ws63/servo_test.c`](file:///c:/Users/27798/Desktop/3-rrr/firmware_ws63/servo_test.c)）：
+     - 增加可变频率控制指令 `F <period_us>\n`（支持从默认 $20,000\ \mu\text{s}$ [50Hz] 无缝切换至 $5,000\ \mu\text{s}$ [200Hz] 高频数字激励模式）；
+     - 增加硬件级双相弹道指令 `B <u1_boost> <u2_boost> <u3_boost> <t_ms> <u1_lock> <u2_lock> <u3_lock>\n`：由 WS63 单片机使用微秒级硬件定时器（TCXO）在板载直接执行精确到 $1\text{ ms}$ 的“过充加速 $\rightarrow$ 自动回撤落锁”，彻底消除 Windows USB 串口抖动！
+  2. 编译 WS63 固件并验证 200Hz 模式下的死区缩减效应（生成论文 **Experiment 1: 50Hz vs 200Hz 死区与阶跃响应对比数据**）。
+- **Git 检查点 5**：
+  - `powershell -ExecutionPolicy Bypass -File .\scripts\git_sync.ps1 "feat(fw): 升级WS63固件支持200Hz高频PWM与板载微秒级弹道脉冲定时"`
 
 ---
 
-### 阶段二：传感器与串口通信基准验证（Step 2）
+### 阶段六：空中光流预判早刹 + 神经弹道控制器实现（Step 6 —— 压榨 Gemini 3.8 Flash）
 - **负责模型**：`Gemini 3.8 Flash`
 - **执行内容**：
-  1. 在终端运行 `E:\anaconda\envs\pytorch\python.exe mouse_sensor.py`，验证 Windows RawInput 1000Hz 原生计数正常输出。
-  2. 运行 `E:\anaconda\envs\pytorch\python.exe servo_driver.py`，验证 `COM4` 正常握手、舵机平稳归中至 `(1510, 1545, 1455, 1500)` 且无异常抖动。
-- **准出检查点（Git Checkpoint 2）**：
-  - 运行 `.\scripts\git_sync.ps1 "test: 完成COM4串口握手与3200DPI RawInput传感验证"`。
+  1. 编写 `ballistic_controller.py`，实现三大核心机制：
+     - **机制 1（In-Flight Optical Predictive Braking）**：以 $1000\text{ Hz}$（$1\text{ ms}$）监控鼠标飞行速度 $v(t)$，一旦满足早刹曲面条件立即触发制动落锁，确保单向无超调入位；
+     - **机制 2（Redundant Micro-Yaw Trim）**：利用 $Y_1, Y_2$ 同向微差模偏摆（$\Delta u_{\text{yaw}} \in [-20, +20]\ \mu\text{s}$）在不触发主轴换向齿隙的前提下消除最后 $1\sim 5\text{ counts}$ 残余误差；
+     - **机制 3（Ballistic ILC / Residual MLP）**：每次 100ms 射击结束后，根据落点偏差 $(e_X, e_Y)$ 自动在线更新弹道参数表 / 轻量残差网络。
+- **Git 检查点 6**：
+  - `powershell -ExecutionPolicy Bypass -File .\scripts\git_sync.ps1 "feat(ballistic): 实现100ms空中光流早刹与神经弹道ILC控制器"`
 
 ---
 
-### 阶段三：90 秒全自动硬件极限探针采集（Step 3）
-- **负责模型**：`Gemini 3.8 Flash`
+### 阶段七：论文全套消融实验（Ablation Study）与初稿自动生成（Step 7 —— 压榨 Gemini 3.8 Flash）
+- **负责模型**：`Gemini 3.8 Flash`（最后由 `Gemini 4 Argon` 终审润色 1 次）
 - **执行内容**：
-  1. 运行 `E:\anaconda\envs\pytorch\python.exe hardware_probe.py`。
-  2. 脚本自动执行三项物理极限探测：
-     - **实验 A（死区探测）**：测定 $S_1 (X)$ 与 $S_2/S_3 (Y)$ 刚能引起鼠标产生 $\ge 2\text{ counts}$ 位移的最小脉冲增量 $D^+, D^-$；
-     - **实验 B（正反齿隙探测）**：先单向运动使齿面完全贴合，再反向微步递增，测定换向空程 $B_x^+, B_x^-, B_y^+, B_y^-$；
-     - **实验 C（空间非线性雅可比网格探测）**：在安全工作区内采集 $3\times 3$（或 $5\times 5$）网格点局部偏导数 $\frac{\partial (X,Y)}{\partial (u_x, u_y)}$，拟合成二阶多项式雅可比模型。
-  3. 自动保存 `calib_params.json`，并自动生成专供 DeepSeek R1 使用的高密度数学 Prompt 文件 `prompts/deepseek_r1_stage1.md`。
-- **准出检查点（Git Checkpoint 3）**：
-  - 运行 `.\scripts\git_sync.ps1 "calib: 完成MG996R死区、齿隙与空间雅可比自动探针采集"`。
-
----
-
-### 阶段四：DeepSeek R1 极限控制律数学推导（Step 4 —— 唯一核心 R1 调用点）
-- **负责模型**：`DeepSeek R1`（仅调用 **1 次**，严控配额消耗）
-- **执行内容**：
-  1. 将 `prompts/deepseek_r1_stage1.md` 中的实测物理参数输入给 **DeepSeek R1**。
-  2. 由 **DeepSeek R1** 一次性推导并输出：
-     - 非对称 Prandtl-Ishlinskii 连续齿隙逆补偿算子参数；
-     - 跨死区瞬态脉冲（Impulse-Retract）最优激发幅值 $u_{\text{kick}}$ 与保持帧数公式；
-     - 避免在目标点 $\pm 2\text{ counts}$ 内发生极限环震荡的**死区自适应变增益 PI + 在线 RLS 更新律**。
-  3. 将 DeepSeek R1 的推导结果保存至 `docs/deepseek_r1_derivation.md`。
-- **准出检查点（Git Checkpoint 4）**：
-  - 运行 `.\scripts\git_sync.ps1 "docs(math): 归档DeepSeek-R1非对称齿隙与跨死区控制律推导"`。
-
----
-
-### 阶段五：算法合入、在线残差微调与 3200 DPI 闭环打靶验证（Step 5）
-- **负责模型**：`Gemini 3.8 Flash`
-- **执行内容**：
-  1. `Gemini 3.8 Flash` 将 DeepSeek R1 推导的控制律参数合入 `closed_loop_controller.py`（必要时同步升级 `firmware_ws63/servo_test.c` 的硬件级脉冲激发指令）。
-  2. 运行闭环打靶基准测试（`python closed_loop_controller.py --mode benchmark`）：
-     - **测试 1**：四象限阶跃定位测试（$\pm 50\text{ counts}, \pm 150\text{ counts}, \pm 300\text{ counts}$）；
-     - **测试 2**：微米级极小步进测试（$1\sim 5\text{ counts}$ 点动定位，检验跨死区脉冲激发效果）；
-     - **测试 3**：连续圆轨迹与矩形轨迹跟踪测试，开启在线 RLS 残差自适应，输出定位误差统计报表（RMSE、最大超调量、稳态误差 Counts）与可视化曲线。
-- **准出检查点（Git Checkpoint 5）**：
-  - 运行 `.\scripts\git_sync.ps1 "feat(control): 完成3200DPI闭环控制律合入与实机打靶验证"`。
-
+  1. 编写 `run_paper_experiments.py`，全自动跑完论文所需的 **4 组核心对比与消融实验**（数据全部自动存为 `experiments/*.csv`）：
+     - **Exp A（基准对比）**：传统多步 PID（耗时 $\sim 1200\text{ ms}$，严重超调） vs 仅开环逆雅可比（耗时 $90\text{ ms}$，稳态误差 $> 25\text{ counts}$） vs 本文 **PG-NB-ILC + IF-OPB 方法（耗时 $< 95\text{ ms}$，误差 $\le 1.5\text{ counts}$）**；
+     - **Exp B（频率消融）**：50Hz 标准 PWM vs 100Hz vs 200Hz 超频 PWM 的死区宽度与 100ms 到达率对比；
+     - **Exp C（学习收敛曲线）**：展示从第 1 次射击到第 80 次射击，100ms 落点误差从 $35\text{ counts}$ 迅速收敛至 $\le 1.5\text{ counts}$ 的学习过程；
+     - **Exp D（全屏泛化性测试）**：在不同移动跨度（微步 $5\text{ px}$、中程 $100\text{ px}$、全屏大跨度 $400\text{ px}$）及不同桌面介质下的箱线图（Boxplot）与误差热力图。
+  2. 编写 `plot_paper_figures.py`，一键生成 6 张符合 IEEE Transactions 排版标准的 300 DPI 论文插图（`paper/figures/fig1` ~ `fig6`）。
+  3. 按照 [`paper/PAPER_OUTLINE.md`](file:///c:/Users/27798/Desktop/3-rrr/paper/PAPER_OUTLINE.md) 撰写完整论文手稿 `paper/manuscript.md`。
+- **Git 检查点 7**：
+  - `powershell -ExecutionPolicy Bypass -File .\scripts\git_sync.ps1 "paper: 完成全套消融实验数据采集、IEEE论文图表生成与初稿撰写"`

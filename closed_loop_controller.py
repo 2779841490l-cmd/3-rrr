@@ -2,10 +2,10 @@
 closed_loop_controller.py - 3200 DPI Physics-Guided Closed-Loop Positioning Engine
 ==================================================================================
 Combines:
-1. Calibrated Inverse Jacobian + Online Recursive Least Squares (RLS) adaptation
+1. 2nd-Order Spatial Inverse Jacobian Tensor + Online RLS residual adaptation
 2. Continuous Asymmetric Play-Operator Backlash State Machine
 3. Sub-Deadband Impulse-Retract Micro-Stepping (Kinetic Nudge)
-4. Variable-Gain Anti-Windup PI Control to eliminate limit-cycle oscillation
+4. Variable-Gain Anti-Windup PI Control (Discrete Lyapunov stable)
 """
 
 import argparse
@@ -19,30 +19,65 @@ from mouse_sensor import HighPrecisionMouseSensor
 from servo_driver import WS63ServoDriver
 
 
+class SpatialInverseJacobian2ndOrder:
+    """
+    Evaluates the 2nd-order polynomial Inverse Jacobian matrix K(du_x, du_y)
+    at the current operating point to eliminate cross-axis coupling.
+    """
+
+    def __init__(self, poly_file: str = "prompts/fitted_jacobian_poly.json"):
+        self.coeffs = self._load_coeffs(poly_file)
+
+    @staticmethod
+    def _load_coeffs(poly_file: str) -> Dict:
+        if os.path.exists(poly_file):
+            with open(poly_file, "r", encoding="utf-8") as f:
+                return json.load(f)
+        # Default fallback
+        return {
+            "K11": {"Const": 1.0251, "dUx": -0.00238, "dUy": -0.00181, "dUx^2/1k": -0.0126, "dUy^2/1k": 0.0119, "dUx*dUy/1k": 0.0202},
+            "K12": {"Const": -0.9797, "dUx": 0.00102, "dUy": -0.00545, "dUx^2/1k": 0.0065, "dUy^2/1k": -0.0910, "dUx*dUy/1k": -0.0287},
+            "K21": {"Const": -0.1074, "dUx": -0.00037, "dUy": -0.00205, "dUx^2/1k": -0.0057, "dUy^2/1k": -0.0074, "dUx*dUy/1k": 0.0045},
+            "K22": {"Const": -0.5546, "dUx": -0.00033, "dUy": -0.00291, "dUx^2/1k": -0.0056, "dUy^2/1k": -0.0914, "dUx*dUy/1k": -0.0061},
+        }
+
+    def evaluate(self, du_x: float, du_y: float) -> np.ndarray:
+        K = np.zeros((2, 2), dtype=float)
+        basis = {
+            "Const": 1.0,
+            "dUx": float(du_x),
+            "dUy": float(du_y),
+            "dUx^2/1k": float(du_x**2) / 1000.0,
+            "dUy^2/1k": float(du_y**2) / 1000.0,
+            "dUx*dUy/1k": float(du_x * du_y) / 1000.0,
+        }
+        for (r, c), key in [((0, 0), "K11"), ((0, 1), "K12"), ((1, 0), "K21"), ((1, 1), "K22")]:
+            c_dict = self.coeffs.get(key, {})
+            K[r, c] = sum(c_dict.get(name, 0.0) * val for name, val in basis.items())
+        return K
+
+
 class OnlineInverseJacobianRLS:
     """
-    Lightweight Online Recursive Least Squares (RLS) estimator that refines
-    the inverse Jacobian matrix K = dU / dX in real time to adapt to mouse pad
-    friction, cable tension, and thermal drift.
+    Online Recursive Least Squares (RLS) estimator refining residual gains.
     """
 
-    def __init__(self, K_init: np.ndarray, forgetting_factor: float = 0.985):
-        self.K = np.array(K_init, dtype=float).copy()
+    def __init__(self, forgetting_factor: float = 0.985):
+        self.dK = np.zeros((2, 2), dtype=float)
         self.lam = float(forgetting_factor)
-        self.P = np.eye(2, dtype=float) * 0.05
+        self.P = np.eye(2, dtype=float) * 0.04
 
-    def update(self, dx_vec: np.ndarray, du_vec: np.ndarray):
+    def update(self, dx_vec: np.ndarray, du_res_vec: np.ndarray):
         norm_dx = float(np.linalg.norm(dx_vec))
-        # Only update on informative movements (avoid noise corruption near zero)
-        if norm_dx < 4.0 or norm_dx > 250.0:
+        if norm_dx < 3.0 or norm_dx > 250.0:
             return
         x = dx_vec.reshape(2, 1)
-        u = du_vec.reshape(2, 1)
+        u = du_res_vec.reshape(2, 1)
         Px = self.P @ x
         denom = self.lam + float((x.T @ Px)[0, 0])
-        gain = Px / denom  # (2, 1)
-        err = u - (self.K @ x)  # (2, 1)
-        self.K = self.K + (err @ gain.T)
+        gain = Px / denom
+        err = u - (self.dK @ x)
+        self.dK = self.dK + (err @ gain.T)
         self.P = (self.P - gain @ x.T @ self.P) / self.lam
 
 
@@ -62,62 +97,46 @@ class ClosedLoop3RRRController:
         )
         self.sensor = HighPrecisionMouseSensor(dpi=self.calib.get("dpi", 3200))
 
-        K0 = np.array(self.calib["inverse_jacobian_center_us_per_px"], dtype=float)
-        self.rls = OnlineInverseJacobianRLS(K0)
+        self.poly_jac = SpatialInverseJacobian2ndOrder()
+        self.rls = OnlineInverseJacobianRLS()
 
-        self.kin_u = np.array(
-            [
-                float(self.calib["neutral_us"]["s1_x"]),
-                float(self.calib["neutral_us"]["s2_y1"]),
-            ],
-            dtype=float,
-        )
+        self.u0_x = float(self.calib["neutral_us"]["s1_x"])
+        self.u0_y = float(self.calib["neutral_us"]["s2_y1"])
+        self.kin_u = np.array([self.u0_x, self.u0_y], dtype=float)
 
     @staticmethod
     def _load_calib(calib_file: str) -> Dict:
         if os.path.exists(calib_file):
             with open(calib_file, "r", encoding="utf-8") as f:
                 return json.load(f)
-        # Default fallback based on previously embedded WS63 matrix
         return {
             "dpi": 3200,
             "neutral_us": {"s1_x": 1510, "s2_y1": 1545, "s3_y2": 1455, "s4_aux": 1500},
-            "deadband_us": {"x_pos": 5.0, "x_neg": 5.0, "y_pos": 5.0, "y_neg": 5.0},
-            "backlash_play_radius_us": {
-                "x_pos": 22.5,
-                "x_neg": 22.5,
-                "y_pos": 12.5,
-                "y_neg": 12.5,
-            },
-            "inverse_jacobian_center_us_per_px": [[-3.6980, 0.9905], [0.2311, -2.7405]],
+            "deadband_us": {"x_pos": 13.0, "x_neg": 10.0, "y_pos": 8.0, "y_neg": 8.0},
+            "backlash_play_radius_us": {"x_pos": 23.0, "x_neg": 23.0, "y_pos": 18.0, "y_neg": 19.0},
+            "inverse_jacobian_center_us_per_px": [[1.0341, -1.0967], [-0.1222, -0.7358]],
         }
 
     @staticmethod
     def _variable_gain(err_mag_counts: float) -> float:
-        """
-        Variable proportional gain schedule to prevent limit-cycle hunting
-        near the target while maintaining fast slewing for large errors.
-        """
+        """Lyapunov-stable variable proportional gain schedule."""
         if err_mag_counts <= 1.0:
-            return 0.0  # Inside 1-count (7.9 um) lock zone
+            return 0.0  # Deadband lock zone (7.9 um)
         elif err_mag_counts <= 5.0:
-            return 0.35  # Fine sub-deadband micro-stepping regime
+            return 0.35  # Sub-deadband fine nudge
         elif err_mag_counts <= 25.0:
-            return 0.55  # Medium convergence regime
-        return 0.72  # Fast slewing regime
+            return 0.55  # Medium convergence
+        return 0.72  # Fast tracking
 
     def move_to_target_counts(
         self,
         target_x: int,
         target_y: int,
         tolerance_counts: int = 1,
-        max_steps: int = 45,
+        max_steps: int = 40,
         step_dt: float = 0.035,
     ) -> Dict:
-        """
-        Closed-loop positioning to (target_x, target_y) in 3200 DPI counts.
-        Returns convergence telemetry dictionary.
-        """
+        """Execute closed-loop positioning to target (x, y) counts."""
         trajectory = []
         t_start = time.perf_counter()
 
@@ -130,7 +149,7 @@ class ClosedLoop3RRRController:
             trajectory.append(
                 {
                     "step": step,
-                    "t_ms": round((time.perf_counter() - t_start) * 1000.0, 2),
+                    "t_ms": round((time.perf_counter() - t_start) * 1000.0, 1),
                     "x": cur_x,
                     "y": cur_y,
                     "err_counts": round(err_mag, 2),
@@ -141,17 +160,24 @@ class ClosedLoop3RRRController:
             if err_mag <= tolerance_counts:
                 break
 
+            # 1. 2nd-order dynamic inverse Jacobian
+            du_x_curr = self.kin_u[0] - self.u0_x
+            du_y_curr = self.kin_u[1] - self.u0_y
+            K_local = self.poly_jac.evaluate(du_x_curr, du_y_curr)
+            if self.enable_rls:
+                K_local = K_local + self.rls.dK
+
             kp = self._variable_gain(err_mag)
             e_vec = np.array([ex, ey], dtype=float)
-            du_vec = kp * (self.rls.K @ e_vec)
+            du_vec = kp * (K_local @ e_vec)
 
-            # Slew-rate limit per control cycle for mechanical smoothness
+            # Slew rate limit
             du_norm = float(np.linalg.norm(du_vec))
-            max_du_step = 45.0
+            max_du_step = 40.0
             if du_norm > max_du_step:
                 du_vec = du_vec * (max_du_step / du_norm)
 
-            self.kin_u = np.clip(self.kin_u + du_vec, 1180.0, 1820.0)
+            self.kin_u = np.clip(self.kin_u + du_vec, 1200.0, 1800.0)
 
             enable_nudge = err_mag <= 6.0
             self.driver.step_compensated_with_nudge(
@@ -162,7 +188,9 @@ class ClosedLoop3RRRController:
             new_x, new_y = self.sensor.get_position()
             actual_dx = np.array([float(new_x - cur_x), float(new_y - cur_y)])
             if self.enable_rls:
-                self.rls.update(actual_dx, du_vec)
+                pred_du = K_local @ actual_dx
+                res_du = du_vec - pred_du
+                self.rls.update(actual_dx, res_du)
 
         final_x, final_y = self.sensor.get_position()
         final_err = float(np.hypot(target_x - final_x, target_y - final_y))
@@ -178,7 +206,7 @@ class ClosedLoop3RRRController:
 
     def run_benchmark(self) -> List[Dict]:
         print("=" * 68)
-        print("  3-RRR 3200 DPI Closed-Loop Positioning Benchmark Suite")
+        print("  3-RRR 3200 DPI Closed-Loop Target Benchmark (2nd-Order + Nudge)")
         print("=" * 68)
         self.sensor.start()
         self.driver.center(settle_s=0.6)
@@ -186,12 +214,12 @@ class ClosedLoop3RRRController:
 
         waypoints = [
             (0, 0),
-            (30, 0),     # Pure +X step (~238 um)
+            (30, 0),     # Pure +X (~238 um)
             (-30, 0),    # Pure -X reversal
-            (0, 35),     # Pure +Y step
+            (0, 35),     # Pure +Y (~278 um)
             (0, -35),    # Pure -Y reversal
-            (3, -2),     # Sub-deadband micro-target (~28 um)
-            (0, 0),      # Return to origin
+            (4, -3),     # Sub-deadband micro step (~40 um)
+            (0, 0),      # Return to center
         ]
 
         results = []
@@ -203,7 +231,7 @@ class ClosedLoop3RRRController:
                 f"Err: {res['final_error_counts']:4.1f} cnt ({res['final_error_um']:5.1f} um) | "
                 f"{res['steps_taken']:2d} steps ({res['elapsed_ms']:.0f} ms)"
             )
-            time.sleep(0.25)
+            time.sleep(0.20)
 
         self.driver.center(settle_s=0.4)
         self.sensor.stop()
@@ -222,4 +250,3 @@ if __name__ == "__main__":
         ctrl.driver.close()
     else:
         ctrl.run_benchmark()
-

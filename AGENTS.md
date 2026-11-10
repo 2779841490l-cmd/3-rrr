@@ -1,66 +1,61 @@
-# AGENTS.md — 3-RRR 3200 DPI 鼠标精密定位系统 Agent 行为准则与工程规范
+# AGENTS.md — 3-RRR 100ms-3200DPI 极速定位系统 & 学术论文工程 Agent 行为准则
 
 > **状态**：强制生效（Always-On Workspace Rule）
-> **适用对象**：本工作区内运行的所有 AI Agent（Gemini 3.8 Flash、DeepSeek R1、Antigravity 等）
+> **终极目标**：
+> 1. **工程指标**：在 **100 ms 内**实现 **3200 DPI（$7.94\ \mu\text{m}/\text{count}$）全屏幕精准定位（误差 $\le 1\sim 2\text{ counts}$）**；
+> 2. **学术产出**：产出一篇面向 *IEEE TIM / IEEE T-MECH* 或国内顶刊的高水平学术论文，所有实验数据必须按可复现科研标准自动保存为 CSV 并生成 300 DPI 期刊级图表。
 
 ---
 
 ## 一、 防丢失与 Git / GitHub 强制同步铁律（Zero-Data-Loss Protocol）
 
-1. **禁止破坏性删除（No Destructive Deletes）**
-   - 严禁在未备份的情况下执行清空目录、`Remove-Item -Recurse -Force`、`git reset --hard` 或直接覆盖历史标定参数文件（`calib_params.json`）。
-   - 每次生成新的标定参数或模型权重时，必须先将旧版本按时间戳归档至 `backups/` 目录（如 `backups/calib_params_YYYYMMDD_HHMMSS.json`）。
+1. **禁止破坏性删除**
+   - 严禁在未备份的情况下清空目录或直接覆盖标定文件（`calib_params.json`）及实验数据（`experiments/*.csv`）。
+   - 每次更新参数必须自动归档至 `backups/`。
 
 2. **双端代码同仓备份（Host + WS63 Firmware Co-Location）**
-   - 凡是修改海思 WS63 固件（`D:\ws63\src\application\samples\custom\servo_test.c`），必须**同步拷贝一份**到本仓库的 `firmware_ws63/` 目录下纳入 Git 版本控制，决不允许固件代码孤立在 Git 仓库之外。
+   - 凡是修改海思 WS63 固件（`D:\ws63\src\application\samples\custom\servo_test.c`），必须**同步拷贝一份**到本仓库 `firmware_ws63/` 目录下纳入 Git 版本控制。
 
-3. **每步必提交、每阶段必推送（Step-by-Step Git & GitHub Sync）**
-   - 每完成一个独立子步骤（参见 `PROJECT_PLAN.md` 中的阶段节点），Agent **必须立即执行 Git 提交并推送至 GitHub**：
+3. **每步必提交、每阶段必推送（Step-by-Step GitHub Sync）**
+   - 每完成一个独立子步骤，Agent **必须立即执行 Git 提交并推送至 GitHub（`git@github.com:2779841490l-cmd/3-rrr.git`）**：
      ```powershell
-     powershell -ExecutionPolicy Bypass -File .\scripts\git_sync.ps1 "feat/fix/calib: <简明步骤说明>"
+     powershell -ExecutionPolicy Bypass -File .\scripts\git_sync.ps1 "feat/exp/paper: <简明步骤说明>"
      ```
-   - 若远端仓库尚未配置或网络暂时不可达，必须完成本地 `git commit` 并在回复末尾显式提醒用户检查远端推送状态。
 
 ---
 
-## 二、 多模型算力分工与协作规范（Gemini 3.8 Flash vs. DeepSeek R1）
+## 二、 三模型算力压榨与极致省 Token 铁律（Compute & Token Economy）
 
-为了最大化工程效率并严格节省用户的 **DeepSeek R1** 额度，所有 Agent 必须遵守以下分工边界：
+为了彻底保护用户的 **Gemini 4 Argon** 与 **DeepSeek R1** 宝贵配额，全力压榨 **Gemini 3.8 Flash**，严格执行以下分工：
 
-### 1. Gemini 3.8 Flash（高频工程主力，承担 85%+ 任务）
+### 1. Gemini 3.8 Flash（全天候主力苦力，承担 92%+ 任务，尽情压榨）
 - **职责范围**：
-  - Python 上位机工程代码编写、重构、调试与运行；
-  - Windows RawInput 3200 DPI 鼠标底层数据采集与 `COM4` 串口通信测试；
-  - 自动化硬件探针（死区测定、正反齿隙测定、空间网格采样）的执行与数据清洗；
-  - 海思 WS63 固件 C 代码修改、编译指令执行与日志排查；
-  - Git 提交、GitHub 同步、文档更新与误差可视化绘图。
-- **行为要求**：
-  - 直接动手执行工具调用，少说空话，代码必须模块化、带完整类型注解和硬件异常捕获（确保串口异常退出时自动发送 `C\n` 归中指令）。
+  - 全部 Python 代码编写、WS63 200Hz 超频固件 C 代码修改与编译；
+  - 1000Hz 鼠标光流数据采集、`COM4` 串口联调与硬件故障排查；
+  - 执行海量实机消融实验（Ablation Study：50Hz vs 200Hz、传统 PID vs 空中光流预判早刹 vs 神经弹道 ILC），并将原始轨迹保存至 `experiments/`；
+  - 使用 Matplotlib 自动绘制 IEEE 期刊格式对比图（保存至 `paper/figures/`）；
+  - 撰写与扩充 `paper/manuscript.md` 的背景、实验设置、数据分析与代码开源说明。
 
-### 2. DeepSeek R1（低频首席数学架构师，严格省着用，全周期仅调用 2~3 次）
-- **职责范围**：
-  - **严禁**让 DeepSeek R1 编写串口通信、文件读写、UI 界面或执行常规报错调试；
-  - **仅在以下 2 个关键数学节点调用**：
-    1. **节点 A（拿到实测探针数据后）**：输入 `hardware_probe.py` 实测出的死区、正反齿隙与网格雅可比数据，推导**非对称 Prandtl-Ishlinskii 齿隙逆补偿方程**与**二阶非线性雅可比耦合矩阵参数**；
-    2. **节点 B（闭环微步精调阶段）**：推导针对 MG996R 舵机死区的**瞬态脉冲激发（Impulse-Retract）+ 变增益防积分饱和（Anti-Windup）闭环控制律**及李雅普诺夫稳定边界（防止 3200 DPI 下出现极限环微幅震荡）。
-- **交互方式**：
-  - 由 Gemini 3.8 Flash 将实测数据打包成高密度、结构化的数学 Prompt（写入 `prompts/deepseek_r1_prompt.md`），交由 DeepSeek R1 一次性给出数学闭式解与核心算法伪代码，再由 Gemini 3.8 Flash 落地为工程代码。
+### 2. DeepSeek R1（纯数学公式推导工具人，全周期仅调用 1~2 次，严禁喂长上下文）
+- **省 Token 铁律**：
+  - **严禁**让 DeepSeek R1 读项目代码、调串口或写工程脚本；
+  - 每次调用前，由 Gemini 3.8 Flash 将数学问题浓缩成 `< 400 字` 的独立纯数学 Prompt（存放于 `prompts/deepseek_r1_ballistic_math.md`），让 R1 一次性输出：
+    1. **大齿隙系统 100ms 单向零换向时间最优定理（Zero-Reversal Time-Optimality Theorem）**证明；
+    2. **空中光流预判早刹切换超平面（In-Flight Braking Switching Surface）** $S(x, \dot{x}) = 0$ 闭式解；
+    3. **物理引导弹道迭代学习（PG-NB-ILC）**收敛性证明。
+
+### 3. Gemini 4 Argon（顶层架构师 & 论文终审总编，占比 < 4%）
+- **省 Token 铁律**：
+  - 仅在顶层架构升级或最终论文全文写完后调用 1 次，用于全文学术逻辑拔高与 IEEE 顶刊英文润色，日常开发严禁挂着 Argon 跑脚本。
 
 ---
 
-## 三、 硬件电气与机械安全红线（Hardware Safety Constraints）
+## 三、 硬件电气与安全红线（Hardware Safety Constraints）
 
-1. **标准运行环境**
-   - 统一使用 Anaconda PyTorch 环境解释器：
-     `E:\anaconda\envs\pytorch\python.exe`
-   - 默认串口：`COM4`（CH340，`VID_1A86&PID_7523`，波特率 `115200`，8N1），代码中必须具备自动扫描 CH340 端口的能力。
-
-2. **舵机脉宽与双 Y 轴防互搏约束（Critical Mechanical Safety）**
-   - **引脚定义**：
-     - `S1`（X轴 水平推拉）：`GPIO 2`，中立位 `1510 us`
-     - `S2`（Y1轴 右上垂直主提）：`GPIO 5`，中立位 `1545 us`
-     - `S3`（Y2轴 右下垂直反装辅助）：`GPIO 7`，中立位 `1455 us`
-     - `S4`（Aux 备用）：`GPIO 8`，中立位 `1500 us`
-   - **安全限幅**：自动标定与常规闭环控制中，脉宽严格限制在 `[1150, 1850] us` 内，严禁下发超出机械止挡的极限脉宽。
-   - **双 Y 轴协同铁律**：`S2 (Y1)` 与 `S3 (Y2)` 共同驱动动平台垂直方向且反向安装，必须满足几何协同约束 $u_{y1} + u_{y2} \approx 3000 + \delta_{\text{coord}}(u_x, u_y)$，两轴非对称差模偏置 $|\Delta u_{\text{diff}}|$ 严禁超过 `35 us`，防止两颗 MG996R 产生内力互搏导致堵转烧毁或拉杆脱扣。
-
+1. **标准环境与接口**
+   - Python 解释器：`E:\anaconda\envs\pytorch\python.exe`
+   - 串口设备：自动扫描 CH340（`VID_1A86&PID_7523`，默认 `COM4`，`115200` 8N1）。
+2. **舵机安全与双 Y 轴协同红线**
+   - 脉宽硬限幅：`[1150, 1850] us`；
+   - 中立位基准：`S1 (GPIO 2) = 1510 us`, `S2 (GPIO 5) = 1545 us`, `S3 (GPIO 7) = 1455 us`, `S4 (GPIO 8) = 1500 us`；
+   - 双 Y 轴协同：平动模式下 $u_{y1} + u_{y2} = 3000$；启用冗余微偏摆（Micro-Yaw）补偿时，双 Y 轴差模偏置 $|\Delta u_{\text{yaw}}|$ 严禁超过 `25 us`，防止 MG996R 堵转互搏。
