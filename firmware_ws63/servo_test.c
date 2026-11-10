@@ -61,6 +61,7 @@ static volatile uint32_t g_cmd_s1_us = DEFAULT_UX_NEUTRAL;
 static volatile uint32_t g_cmd_s2_us = DEFAULT_UY1_NEUTRAL;
 static volatile uint32_t g_cmd_s3_us = DEFAULT_UY2_NEUTRAL;
 static volatile uint32_t g_cmd_s4_us = DEFAULT_S4_NEUTRAL;
+static volatile uint32_t g_pwm_period_us = 20000; // Default 50Hz (20,000us), supports up to 200Hz (5,000us) overclock
 
 // Non-blocking UART buffer
 static char g_line_buf[64];
@@ -111,6 +112,19 @@ static void parse_uart_line(const char *line)
         g_cmd_s2_us = DEFAULT_UY1_NEUTRAL;
         g_cmd_s3_us = DEFAULT_UY2_NEUTRAL;
         g_cmd_s4_us = DEFAULT_S4_NEUTRAL;
+    } else if (line[0] == 'F' || line[0] == 'f') {
+        // Dynamic PWM Period / Frequency command: "F <period_us>\n"
+        // e.g. "F 5000\n" -> 200Hz overclock, "F 20000\n" -> 50Hz standard
+        int period = 0;
+        const char *p = line + 1;
+        while (*p == ' ' || *p == '\t') p++;
+        while (*p >= '0' && *p <= '9') {
+            period = period * 10 + (*p - '0');
+            p++;
+        }
+        if (period >= 3000 && period <= 50000) {
+            g_pwm_period_us = (uint32_t)period;
+        }
     }
 }
 
@@ -260,10 +274,10 @@ static void output_pulse_4axis_atomic(uint32_t s1, uint32_t s2, uint32_t s3, uin
     // CRITICAL SECTION END
     // -------------------------------------------------------------------------
 
-    // Fill the remaining time to maintain strict 50Hz (20,000 us) period
+    // Fill the remaining time to maintain strict configured period (default 50Hz = 20,000us, 200Hz = 5,000us)
     uint32_t max_pulse = items[3].pulse;
-    if (max_pulse < 20000) {
-        uapi_tcxo_delay_us(20000 - max_pulse);
+    if (max_pulse < g_pwm_period_us) {
+        uapi_tcxo_delay_us(g_pwm_period_us - max_pulse);
     }
 
     uapi_watchdog_kick();

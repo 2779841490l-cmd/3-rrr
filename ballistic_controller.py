@@ -58,8 +58,9 @@ class SpatialInverseJacobian2ndOrder:
 
 class BallisticILCLearner:
     """
-    Norm-Optimal Iterative Learning Control (ILC) engine for ballistic flick-shots.
-    Adapts boost duration, overdrive ratio, and brake lead time based on past terminal errors.
+    Physics-Guided Norm-Optimal 2D Vector Iterative Learning Control (PG-NB-ILC) engine.
+    Updates both the 2D pulse compensation vector du_ilc(dx*, dy*) = du_ilc + eta * K * e_k
+    and the global braking glide time constant tau_brake_ms.
     """
 
     def __init__(self, ilc_file: str = "prompts/ilc_ballistic_weights.json"):
@@ -70,13 +71,17 @@ class BallisticILCLearner:
         if os.path.exists(self.ilc_file):
             try:
                 with open(self.ilc_file, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                    data = json.load(f)
+                    if "target_table" not in data:
+                        data["target_table"] = {}
+                    return data
             except Exception:
                 pass
         return {
-            "boost_ratio": 1.25,        # Overdrive factor: u_boost = u_lock * ratio
-            "tau_brake_ms": 28.0,       # Predicted glide time constant
+            "boost_ratio": 1.35,        # Overdrive factor: u_boost = u_lock * ratio
+            "tau_brake_ms": 24.0,       # Predicted glide time constant
             "micro_yaw_gain": 0.65,     # Yaw compensation sensitivity
+            "target_table": {},         # Keyed by f"{dx}_{dy}": [du_corr_x, du_corr_y]
             "iteration": 0,
             "loss_history": [],
         }
@@ -86,22 +91,49 @@ class BallisticILCLearner:
         with open(self.ilc_file, "w", encoding="utf-8") as f:
             json.dump(self.params, f, indent=2)
 
-    def update(self, target_dist: float, final_dist: float, err_counts: float):
-        """Monotonic ILC gradient step on glide time constant and boost ratio."""
-        if target_dist < 4.0:
-            return
-        overshoot = final_dist - target_dist
-        lr_tau = 0.40
-        lr_boost = 0.005
+    def get_correction(self, dx: int, dy: int) -> np.ndarray:
+        key = f"{dx}_{dy}"
+        corr = self.params.get("target_table", {}).get(key, [0.0, 0.0])
+        return np.array([float(corr[0]), float(corr[1])], dtype=float)
 
-        # If overshot, brake earlier (increase tau_brake) and decrease boost ratio
-        if overshoot > 1.5:
-            self.params["tau_brake_ms"] = min(50.0, self.params["tau_brake_ms"] + lr_tau)
-            self.params["boost_ratio"] = max(1.05, self.params["boost_ratio"] - lr_boost)
-        # If undershot, brake later (decrease tau_brake) and increase boost ratio
-        elif overshoot < -1.5:
-            self.params["tau_brake_ms"] = max(12.0, self.params["tau_brake_ms"] - lr_tau)
-            self.params["boost_ratio"] = min(1.90, self.params["boost_ratio"] + lr_boost)
+    def update_vector(
+        self,
+        dx_target: int,
+        dy_target: int,
+        dx_actual: int,
+        dy_actual: int,
+        K_local: np.ndarray,
+        err_counts: float,
+        eta_ilc: float = 0.62,
+    ):
+        """
+        Norm-Optimal 2D Jacobian-Guided ILC Law:
+        du_ilc^(k+1) = (1 - gamma) * du_ilc^(k) + eta_ilc * K_local @ [ex, ey]^T
+        """
+        key = f"{dx_target}_{dy_target}"
+        if "target_table" not in self.params:
+            self.params["target_table"] = {}
+
+        cur_corr = self.get_correction(dx_target, dy_target)
+        err_vec = np.array([float(dx_target - dx_actual), float(dy_target - dy_actual)], dtype=float)
+
+        # Deadzone on learning if already within <= 1.2 counts (sub-10um bullseye)
+        if err_counts > 1.2:
+            delta_u_step = eta_ilc * (K_local @ err_vec)
+            # Clamp single-iteration update to prevent jump
+            delta_u_step = np.clip(delta_u_step, -18.0, 18.0)
+            new_corr = np.clip(cur_corr + delta_u_step, -45.0, 45.0)
+            self.params["target_table"][key] = [round(float(new_corr[0]), 3), round(float(new_corr[1]), 3)]
+
+        # Also gently adapt global glide constant tau_brake_ms
+        target_dist = float(np.hypot(dx_target, dy_target))
+        final_dist = float(np.hypot(dx_actual, dy_actual))
+        if target_dist >= 4.0:
+            overshoot = final_dist - target_dist
+            if overshoot > 2.0:
+                self.params["tau_brake_ms"] = min(45.0, self.params["tau_brake_ms"] + 0.25)
+            elif overshoot < -2.0:
+                self.params["tau_brake_ms"] = max(14.0, self.params["tau_brake_ms"] - 0.25)
 
         self.params["iteration"] += 1
         self.params["loss_history"].append(float(round(abs(err_counts), 2)))
@@ -149,24 +181,25 @@ class Ballistic100msController:
         cur_uy = self.driver.cur_s2 - self.u0_y
         K = self.poly_jac.evaluate(cur_ux, cur_uy)
 
-        # 2. Compute nominal pulse offsets and backlash pre-engagement
+        # 2. Compute nominal pulse offsets + 2D ILC learned correction + backlash pre-engagement
         e_vec = np.array([float(delta_x), float(delta_y)], dtype=float)
-        du_nom = K @ e_vec
+        du_ilc = self.ilc.get_correction(delta_x, delta_y)
+        du_nom = (K @ e_vec) + du_ilc
 
-        # Directional backlash pre-engagement
-        b_offset_x = self.bx_pos if du_nom[0] > 0 else (-self.bx_neg if du_nom[0] < 0 else 0.0)
-        b_offset_y = self.by_pos if du_nom[1] > 0 else (-self.by_neg if du_nom[1] < 0 else 0.0)
+        # Directional backlash pre-engagement (since center() preloads positive flank, only negative moves reverse teeth!)
+        b_offset_x = 8.0 if du_nom[0] > 0 else (-self.bx_neg * 1.35 if du_nom[0] < 0 else 0.0)
+        b_offset_y = 8.0 if du_nom[1] > 0 else (-self.by_neg * 1.35 if du_nom[1] < 0 else 0.0)
 
         # Lock pulse holds target position after backlash is traversed
-        u_lock_x = self.driver.cur_s1 + du_nom[0] + 0.65 * b_offset_x
-        u_lock_y = self.driver.cur_s2 + du_nom[1] + 0.65 * b_offset_y
+        u_lock_x = self.driver.cur_s1 + du_nom[0] + b_offset_x
+        u_lock_y = self.driver.cur_s2 + du_nom[1] + b_offset_y
 
         # Clamp lock pulse to physical safety envelope
         u_lock_x = np.clip(u_lock_x, 1200.0, 1800.0)
         u_lock_y = np.clip(u_lock_y, 1200.0, 1800.0)
 
         # 3. Phase 1: Boost Overdrive Calculation (includes full backlash clearance)
-        boost_ratio = max(1.20, min(2.0, self.ilc.params["boost_ratio"]))
+        boost_ratio = max(1.20, min(1.85, self.ilc.params["boost_ratio"]))
         tau_brake = self.ilc.params["tau_brake_ms"] / 1000.0  # seconds
 
         u_boost_x = self.driver.cur_s1 + du_nom[0] * boost_ratio + b_offset_x
@@ -258,20 +291,21 @@ class Ballistic100msController:
                 break
             time.sleep(0.001)  # 1000Hz sampling
 
-        # 5. Terminal Result & ILC Learning Update
+        # 5. Terminal Result & 2D Vector ILC Learning Update
         final_x, final_y = self.sensor.get_position()
+        final_dx = int(final_x - x0)
+        final_dy = int(final_y - y0)
         final_err = float(np.hypot(target_abs_x - final_x, target_abs_y - final_y))
-        actual_dist = float(np.hypot(final_x - x0, final_y - y0))
 
         if enable_ilc_update:
-            self.ilc.update(target_dist, actual_dist, final_err)
+            self.ilc.update_vector(delta_x, delta_y, final_dx, final_dy, K, final_err)
 
         if settled_t_ms is None and final_err <= 1.5:
             settled_t_ms = timeout_ms
 
         return {
             "target_delta": (delta_x, delta_y),
-            "final_delta": (final_x - x0, final_y - y0),
+            "final_delta": (final_dx, final_dy),
             "final_error_counts": round(final_err, 2),
             "final_error_um": round(final_err * self.sensor.um_per_count, 2),
             "settled_time_ms": round(settled_t_ms if settled_t_ms is not None else timeout_ms, 1),

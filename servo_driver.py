@@ -134,10 +134,30 @@ class WS63ServoDriver:
         self.cur_s1, self.cur_s2, self.cur_s3, self.cur_s4 = float(u1), float(u2), float(u3), float(u4)
         return u1, u2, u3, u4
 
-    def center(self, settle_s: float = 0.5):
-        """Return all servos to calibrated neutral positions."""
+    def set_pwm_frequency(self, freq_hz: int = 50):
+        """
+        Set WS63 PWM output frequency (e.g., 50Hz standard, 100Hz, 200Hz overclock).
+        Sends 'F <period_us>\n' to firmware.
+        """
+        period_us = int(round(1000000.0 / freq_hz))
+        period_us = max(3000, min(50000, period_us))
+        cmd = f"F {period_us}\n"
+        self.ser.write(cmd.encode("ascii"))
+        time.sleep(0.02)
+
+    def center(self, settle_s: float = 0.5, preload: bool = True):
+        """
+        Return all servos to calibrated neutral positions.
+        When preload=True, approaches neutral deterministically from (-40us, -40us)
+        so gear teeth always engage on the positive flank (eliminating 50us random backlash state).
+        """
+        if preload:
+            self.send_raw_pulses(self.NEUTRAL_S1 - 40.0, self.NEUTRAL_S2 - 40.0)
+            time.sleep(0.12)
         self.play_x.reset(self.NEUTRAL_S1)
         self.play_y.reset(self.NEUTRAL_S2)
+        self.play_x.last_dir = 1
+        self.play_y.last_dir = 1
         self.send_raw_pulses(self.NEUTRAL_S1, self.NEUTRAL_S2, self.NEUTRAL_S3, self.NEUTRAL_S4)
         if settle_s > 0:
             time.sleep(settle_s)
