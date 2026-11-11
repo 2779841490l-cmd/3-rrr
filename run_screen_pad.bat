@@ -1,5 +1,6 @@
 @echo off
 chcp 65001 >nul
+cd /d "%~dp0"
 title 3-RRR 全屏幕边界矩形巡检与键盘手动控制台
 echo ========================================================================
 echo   3-RRR 全屏幕边界矩形巡检与键盘手动控制台 (Screen Manual Pad)
@@ -15,3 +16,4 @@ echo ========================================================================
 echo 正在启动控制台...
 "E:\anaconda\envs\pytorch\python.exe" screen_manual_pad.py
 pause
+

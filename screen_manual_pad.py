@@ -230,7 +230,8 @@ class ScreenManualPadApp:
         tk.Button(dpad_frame, text="◀ 左 (A)", **btn_style, command=lambda: self.jog(-self.step_px, 0)).grid(
             row=1, column=0, padx=4, pady=3
         )
-        tk.Button(dpad_frame, text="● 中", **btn_style, bg="#1e293b", command=self.center_cursor).grid(
+        center_btn_style = dict(btn_style, bg="#1e293b")
+        tk.Button(dpad_frame, text="● 中", **center_btn_style, command=self.center_cursor).grid(
             row=1, column=1, padx=4, pady=3
         )
         tk.Button(dpad_frame, text="▶ 右 (D)", **btn_style, command=lambda: self.jog(self.step_px, 0)).grid(
@@ -423,3 +424,4 @@ class ScreenManualPadApp:
 if __name__ == "__main__":
     app = ScreenManualPadApp()
     app.run()
+
