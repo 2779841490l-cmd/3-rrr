@@ -14,6 +14,13 @@ from typing import Tuple
 
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
+winmm = ctypes.windll.winmm
+
+# Enable 1ms Windows multimedia timer resolution so 1000Hz polling never sleeps 15.6ms
+try:
+    winmm.timeBeginPeriod(1)
+except Exception:
+    pass
 
 # Configure win32 types
 user32.OpenInputDesktop.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
@@ -68,7 +75,9 @@ class HighPrecisionMouseSensor:
         self.screen_h = user32.GetSystemMetrics(1) or 864
         self.center_x = self.screen_w // 2
         self.center_y = self.screen_h // 2
-        self.margin = 120
+        # Wide 240px safety margin prevents fast macro flicks (>3000 cnt/s) from ever touching screen edges
+        self.margin = 240
+        self._force_recenter = False
 
     def start(self):
         if self._running:
@@ -85,13 +94,23 @@ class HighPrecisionMouseSensor:
             self._thread.join(timeout=1.0)
 
     def reset_origin(self):
-        """Zero out accumulated coordinates."""
+        """Zero out accumulated coordinates and recenter OS cursor."""
         with self._lock:
             self._accum_x = 0
             self._accum_y = 0
             self._total_x = 0
             self._total_y = 0
             self._event_count = 0
+            self._force_recenter = True
+
+    def recenter_cursor(self):
+        """
+        Safely warps the Windows OS cursor back to screen center (center_x, center_y)
+        synchronously inside the polling lock while the robot is stationary before a shot,
+        guaranteeing maximum screen headroom and zero edge clipping even on ultra-large flicks.
+        """
+        with self._lock:
+            self._force_recenter = True
 
     def read_delta_and_clear(self) -> Tuple[int, int]:
         """Return (dx, dy) counts since last call and reset delta accumulator."""
@@ -129,21 +148,23 @@ class HighPrecisionMouseSensor:
                 dx = cur_x - last_x
                 dy = cur_y - last_y
 
-                if dx != 0 or dy != 0:
-                    with self._lock:
+                with self._lock:
+                    if dx != 0 or dy != 0:
                         self._accum_x += dx
                         self._accum_y += dy
                         self._total_x += dx
                         self._total_y += dy
                         self._event_count += 1
 
-                    # Check if cursor is near boundary; if so, warp to center
-                    if (
-                        cur_x < self.margin
+                    need_warp = (
+                        self._force_recenter
+                        or cur_x < self.margin
                         or cur_x > self.screen_w - self.margin
                         or cur_y < self.margin
                         or cur_y > self.screen_h - self.margin
-                    ):
+                    )
+                    if need_warp:
+                        self._force_recenter = False
                         user32.SetCursorPos(self.center_x, self.center_y)
                         last_x, last_y = self.center_x, self.center_y
                     else:

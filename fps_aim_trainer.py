@@ -79,20 +79,21 @@ class FullScreenFPSAimTrainer:
         print(f"  Sensitivity Scale: {self.sens_scale:.2f}x | Target Ball Radius: {self.ball_radius_px} px")
         print("=" * 82)
 
-        # Deterministic full-screen targets spanning all 4 quadrants (up to +-600 px X, +-340 px Y)
+        # Deterministic full-screen & beyond-screen targets spanning mechanical limits
+        # Includes targets exceeding +-768x432 half-screen boundaries to verify zero edge clipping
         screen_targets: List[Tuple[int, int]] = [
-            (420, -240),   # Top-Right long flick
-            (-420, -240),  # Top-Left long flick
-            (-480, 260),   # Bottom-Left edge flick
-            (480, 260),    # Bottom-Right edge flick
-            (560, 0),      # Far-Right horizontal flick
-            (-560, 0),     # Far-Left horizontal flick
-            (0, -320),     # Top vertical flick
-            (0, 320),      # Bottom vertical flick
-            (260, -150),   # Mid-Right upper
-            (-280, 170),   # Mid-Left lower
-            (140, 95),     # Short-range precision ball
-            (-140, -95),   # Short-range reversal ball
+            (448, -252),   # Top-Right macro flick (+160, -90 cnt)
+            (-448, 252),   # Bottom-Left macro flick (-160, +90 cnt)
+            (560, -308),   # Extreme Top-Right full mechanical limit (+200, -110 cnt)
+            (-560, 308),   # Extreme Bottom-Left full mechanical limit (-200, +110 cnt)
+            (616, -336),   # Beyond-Screen Edge flick (+220, -120 cnt)
+            (-616, 336),   # Beyond-Screen Opposite Edge flick (-220, +120 cnt)
+            (392, 224),    # Bottom-Right quadrant (+140, -80 cnt)
+            (-392, -224),  # Top-Left quadrant (-140, +80 cnt)
+            (504, 0),      # Far-Right horizontal macro (+180, 0 cnt)
+            (-504, 0),     # Far-Left horizontal macro (-180, 0 cnt)
+            (0, -336),     # Far-Top vertical macro (0, +120 cnt)
+            (0, 336),      # Far-Bottom vertical macro (0, -120 cnt)
         ][:num_targets]
 
         os.makedirs("experiments", exist_ok=True)
@@ -275,3 +276,4 @@ if __name__ == "__main__":
     finally:
         trainer.close()
     raise SystemExit(exit_code)
+

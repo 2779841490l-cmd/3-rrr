@@ -145,27 +145,27 @@ class WS63ServoDriver:
         self.ser.write(cmd.encode("ascii"))
         time.sleep(0.02)
 
-    def center(self, settle_s: float = 0.5, preload: bool = True):
+    def center(self, settle_s: float = 0.38, preload: bool = True):
         """
         Return all servos to calibrated neutral positions.
-        When preload=True, executes a robust 3-step sequence:
-        1. Returns to neutral to cancel arbitrary shot displacements
-        2. Steps back by (-45us, -45us) with 0.30s settling
-        3. Approaches neutral deterministically from the negative side with 0.40s settling.
-        Ensures 100% deterministic positive gear flank engagement at complete rest.
+        When preload=True, executes a deterministic negative-side approach:
+        1. Quick neutral return (0.12s) to cancel residual displacement
+        2. Steps back by (-40us, -40us) (0.25s) to fully traverse backlash (28us)
+        3. Deterministically approaches neutral (+40us forward) (settle_s >= 0.38s)
+        Zero momentum bounce, completely reproducible positive gear flank engagement.
         """
         if preload:
             self.send_raw_pulses(self.NEUTRAL_S1, self.NEUTRAL_S2, self.NEUTRAL_S3, self.NEUTRAL_S4)
-            time.sleep(0.15)
-            self.send_raw_pulses(self.NEUTRAL_S1 - 45.0, self.NEUTRAL_S2 - 45.0)
-            time.sleep(0.30)
+            time.sleep(0.12)
+            self.send_raw_pulses(self.NEUTRAL_S1 - 40.0, self.NEUTRAL_S2 - 40.0)
+            time.sleep(0.25)
         self.play_x.reset(self.NEUTRAL_S1)
         self.play_y.reset(self.NEUTRAL_S2)
         self.play_x.last_dir = 1
         self.play_y.last_dir = 1
         self.send_raw_pulses(self.NEUTRAL_S1, self.NEUTRAL_S2, self.NEUTRAL_S3, self.NEUTRAL_S4)
         if settle_s > 0:
-            time.sleep(max(0.40, settle_s))
+            time.sleep(max(0.38, settle_s))
 
     def move_smooth_raw(
         self, target_s1: float, target_s2: float, duration_s: float = 0.25, rate_hz: float = 50.0
