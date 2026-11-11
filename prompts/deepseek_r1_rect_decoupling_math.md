@@ -17,3 +17,4 @@ Please derive rigorous mathematical proofs (in bilingual Chinese/English format 
    where $\phi_{mn}(x,y)$ are bilinear/B-spline basis functions on an $M \times M$ lattice and $\boldsymbol{\sigma} = [\text{sign}(\dot{u}_x), \text{sign}(\dot{u}_y)]^T$. Prove that under the spatial kernel update law along the rectangle perimeter $\partial \mathcal{R}$ and crosshairs:
    $$\boldsymbol{\theta}_{mn}^{(k+1)} = \boldsymbol{\theta}_{mn}^{(k)} + \gamma \frac{\sum_p w_{mn}(\mathbf{x}_p) J(\mathbf{x}_p)^{-1} \mathbf{e}_p^{(k)}}{\sum_p w_{mn}(\mathbf{x}_p)}$$
    the cross-axis contour jump $\|\delta y^{(k)}\|_\infty, \|\delta x^{(k)}\|_\infty \to 0$ exponentially if $0 < \gamma < 2 / \rho(J^{-1}\hat{J})$.
+

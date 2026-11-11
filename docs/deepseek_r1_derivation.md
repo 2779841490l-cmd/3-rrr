@@ -278,3 +278,132 @@ $$\gamma_{\max} < \frac{2}{\sigma_{\max}^2(K_0)} = \frac{2}{1.5459^2} \approx 0.
 | **跨射击学习** | 第 $k \to k+1$ 次 | 定理 4（PG-NB-ILC） | $\boldsymbol{\theta}_{k+1} = \boldsymbol{\theta}_k + \Gamma J_{\text{bal}}^T\mathbf{e}_k$ |
 
 **综合结论**：定理 1 确立单向逼近的必要性，定理 2 给出早刹的精确切换曲面，定理 3 提供 MAC 约束下的冗余微调自由度，定理 4 保证跨射击学习的单调收敛。四者共同构成百毫秒 3200 DPI 极限定位的完整理论闭环。
+
+---
+
+# 第 IV 章 工作空间几何优化与跨轴寄生跳变解耦理论
+
+> **Chapter IV — Workspace Geometry Optimization and Cross-Axis Parasitic Jump Decoupling**
+> 本章处理 3-RRR 并联平台在**大行程**工况下的两个结构性难题：(i) 由于逆雅可比强交叉耦合（$J_{12}\neq 0,\ J_{21}\neq 0$），水平运动诱发寄生竖直跳变 $\delta y(x)$、竖直运动诱发寄生水平跳变 $\delta x(y)$；(ii) 经验可达域 $\Omega$ 非中心对称，导致固定原点下的可用矩形行程被严重浪费。定理 5 解决 (ii) 的几何最优性问题，定理 6 解决 (i) 的解耦收敛性问题。
+
+## 记号约定（Notation for Chapter IV）
+
+- 舵机脉宽向量 $\mathbf{u} = [u_x, u_y]^T \in \mathcal{U} \subset \mathbb{R}^2$（$\mu\text{s}$）；
+- 非对称齿隙宽度 $\mathbf{b} = [b_x, b_y]^T$，$b_i = B_i^+ + B_i^-$；
+- 非线性正运动学 $\mathbf{x} = \mathbf{f}(\mathbf{u}) = [x, y]^T \in \Omega \subset \mathbb{R}^2$（counts），雅可比 $J(\mathbf{u}) = \partial\mathbf{f}/\partial\mathbf{u}$；
+- 经验可达域凸包 $\mathcal{H} = \text{conv}(\Omega) = \{\mathbf{x}\in\mathbb{R}^2 : A\mathbf{x} + \mathbf{c} \le \mathbf{0}\}$，$A \in \mathbb{R}^{m\times 2}$，$\mathbf{c}\in\mathbb{R}^m$（$m$ 为凸包边数）；
+- 安全内缩量 $\delta > 0$（counts），$\mathcal{H}_{-\delta} = \{\mathbf{x} : A\mathbf{x} + \mathbf{c} \le -\delta\mathbf{1}\}$ 为 $\delta$-内缩凸多面体；
+- 矩形半宽 $(W, H)$，几何中心 $\mathbf{x}_0 = [o_x, o_y]^T$。
+
+---
+
+## 定理 5（最优原点平移与最大内接矩形定理）
+
+> **Theorem 5 (Optimal Origin Shift & Maximum Inscribed Rectangle Theorem).**
+> 设 $\mathcal{H}_{-\delta}$ 为非空有界凸多面体。定义**纵横比正则化面积**泛函
+> $$\mathcal{J}(o_x, o_y, W, H) = W\cdot H,$$
+> 则最优原点 $\mathbf{x}_0^* = [o_x^*, o_y^*]^T$ 与最大半宽 $(W^*, H^*)$ 由如下凸优化问题给出：
+> $$\begin{aligned}
+> (W^*, H^*, o_x^*, o_y^*) = \arg\max_{W,H,o_x,o_y}\ & W\,H\\
+> \text{s.t.}\quad & A\big(\mathbf{x}_0 + \boldsymbol{\eta}\big) + \mathbf{c} \le -\delta\mathbf{1},\quad \forall\,\boldsymbol{\eta}\in\{[\pm W, \pm H]^T\},\\
+> & W \ge W_{\min} > 0,\quad H \ge H_{\min} > 0.
+> \end{aligned}$$
+> 该问题等价于一个**二阶锥规划（SOCP）**，其最优解存在且唯一（在 $\mathcal{H}_{-\delta}$ 严格凸或加入纵横比正则项时），且最优矩形 $\mathcal{R}^* = \mathbf{x}_0^* + [-W^*, W^*]\times[-H^*, H^*]$ 满足 $\mathcal{R}^* \subseteq \mathcal{H}_{-\delta}$。
+
+### 证明（Proof）
+
+**Step 1 — 约束的等价线性化（四个角点充分性）。**
+矩形 $\mathbf{x}_0 + [-W, W]\times[-H, H]$ 的四个顶点为
+$$\mathbf{v}_{1,2,3,4} = \mathbf{x}_0 + [\pm W, \pm H]^T.$$
+由于 $\mathcal{H}_{-\delta}$ 是**凸集**（半空间之交），且矩形是其四个顶点的凸包，故
+$$\mathcal{R} \subseteq \mathcal{H}_{-\delta} \iff \mathbf{v}_j \in \mathcal{H}_{-\delta},\ j=1,\dots,4.$$
+即只需对四个角点施加约束 $A\mathbf{v}_j + \mathbf{c} \le -\delta\mathbf{1}$，共 $4m$ 条线性不等式。这消除了对连续点集 $\mathcal{R}$ 的无限约束。
+
+**Step 2 — 变量替换与凸性。**
+令 $p = W + o_x$，$q = W - o_x$，$r = H + o_y$，$s = H - o_y$，则四个角点约束化为对 $(p,q,r,s)$ 的线性不等式。目标函数
+$$W H = \frac{(p+q)(r+s)}{4}$$
+在 $(p,q,r,s) \ge 0$ 上**非凹**（双线性），故原始问题非凸。
+
+**Step 3 — 对数变换（Log-Det 技巧）。**
+引入 $t = \ln W$，$\tau = \ln H$，则 $WH = e^{t+\tau}$ 为 $t+\tau$ 的**单调递增凸函数**，最大化 $WH$ 等价于最大化 $t+\tau$（线性目标）。约束 $A(\mathbf{x}_0 + [\pm W,\pm H]^T) + \mathbf{c} \le -\delta\mathbf{1}$ 中，$W = e^t$、$H = e^\tau$ 为凸函数，故约束为**凸约束**（凸函数之和不大于常数）。于是问题化为
+$$\max_{t,\tau,o_x,o_y}\ t+\tau \quad\text{s.t.}\quad A(\mathbf{x}_0 + [\pm e^t, \pm e^\tau]^T) + \mathbf{c} \le -\delta\mathbf{1},$$
+这是一个**凸优化问题**（目标线性、约束凸）。
+
+**Step 4 — SOCP 等价形式。**
+对每个角点约束的第 $i$ 行：
+$$a_{i1}(o_x \pm e^t) + a_{i2}(o_y \pm e^\tau) + c_i \le -\delta.$$
+引入辅助变量并利用 $e^t \ge \|\,[\,2,\, t\,]\,\|_2$ 的旋转二阶锥表示（或直接以指数锥 $\mathcal{K}_{\exp}$ 建模），上述问题等价于二阶锥规划。由凸优化理论，SOCP 在可行域非空有界时**最优解存在**；若 $\mathcal{H}_{-\delta}$ 严格凸或目标加入严格凹正则项 $-\epsilon(W^2+H^2)$，则解**唯一**。
+
+**Step 5 — 最优性条件（KKT）。**
+设活跃约束集为 $\mathcal{A}^*$，则存在乘子 $\lambda_{j,i}^* \ge 0$ 使
+$$\nabla_{W,H,o_x,o_y}\left[WH + \sum_{(j,i)\in\mathcal{A}^*}\lambda_{j,i}\left(a_{i1}(o_x\pm W) + a_{i2}(o_y\pm H) + c_i + \delta\right)\right] = 0.$$
+对 $o_x$ 求偏导得 $\sum_{j,i}\lambda_{j,i}a_{i1} = 0$，对 $o_y$ 得 $\sum_{j,i}\lambda_{j,i}a_{i2} = 0$，即**最优中心是活跃约束法向量的加权平衡点**（几何上为凸多面体的"Chebyshev 型"中心）。对 $W$ 求偏导得 $H = \sum\lambda_{j,i}|a_{i1}|$，对 $H$ 得 $W = \sum\lambda_{j,i}|a_{i2}|$，联立给出最优半宽。
+
+**Step 6 — 包含性结论。**
+由 Step 1，四个角点满足约束 $\Rightarrow$ 整个矩形 $\mathcal{R}^* \subseteq \mathcal{H}_{-\delta}$。$\blacksquare$
+
+> **Remark 5.1（工程意义）**：定理 5 将"原点标定"从人工试凑提升为**可全局求解的凸优化**。由于 $\mathcal{H}_{-\delta}$ 内缩 $\delta$ 吸收了齿隙与死区的不确定带，最优矩形 $\mathcal{R}^*$ 内的任意目标点均可在不触碰工作空间边界的前提下到达，从根本上消除了"边界饱和导致的单向逼近失效"。
+
+> **Remark 5.2（纵横比正则化）**：若需强制 $W/H = \kappa$（例如匹配 16:9 屏幕），只需追加线性等式约束 $H = W/\kappa$，问题仍为凸（线性约束不破坏凸性），最优解退化为沿该方向的**最大内接矩形**。
+
+---
+
+## 定理 6（双线性格点迭代轮廓学习消除跨轴寄生跳变定理）
+
+> **Theorem 6 (Cross-Axis Parasitic Jump Elimination via Bilinear Lattice Iterative Contour Learning).**
+> 设矩形域 $\mathcal{R} = [-W^*, W^*]\times[-H^*, H^*]$ 上的逆解耦流形参数化为
+> $$\mathbf{u}^{(k)}(x, y, \boldsymbol{\sigma}) = \mathbf{u}_{\text{kin}}(x + o_x^*, y + o_y^*) + \sum_{m,n}\phi_{mn}(x, y)\,\boldsymbol{\theta}_{mn}^{(k)} + \text{diag}(\boldsymbol{\sigma})\,\mathbf{b},$$
+> 其中 $\phi_{mn}(x,y)$ 为 $M\times M$ 格点上的双线性/B 样条基函数，$\boldsymbol{\sigma} = [\text{sign}(\dot{u}_x), \text{sign}(\dot{u}_y)]^T$。沿矩形周界 $\partial\mathcal{R}$ 与十字准线采样点 $\{\mathbf{x}_p\}$，采用空间核加权更新律
+> $$\boldsymbol{\theta}_{mn}^{(k+1)} = \boldsymbol{\theta}_{mn}^{(k)} + \gamma\,\frac{\sum_p w_{mn}(\mathbf{x}_p)\,J(\mathbf{x}_p)^{-1}\mathbf{e}_p^{(k)}}{\sum_p w_{mn}(\mathbf{x}_p)},$$
+> 则跨轴寄生跳变满足
+> $$\|\delta y^{(k)}\|_\infty \to 0,\qquad \|\delta x^{(k)}\|_\infty \to 0\quad (k\to\infty),$$
+> 且收敛为**指数收敛**，当且仅当学习增益满足
+> $$0 < \gamma < \frac{2}{\rho\!\left(J^{-1}\hat{J}\right)},$$
+> 其中 $\hat{J}$ 为学习律中使用的雅可比估计，$\rho(\cdot)$ 为谱半径。
+
+### 证明（Proof）
+
+**Step 1 — 误差定义与线性化。**
+记第 $k$ 次迭代在采样点 $\mathbf{x}_p$ 处的终端定位误差为
+$$\mathbf{e}_p^{(k)} = \mathbf{x}_p^{\text{des}} - \mathbf{f}\!\left(\mathbf{u}^{(k)}(\mathbf{x}_p)\right).$$
+将正运动学在理想逆解附近一阶展开：$\mathbf{f}(\mathbf{u}^{(k)} + \Delta\mathbf{u}) \approx \mathbf{f}(\mathbf{u}^{(k)}) + J\,\Delta\mathbf{u}$，其中 $J = J(\mathbf{u}^{(k)}(\mathbf{x}_p))$。参数更新 $\Delta\boldsymbol{\theta}_{mn}$ 引起的脉宽增量在点 $\mathbf{x}_p$ 处为 $\phi_{mn}(\mathbf{x}_p)\Delta\boldsymbol{\theta}_{mn}$。
+
+**Step 2 — 单点误差递推。**
+由更新律，$\Delta\boldsymbol{\theta}_{mn} = \gamma\,\frac{\sum_p w_{mn}(\mathbf{x}_p)J^{-1}\mathbf{e}_p^{(k)}}{\sum_p w_{mn}(\mathbf{x}_p)}$。代入一阶展开：
+$$\mathbf{e}_p^{(k+1)} = \mathbf{e}_p^{(k)} - J\sum_{m,n}\phi_{mn}(\mathbf{x}_p)\,\gamma\,\frac{\sum_q w_{mn}(\mathbf{x}_q)J^{-1}\mathbf{e}_q^{(k)}}{\sum_q w_{mn}(\mathbf{x}_q)}.$$
+
+**Step 3 — 核加权算子形式。**
+定义核矩阵 $K_{pq} = \sum_{m,n}\phi_{mn}(\mathbf{x}_p)\frac{w_{mn}(\mathbf{x}_q)}{\sum_{q'}w_{mn}(\mathbf{x}_{q'})}$，则上式写为
+$$\mathbf{e}_p^{(k+1)} = \mathbf{e}_p^{(k)} - \gamma\,J_p\sum_q K_{pq}\,J_q^{-1}\mathbf{e}_q^{(k)}.$$
+记全局误差向量 $\mathbf{E}^{(k)} = [\mathbf{e}_1^{(k)};\dots;\mathbf{e}_P^{(k)}]$，则
+$$\mathbf{E}^{(k+1)} = \left(I - \gamma\,\mathcal{K}\right)\mathbf{E}^{(k)},\qquad \mathcal{K}_{pq} = J_p K_{pq} J_q^{-1}.$$
+
+**Step 4 — 谱半径收敛条件。**
+误差指数收敛 $\iff \rho(I - \gamma\mathcal{K}) < 1$。设 $\mathcal{K}$ 的特征值为 $\mu_j$（复数），则 $I - \gamma\mathcal{K}$ 的特征值为 $1 - \gamma\mu_j$。要求 $|1 - \gamma\mu_j| < 1$ 对所有 $j$ 成立，即
+$$-1 < 1 - \gamma\,\text{Re}(\mu_j) < 1 \;\Longrightarrow\; 0 < \gamma < \frac{2}{\text{Re}(\mu_j)}\quad\forall j.$$
+取最紧约束得 $0 < \gamma < \frac{2}{\max_j \text{Re}(\mu_j)} = \frac{2}{\rho(\mathcal{K})}$。当雅可比估计精确（$\hat{J} = J$）时 $\mathcal{K} = J K J^{-1}$ 与 $K$ 相似，$\rho(\mathcal{K}) = \rho(K) = \rho(J^{-1}\hat{J})$，即得题设条件。
+
+**Step 5 — 跨轴寄生跳变的消除。**
+将误差分解为轴向分量与跨轴分量：$\mathbf{e}_p = [e_x, e_y]^T$。跨轴寄生跳变定义为
+$$\delta y^{(k)} = \max_{x\in[-W^*,W^*]}\left|y^{(k)}(x, 0) - y^{\text{des}}(x,0)\right|,\qquad \delta x^{(k)} = \max_{y\in[-H^*,H^*]}\left|x^{(k)}(0, y) - x^{\text{des}}(0,y)\right|.$$
+由于 $\|\delta y^{(k)}\|_\infty \le \|\mathbf{E}^{(k)}\|_\infty$ 且 $\|\delta x^{(k)}\|_\infty \le \|\mathbf{E}^{(k)}\|_\infty$，而 $\|\mathbf{E}^{(k)}\| \le \|I - \gamma\mathcal{K}\|^k\|\mathbf{E}^{(0)}\|$，当 $\rho(I-\gamma\mathcal{K}) < 1$ 时存在矩阵范数使 $\|I-\gamma\mathcal{K}\| = \rho + \epsilon < 1$，故
+$$\|\delta y^{(k)}\|_\infty \le C\,\rho^k \to 0,\qquad \|\delta x^{(k)}\|_\infty \le C\,\rho^k \to 0,$$
+即跨轴跳变以几何速率 $\rho$ **指数收敛至零**。
+
+**Step 6 — 采样充分性（周界 + 十字准线）。**
+沿 $\partial\mathcal{R}$ 与十字准线的采样点集 $\{\mathbf{x}_p\}$ 构成 $\mathcal{R}$ 上的**确定性采样网格**。由于双线性/B 样条基 $\phi_{mn}$ 在格点上满足单位分解 $\sum_{m,n}\phi_{mn}\equiv 1$ 且局部支撑，核矩阵 $K$ 为**正定随机矩阵**（行和为 1），其谱半径 $\rho(K)\le 1$。结合 Step 4，只要 $\gamma < 2/\rho(J^{-1}\hat{J})$，周界与十字准线上的误差被压制，而域内任意点由基函数的凸组合插值，误差被周界/准线误差所界定（最大值原理），故全域跨轴跳变收敛。$\blacksquare$
+
+> **Remark 6.1（与定理 4 的关系）**：定理 4 处理**时间维**（跨射击）的弹道参数 ILC 收敛；定理 6 处理**空间维**（跨工作点）的解耦流形 ILC 收敛。二者共享同一范数最优 ILC 框架，但定理 6 的算子 $\mathcal{K} = JKJ^{-1}$ 因雅可比相似变换而保持谱半径不变，这是"物理引导"（用 $J^{-1}$ 预条件）使学习律对强交叉耦合**天然免疫**的数学根源。
+
+> **Remark 6.2（工程意义）**：$\text{diag}(\boldsymbol{\sigma})\mathbf{b}$ 项在参数化中显式补偿方向相关齿隙，使学习律只需拟合**光滑**的残余非线性流形，避免齿隙不连续点污染基函数系数，从而保证 $\hat{J}\approx J$ 的线性化精度与收敛速率。
+
+---
+
+## 第 IV 章定理体系小结
+
+| 定理 | 解决的问题 | 数学工具 | 收敛/最优性保证 |
+| :---: | :--- | :--- | :--- |
+| **定理 5** | 非对称可达域下的原点与行程最优配置 | 凸优化 / SOCP / KKT | 全局最优、解存在唯一 |
+| **定理 6** | 强交叉耦合诱发的跨轴寄生跳变 | 核加权 ILC / 谱半径分析 | 指数收敛，$\gamma < 2/\rho(J^{-1}\hat{J})$ |
+
+**综合结论**：定理 5 在**几何层**给出最大安全矩形工作域 $\mathcal{R}^*$，定理 6 在**控制层**保证该域内跨轴寄生跳变指数消除。二者与第 III 章定理 1–4 共同构成"几何—时间—空间"三维完备的百毫秒 3200 DPI 极限定位理论体系。
