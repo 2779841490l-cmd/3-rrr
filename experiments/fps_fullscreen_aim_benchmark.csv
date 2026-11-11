@@ -1,0 +1,4 @@
+ball_id,screen_target_x_px,screen_target_y_px,screen_actual_x_px,screen_actual_y_px,raw_target_dx_cnt,raw_target_dy_cnt,raw_actual_dx_cnt,raw_actual_dy_cnt,raw_error_counts,raw_error_um,screen_error_px,ballistic_time_ms,settled_time_ms,hit
+1,-680,-370,-673.5,-371.9,-345.3,-262.7,-342.0,-264.0,3.58,28.4,6.75,103.6,1496.6,1
+2,680,-370,673.5,-377.5,345.3,-262.7,342.0,-268.0,6.29,49.9,9.9,105.5,1495.9,1
+3,680,370,689.2,362.0,345.3,262.7,350.0,257.0,7.34,58.3,12.25,103.8,1473.4,1

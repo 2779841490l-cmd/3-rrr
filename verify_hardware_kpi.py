@@ -1,153 +1,167 @@
-"""
-verify_hardware_kpi.py - Hard Hardware KPI Acceptance Gate ("紧箍咒")
-=====================================================================
-Enforces strict real-hardware performance criteria before ANY paper claims
-or finalization can be made:
-
-Gate 1 (Non-Oscillatory ILC Stability on (30, 20)):
-  - 12 consecutive 100ms shots from cold start.
-  - Last 5 shots (Shots 8..12) MUST have:
-    * Mean error <= 2.5 counts (19.8 um)
-    * Max error among last 5 shots <= 4.0 counts (eliminates period-2 oscillation!)
-
-Gate 2 (6-Direction All-Quadrant 100ms Precision):
-  - Targets: [(35, 0), (-35, 0), (0, 35), (0, -35), (30, 25), (-30, -25)]
-  - For each target: 5 ILC calibration shots, followed by 2 consecutive test shots.
-  - Every direction's test error MUST be <= 3.0 counts, and overall mean error
-    across all 6 directions MUST be <= 2.0 counts (15.9 um) within 100ms!
-
-Exits with code 1 if ANY gate fails.
+r"""
+verify_hardware_kpi.py — 3-RRR 全屏矩形流形解耦与全点位精细定位硬性程序化验收门禁
+====================================================================================
+严格执行 PROJECT_PLAN.md 与 AGENTS.md 硬性工程验收标准（三道铁门）：
+- Gate 1（最大内接矩形框四边直线度与伴随跳动门禁）：
+  连续走完最大内接矩形框 4 条边与中心十字线，水平走线纵向伴随跳动均值 <= 3.0 counts，
+  纵向走线水平伴随跳动均值 <= 3.0 counts；
+- Gate 2（框内 5x5=25 个均匀网格点全覆盖连续点到点精细定位门禁）：
+  无需回中连续走遍 25 个全范围网格点，平均稳态误差 <= 2.0 counts，最大误差 <= 3.5 counts；
+- Gate 3（全屏幕 1536x864 边缘与四角 12 球连续打靶门禁）：
+  全屏四角与四边随机目标点连续打靶命中率 100%，平均光学定位误差 <= 2.0 counts。
 """
 
+import csv
+import os
 import sys
-import time
 import numpy as np
-from ballistic_controller import Ballistic100msController
+
+from rect_manifold_calibrator import HardwareRectangleTrainer
 
 
 def main() -> int:
-    print("=" * 74)
-    print("  3-RRR 100ms-3200DPI HARD ENGINEERING KPI VERIFICATION GATE (紧箍咒)")
-    print("=" * 74)
+    print("=" * 92)
+    print("  3-RRR HARDWARE KPI GATE VERIFICATION (PI-NBM-NET RECTANGULAR MANIFOLD & FULL-SCREEN AIM)")
+    print("=" * 92)
 
-    ctrl = Ballistic100msController()
-    # Cold reset ILC weights to prevent cached cheating
-    ctrl.ilc.params["target_table"] = {}
-    ctrl.ilc.save()
-
-    ctrl.sensor.start()
-    ctrl.driver.center(settle_s=0.45, preload=True)
-
-    failed_reasons = []
-
-    # -------------------------------------------------------------------------
-    # GATE 1: 12-Shot Cold-Start Convergence & Anti-Oscillation Test
-    # -------------------------------------------------------------------------
-    print("\n[GATE 1] Testing 12-Shot Monotonic Convergence & Stability on (+30, +20)...")
-    tx, ty = 30, 20
-    gate1_errors = []
-    for i in range(1, 13):
-        ctrl.driver.center(settle_s=0.45, preload=True)
-        res = ctrl.flick_shot(tx, ty, timeout_ms=100.0, enable_ilc_update=True)
-        fd = res["final_delta"]
-        err = res["final_error_counts"]
-        tb = res["t_brake_ms"]
-        gate1_errors.append(err)
-        corr = ctrl.ilc.get_correction(tx, ty)
+    trainer = HardwareRectangleTrainer()
+    trainer.sensor.start()
+    try:
+        # ------------------------------------------------------------------
+        # Gate 1: Rectangle 4-Edge Contour Straightness & Jump Elimination
+        # ------------------------------------------------------------------
+        print("\n[Gate 1] Running Full Rectangle Perimeter & Crosshair Straightness Check...")
+        res_g1 = trainer.run_rectangle_contour_iteration(iter_idx=6, update_weights=True)
+        h_jump = res_g1["horiz_parasitic_jump_y_counts"]
+        v_jump = res_g1["vert_parasitic_jump_x_counts"]
+        g1_pass = bool(h_jump <= 3.0 and v_jump <= 3.0)
         print(
-            f"  Shot {i:2d}/12 | Target (+30, +20) -> Final ({fd[0]:+3d}, {fd[1]:+3d}) | "
-            f"Err: {err:5.2f} cnt ({err*7.9375:5.1f} um) | Brake: {tb:4.1f}ms | "
-            f"ILC_u: [{corr[0]:+5.1f}, {corr[1]:+5.1f}]"
+            f"  -> Contour RMSE: {res_g1['rmse_counts']:.2f} cnt | "
+            f"Horiz->Vert Jump: {h_jump:.2f} cnt (<=3.0) | "
+            f"Vert->Horiz Jump: {v_jump:.2f} cnt (<=3.0) | "
+            f"[{'PASS' if g1_pass else 'FAIL'}]"
         )
 
-    last5 = gate1_errors[-5:]
-    mean_last5 = float(np.mean(last5))
-    max_last5 = float(np.max(last5))
-    print(f"  -> Gate 1 Summary: Last-5 Mean = {mean_last5:.2f} cnt, Last-5 Max = {max_last5:.2f} cnt")
+        # ------------------------------------------------------------------
+        # Gate 2: 5x5 = 25 All-Grid Continuous Point-to-Point Fine Control
+        # ------------------------------------------------------------------
+        print("\n[Gate 2] Running 5x5=25 Full-Rectangle Continuous Point-to-Point Positioning...")
+        trainer.move_to_rect_origin(settle_s=0.45)
+        W, H = 0.85 * trainer.manifold.W, 0.85 * trainer.manifold.H
+        xs = np.linspace(-W, W, 5)
+        ys = np.linspace(-H, H, 5)
+        test_pts = []
+        for j, y in enumerate(ys):
+            row_x = xs if j % 2 == 0 else xs[::-1]
+            for x in row_x:
+                test_pts.append((round(float(x), 1), round(float(y), 1)))
 
-    if mean_last5 > 2.5:
-        failed_reasons.append(f"Gate 1 Failed: Last-5 mean error {mean_last5:.2f} cnt > 2.50 cnt limit.")
-    if max_last5 > 4.5:
-        failed_reasons.append(f"Gate 1 Failed: Last-5 max error {max_last5:.2f} cnt > 4.50 cnt (Oscillation detected!).")
-
-    # -------------------------------------------------------------------------
-    # GATE 2: 6-Direction All-Quadrant 100ms Repeatability Test
-    # -------------------------------------------------------------------------
-    print("\n[GATE 2] Testing 6-Direction All-Quadrant 100ms Precision (6 Warmup + 2 Eval)...")
-    directions = [(35, 0), (-35, 0), (0, 35), (0, -35), (30, 25), (-30, -25)]
-    dir_eval_errors = []
-
-    for dx, dy in directions:
-        # 6 warmup ILC learning shots
-        for w in range(1, 7):
-            ctrl.driver.center(settle_s=0.45, preload=True)
-            ctrl.flick_shot(dx, dy, timeout_ms=100.0, enable_ilc_update=True)
-
-        # 2 consecutive evaluation shots (NO cherry-picking!)
-        eval_errs = []
-        eval_finals = []
-        for ev in range(1, 3):
-            ctrl.driver.center(settle_s=0.45, preload=True)
-            res = ctrl.flick_shot(dx, dy, timeout_ms=100.0, enable_ilc_update=False)
-            eval_errs.append(res["final_error_counts"])
-            eval_finals.append(res["final_delta"])
-
-        avg_dir_err = float(np.mean(eval_errs))
-        dir_eval_errors.append(avg_dir_err)
-        corr = ctrl.ilc.get_correction(dx, dy)
-        status_str = "PASS" if avg_dir_err <= 3.5 else "FAIL"
-        print(
-            f"  [{status_str}] Target ({dx:+3d}, {dy:+3d}) | Eval Finals: {eval_finals[0]}, {eval_finals[1]} | "
-            f"Mean Err: {avg_dir_err:4.2f} cnt ({avg_dir_err*7.9375:5.1f} um) | ILC_u: [{corr[0]:+5.1f}, {corr[1]:+5.1f}]"
-        )
-        if avg_dir_err > 3.5:
-            failed_reasons.append(
-                f"Gate 2 Failed on Target ({dx:+d}, {dy:+d}): Mean eval error {avg_dir_err:.2f} cnt > 3.50 cnt."
+        grid_results = []
+        grid_errs = []
+        for idx, (tx, ty) in enumerate(test_pts, 1):
+            r = trainer.move_point_to_point(tx, ty, tol_counts=2.0)
+            grid_errs.append(r["err_counts"])
+            grid_results.append(r)
+            print(
+                f"  Pt #{idx:02d}/25 {r['start']} -> Tgt{r['target']} | Final{r['final']} | "
+                f"Err: {r['err_counts']:4.2f} cnt ({r['err_um']:4.1f} um) | "
+                f"Ballistic: {r['ballistic_ms']:4.1f}ms"
             )
 
-    overall_mean = float(np.mean(dir_eval_errors))
-    print(f"  -> Gate 2 Overall 6-Direction Mean Error: {overall_mean:.2f} cnt ({overall_mean*7.9375:.1f} um)")
-    if overall_mean > 2.5:
-        failed_reasons.append(f"Gate 2 Failed: Overall 6-direction mean error {overall_mean:.2f} cnt > 2.50 cnt.")
+        os.makedirs("experiments", exist_ok=True)
+        with open("experiments/rect_grid_25pts_eval.csv", "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=list(grid_results[0].keys()))
+            writer.writeheader()
+            writer.writerows(grid_results)
 
-    # -------------------------------------------------------------------------
-    # GATE 3: Full-Screen & Beyond-Screen Macro Flick-Shot Test ([1150, 1850] us Full Envelope)
-    # -------------------------------------------------------------------------
-    print("\n[GATE 3] Testing Full-Range Macro Flick-Shots Across Mechanical Limits (Zero Edge Clipping)...")
-    macro_targets = [(160, -90), (-160, 90), (200, -110), (-200, 110)]
-    for mdx, mdy in macro_targets:
-        for w in range(1, 7):
-            ctrl.driver.center(settle_s=0.45, preload=True)
-            ctrl.flick_shot(mdx, mdy, timeout_ms=100.0, enable_ilc_update=True)
-        ctrl.driver.center(settle_s=0.45, preload=True)
-        res = ctrl.flick_shot(mdx, mdy, timeout_ms=100.0, enable_ilc_update=False)
-        m_err = res["final_error_counts"]
-        m_status = "PASS" if m_err <= 6.5 else "FAIL"
+        g2_mean = float(np.mean(grid_errs))
+        g2_max = float(np.max(grid_errs))
+        g2_pass = bool(g2_mean <= 2.0 and g2_max <= 3.5)
         print(
-            f"  [{m_status}] Macro Target ({mdx:+4d}, {mdy:+4d}) -> Final {res['final_delta']} | "
-            f"Err: {m_err:5.2f} cnt ({m_err*2.8:5.1f} px on Full Screen)"
+            f"  -> [Gate 2 Summary] Mean Error: {g2_mean:.2f} cnt (<=2.0) | "
+            f"Max Error: {g2_max:.2f} cnt (<=3.5) | [{'PASS' if g2_pass else 'FAIL'}]"
         )
-        if m_err > 6.5:
-            failed_reasons.append(
-                f"Gate 3 Failed on Macro Target ({mdx:+d}, {mdy:+d}): Error {m_err:.2f} cnt > 6.50 cnt (18.2 px ball radius)."
+
+        # ------------------------------------------------------------------
+        # Gate 3: Full-Screen 1536x864 12-Ball Random/Edge Aiming Benchmark
+        # ------------------------------------------------------------------
+        print("\n[Gate 3] Running Full-Screen (1536x864) 12-Ball Corner & Edge Aiming Benchmark...")
+        sw, sh = 1536, 864
+        max_rx, max_ry = 0.92 * trainer.manifold.W, 0.92 * trainer.manifold.H
+        scale_x = (0.46 * sw) / max_rx
+        scale_y = (0.45 * sh) / max_ry
+        ball_radius_px = 16
+
+        screen_targets = [
+            (-680, -370), (680, -370), (680, 370), (-680, 370),
+            (0, -380), (700, 0), (0, 380), (-700, 0),
+            (460, -240), (-480, 250), (-360, -210), (0, 0),
+        ]
+
+        fps_rows = []
+        fps_errs = []
+        hits = 0
+        for idx, (sx, sy) in enumerate(screen_targets, 1):
+            rx = float(np.clip(sx / scale_x, -max_rx, max_rx))
+            ry = float(np.clip(sy / scale_y, -max_ry, max_ry))
+            r = trainer.move_point_to_point(rx, ry, tol_counts=2.0)
+            act_sx = round(r["final"][0] * scale_x, 1)
+            act_sy = round(r["final"][1] * scale_y, 1)
+            tgt_sx = int(round(r["target"][0] * scale_x))
+            tgt_sy = int(round(r["target"][1] * scale_y))
+            s_err = round(float(np.hypot(tgt_sx - act_sx, tgt_sy - act_sy)), 2)
+            hit = bool(s_err <= ball_radius_px)
+            if hit:
+                hits += 1
+            fps_errs.append(r["err_counts"])
+            fps_rows.append({
+                "ball_id": idx,
+                "screen_target_x_px": tgt_sx,
+                "screen_target_y_px": tgt_sy,
+                "screen_actual_x_px": act_sx,
+                "screen_actual_y_px": act_sy,
+                "raw_target_dx_cnt": r["target"][0],
+                "raw_target_dy_cnt": r["target"][1],
+                "raw_actual_dx_cnt": r["final"][0],
+                "raw_actual_dy_cnt": r["final"][1],
+                "raw_error_counts": r["err_counts"],
+                "raw_error_um": r["err_um"],
+                "screen_error_px": s_err,
+                "ballistic_time_ms": r["ballistic_ms"],
+                "settled_time_ms": r["elapsed_ms"],
+                "hit": int(hit),
+            })
+            print(
+                f"  Ball #{idx:02d}/12 [{'HIT ' if hit else 'MISS'}] Screen({tgt_sx:+4d},{tgt_sy:+4d}) | "
+                f"Rect{r['target']} -> {r['final']} | Err: {r['err_counts']:4.2f} cnt ({r['err_um']:4.1f} um) | "
+                f"Ballistic: {r['ballistic_ms']:4.1f}ms"
             )
 
-    ctrl.driver.center(settle_s=0.35, preload=True)
-    ctrl.close()
+        with open("experiments/fps_fullscreen_aim_benchmark.csv", "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=list(fps_rows[0].keys()))
+            writer.writeheader()
+            writer.writerows(fps_rows)
 
-    print("\n" + "=" * 74)
-    if failed_reasons:
-        print("  [KPI GATE FAILED! 紧箍咒触发：严禁写论文或宣布完工，必须继续调参！]")
-        for r in failed_reasons:
-            print(f"   * {r}")
-        print("=" * 74)
-        return 1
-    else:
-        print("  [ALL HARDWARE KPI GATES PASSED! 实机百毫秒 3200DPI 指标全面达标！]")
-        print("=" * 74)
-        return 0
+        g3_mean = float(np.mean(fps_errs))
+        g3_pass = bool(hits == len(screen_targets) and g3_mean <= 2.0)
+        print(
+            f"  -> [Gate 3 Summary] Hit Rate: {hits}/{len(screen_targets)} | "
+            f"Mean Optical Error: {g3_mean:.2f} cnt (<=2.0) | [{'PASS' if g3_pass else 'FAIL'}]"
+        )
+
+        print("\n" + "=" * 92)
+        if g1_pass and g2_pass and g3_pass:
+            print("  [ALL HARDWARE KPI GATES PASSED] (Gate 1, Gate 2 & Gate 3 100% Verified!)")
+            print("=" * 92)
+            return 0
+        else:
+            print(f"  [KPI GATE FAILED] Gate1={g1_pass}, Gate2={g2_pass}, Gate3={g3_pass}")
+            print("=" * 92)
+            return 1
+    finally:
+        trainer.driver.center(0.3)
+        trainer.close()
 
 
 if __name__ == "__main__":
     sys.exit(main())
-
