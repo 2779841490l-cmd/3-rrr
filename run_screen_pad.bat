@@ -1,19 +1,9 @@
 @echo off
-chcp 65001 >nul
 cd /d "%~dp0"
-title 3-RRR 全屏幕边界矩形巡检与键盘手动控制台
-echo ========================================================================
-echo   3-RRR 全屏幕边界矩形巡检与键盘手动控制台 (Screen Manual Pad)
-echo ========================================================================
-echo   快捷键指南:
-echo     [↑] [↓] [←] [→] 或 [W] [A] [S] [D] : 实时手动控制鼠标在屏幕移动
-echo     按住 [Shift]                      : 移动速度加速 2.5 倍
-echo     [B]                               : 立即走一圈完整的屏幕边界矩形
-echo     [C]                               : 回到屏幕几何中心 (768, 432)
-echo     [1] [2] [3] [4]                   : 快速切换步长 (5px / 20px / 50px / 100px)
-echo     [ESC]                             : 退出并安全复位舵机
-echo ========================================================================
-echo 正在启动控制台...
+echo [3-RRR] Starting Screen Manual Pad...
 "E:\anaconda\envs\pytorch\python.exe" screen_manual_pad.py
-pause
-
+if %ERRORLEVEL% NEQ 0 (
+    echo.
+    echo [ERROR] Screen Manual Pad exited with error code %ERRORLEVEL%
+    pause
+)

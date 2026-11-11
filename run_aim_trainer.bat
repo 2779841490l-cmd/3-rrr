@@ -1,16 +1,9 @@
 @echo off
-chcp 65001 >nul
-title 3-RRR 100ms 3200-DPI 全屏幕视觉瞄准系统 (Aim-Trainer)
-echo ========================================================================
-echo   3-RRR 100ms 3200-DPI 全屏幕视觉打靶小程序 (Aim-Trainer GUI)
-echo ========================================================================
-echo   操作指南:
-echo     [SPACE]   在全屏幕范围内随机生成发光靶球 (机械臂扑向目标)
-echo     [A]       开启/暂停 全自动连续打靶模式 (像职业选手一样连续练枪)
-echo     [左键点击] 鼠标点击屏幕任意角落/边缘，机械臂立即转火扑击
-echo     [ESC]     安全退出并回中复位舵机
-echo ========================================================================
-echo 正在启动全屏幕图形界面...
+cd /d "%~dp0"
+echo [3-RRR] Starting Full-Screen Aim Trainer GUI...
 "E:\anaconda\envs\pytorch\python.exe" fps_aim_trainer.py
-pause
-
+if %ERRORLEVEL% NEQ 0 (
+    echo.
+    echo [ERROR] Aim Trainer exited with error code %ERRORLEVEL%
+    pause
+)
