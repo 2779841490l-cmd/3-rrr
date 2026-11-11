@@ -31,7 +31,7 @@ def main() -> int:
         # Gate 1: Rectangle 4-Edge Contour Straightness & Jump Elimination
         # ------------------------------------------------------------------
         print("\n[Gate 1] Running Full Rectangle Perimeter & Crosshair Straightness Check...")
-        res_g1 = trainer.run_rectangle_contour_iteration(iter_idx=6, update_weights=True)
+        res_g1 = trainer.run_rectangle_contour_iteration(iter_idx=6, update_weights=False)
         h_jump = res_g1["horiz_parasitic_jump_y_counts"]
         v_jump = res_g1["vert_parasitic_jump_x_counts"]
         g1_pass = bool(h_jump <= 3.0 and v_jump <= 3.0)

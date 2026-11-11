@@ -385,7 +385,7 @@ class HardwareRectangleTrainer:
         vert_jump_x: List[float] = []
 
         prev_seg = None
-        K_lin = self.manifold.pi_net.K_lin
+        K_trim = np.array([[0.58, -0.115], [-0.038, -0.285]], dtype=float)
         pos_prev_wp = self.get_rect_position()
         cur_u_kin = (
             self.manifold.pi_net.last_u_kin.copy()
@@ -399,10 +399,7 @@ class HardwareRectangleTrainer:
                 pos_prev_wp = self.get_rect_position()
             prev_seg = seg_name
 
-            u_kin_ref = self.manifold.evaluate_kinematic_pulse(x_des, y_des)
-            u_kin_prev_m = self.manifold.evaluate_kinematic_pulse(float(pos_prev_wp[0]), float(pos_prev_wp[1]))
-            du_m = u_kin_ref - u_kin_prev_m
-            cur_u_kin = 0.86 * (cur_u_kin + du_m) + 0.14 * u_kin_ref
+            cur_u_kin = self.manifold.evaluate_kinematic_pulse(x_des, y_des)
 
             u_cmd_init = self.manifold.pi_net.step_play_operator(cur_u_kin, eps_us=1.0)
             ux = float(np.clip(u_cmd_init[0], WS63ServoDriver.SAFE_MIN_US, WS63ServoDriver.SAFE_MAX_US))
@@ -443,7 +440,7 @@ class HardwareRectangleTrainer:
                 moved_y = abs(float(p_m[1] - p_prev_trim[1]))
                 p_prev_trim = p_m.copy()
 
-                du_raw = 0.78 * (K_lin @ e_perp_vec)
+                du_raw = 0.78 * (K_trim @ e_perp_vec)
                 for axis_i in (0, 1):
                     if prev_du[axis_i] * du_raw[axis_i] < -1e-4:
                         damping[axis_i] = max(0.38, damping[axis_i] * 0.58)
@@ -479,16 +476,16 @@ class HardwareRectangleTrainer:
                 ux = float(np.clip(u_cmd_t[0], WS63ServoDriver.SAFE_MIN_US, WS63ServoDriver.SAFE_MAX_US))
                 uy = float(np.clip(u_cmd_t[1], WS63ServoDriver.SAFE_MIN_US, WS63ServoDriver.SAFE_MAX_US))
 
-                kx = np.sign(du_trim[0]) * 5.0 if 0.30 < abs(du_trim[0]) < 5.2 else 0.0
-                ky = np.sign(du_trim[1]) * 2.8 if 0.25 < abs(du_trim[1]) < 3.2 else 0.0
+                kx = np.sign(du_trim[0]) * 5.5 if abs(du_trim[0]) > 0.18 else 0.0
+                ky = np.sign(du_trim[1]) * 3.6 if abs(du_trim[1]) > 0.15 else 0.0
                 if kx != 0.0 or ky != 0.0:
                     self.driver.send_raw_pulses(
                         float(np.clip(ux + kx, WS63ServoDriver.SAFE_MIN_US, WS63ServoDriver.SAFE_MAX_US)),
                         float(np.clip(uy + ky, WS63ServoDriver.SAFE_MIN_US, WS63ServoDriver.SAFE_MAX_US)),
                     )
-                    time.sleep(0.018)
+                    time.sleep(0.020)
                 self.driver.send_raw_pulses(ux, uy)
-                time.sleep(0.060)
+                self.wait_until_settled(min_wait_s=0.065, max_wait_s=0.110, vel_tol_cnt=0.8)
 
             pos = self.get_rect_position()
             pos_prev_wp = pos.copy()
@@ -654,7 +651,7 @@ class HardwareRectangleTrainer:
         damping = np.ones(2, dtype=float)
         prev_err_sign = np.zeros(2, dtype=float)
 
-        for trim_idx in range(10):
+        for trim_idx in range(12):
             p_meas = self.get_rect_position()
             err_vec = p_target - p_meas
             err_cnt = float(np.hypot(err_vec[0], err_vec[1]))
@@ -693,8 +690,8 @@ class HardwareRectangleTrainer:
             uy_cmd = float(np.clip(u_cmd[1], WS63ServoDriver.SAFE_MIN_US, WS63ServoDriver.SAFE_MAX_US))
 
             # Section III Impulse-Retract Kinetic Nudge to break MG996R 8us H-bridge comparator deadband
-            kick_x = np.sign(du_kin_step[0]) * 5.5 if 0.18 < abs(du_kin_step[0]) < 6.0 else 0.0
-            kick_y = np.sign(du_kin_step[1]) * 3.6 if 0.15 < abs(du_kin_step[1]) < 4.2 else 0.0
+            kick_x = np.sign(du_kin_step[0]) * 5.5 if abs(du_kin_step[0]) > 0.18 else 0.0
+            kick_y = np.sign(du_kin_step[1]) * 3.6 if abs(du_kin_step[1]) > 0.15 else 0.0
             if kick_x != 0.0 or kick_y != 0.0:
                 ux_imp = float(np.clip(ux_cmd + kick_x, WS63ServoDriver.SAFE_MIN_US, WS63ServoDriver.SAFE_MAX_US))
                 uy_imp = float(np.clip(uy_cmd + kick_y, WS63ServoDriver.SAFE_MIN_US, WS63ServoDriver.SAFE_MAX_US))

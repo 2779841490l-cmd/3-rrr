@@ -13,3 +13,4 @@ echo ========================================================================
 echo 正在启动全屏幕图形界面...
 "E:\anaconda\envs\pytorch\python.exe" fps_aim_trainer.py
 pause
+
