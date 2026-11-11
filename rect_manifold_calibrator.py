@@ -59,9 +59,14 @@ class RectangularManifoldController:
         self.u0_star_x = 1500.0
         self.u0_star_y = 1466.0
 
+        # Kinematic Jacobian matrices (Physical Prior & Local Differential Micro-Trim)
+        self.K_lin = np.array([[0.515, -0.275], [-0.070, -0.295]], dtype=float)
+        self.K_trim = np.array([[0.58, -0.115], [-0.038, -0.285]], dtype=float)
+
         # 2. Physics-Informed Neural Ballistic Manifold Network (PI-NBM-Net)
         self.pi_net = NumpyPINBMInference(W=self.W, H=self.H)
         self.pi_net.u0_star = np.array([self.u0_star_x, self.u0_star_y], dtype=float)
+        self.pi_net.K_lin = self.K_lin.copy()
 
         # 3. 9x9 Bilinear Control Lattice over [-W, +W] x [-H, +H] for fine localized decoupling
         self.grid_x = np.linspace(-self.W, self.W, self.grid_size)
@@ -86,6 +91,7 @@ class RectangularManifoldController:
         self.pi_net.W = self.W
         self.pi_net.H = self.H
         self.pi_net.u0_star = np.array([self.u0_star_x, self.u0_star_y], dtype=float)
+        self.pi_net.K_lin = self.K_lin.copy()
         self.pi_net.bx_pos = self.hyst_x_pos
         self.pi_net.bx_neg = self.hyst_x_neg
         self.pi_net.by_pos = self.hyst_y_pos
@@ -94,7 +100,30 @@ class RectangularManifoldController:
         self.grid_y = np.linspace(-self.H, self.H, self.grid_size)
 
     def _compute_max_inscribed_rectangle(self) -> Tuple[np.ndarray, Tuple[float, float]]:
-        """Finds the globally largest safe axis-aligned rectangle inside the empirical ConvexHull."""
+        """
+        Theorem 5: Globally largest safe axis-aligned rectangle inside empirical ConvexHull.
+        Solves LP:
+            max  H
+            s.t. a_i * x_c + b_i * y_c + (|a_i| * aspect + |b_i|) * H <= -c_i - margin
+        """
+        try:
+            if hasattr(self, "ws") and self.ws.hull is not None:
+                from scipy.optimize import linprog
+                eqs = self.ws.hull.equations
+                aspect = 1.3
+                margin = 43.0
+                c = [0.0, 0.0, -1.0]
+                A_ub = [[float(a), float(b), float(abs(a) * aspect + abs(b))] for a, b, const in eqs]
+                b_ub = [float(-const - margin) for a, b, const in eqs]
+                bounds = [(140.0, 160.0), (210.0, 230.0), (200.0, 350.0)]
+                res = linprog(c, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method="highs")
+                if res.success:
+                    xc, yc, H = res.x
+                    W = round(float(aspect * H), 1)
+                    H = round(float(H), 1)
+                    return np.array([round(float(xc), 1), round(float(yc), 1)], dtype=float), (W, H)
+        except Exception:
+            pass
         return np.array([150.0, 220.0], dtype=float), (390.0, 300.0)
 
     def _interp_residual(self, x: float, y: float) -> np.ndarray:
@@ -144,7 +173,7 @@ class RectangularManifoldController:
         $(u_x, u_y)$ via the Theorem 6 Joint-Space Inverse Play Compensator.
         """
         u_kin = self.evaluate_kinematic_pulse(x_rect, y_rect)
-        u_cmd = self.pi_net.step_play_operator(u_kin)
+        u_cmd = self.pi_net.step_play_operator(u_kin, eps_us=1.8, dxy=dir_hint)
         self.sigma_x = 1.0 if self.pi_net.play_g[0] >= 0 else -1.0
         self.sigma_y = 1.0 if self.pi_net.play_g[1] >= 0 else -1.0
 
@@ -199,10 +228,10 @@ class RectangularManifoldController:
 
         mask = w_accum > 1e-3
         self.residual_ux[mask] = np.clip(
-            self.residual_ux[mask] + 0.35 * lr * (du_accum_x[mask] / w_accum[mask]), -25.0, 25.0
+            self.residual_ux[mask] + 0.35 * lr * (du_accum_x[mask] / w_accum[mask]), -12.0, 12.0
         )
         self.residual_uy[mask] = np.clip(
-            self.residual_uy[mask] + 0.35 * lr * (du_accum_y[mask] / w_accum[mask]), -25.0, 25.0
+            self.residual_uy[mask] + 0.35 * lr * (du_accum_y[mask] / w_accum[mask]), -12.0, 12.0
         )
         mid = self.grid_size // 2
         self.residual_ux[mid, mid] = 0.0
@@ -219,6 +248,8 @@ class RectangularManifoldController:
                 "height_mm": round(2.0 * self.H * 0.0079375, 3),
             },
             "grid_size": self.grid_size,
+            "K_lin_us_per_cnt": np.round(self.K_lin, 4).tolist(),
+            "K_trim_us_per_cnt": np.round(self.K_trim, 4).tolist(),
             "hysteresis_us": {
                 "x_pos": self.hyst_x_pos,
                 "x_neg": self.hyst_x_neg,
@@ -252,6 +283,11 @@ class RectangularManifoldController:
                 self.hyst_x_neg = float(data["hysteresis_us"].get("x_neg", self.hyst_x_neg))
                 self.hyst_y_pos = float(data["hysteresis_us"].get("y_pos", self.hyst_y_pos))
                 self.hyst_y_neg = float(data["hysteresis_us"].get("y_neg", self.hyst_y_neg))
+            if "K_lin_us_per_cnt" in data:
+                self.K_lin = np.array(data["K_lin_us_per_cnt"], dtype=float)
+                self.pi_net.K_lin = self.K_lin.copy()
+            if "K_trim_us_per_cnt" in data:
+                self.K_trim = np.array(data["K_trim_us_per_cnt"], dtype=float)
             if "rectangle_half_size_counts" in data:
                 self.W = max(380.0, float(data["rectangle_half_size_counts"].get("W", self.W)))
                 self.H = max(290.0, float(data["rectangle_half_size_counts"].get("H", self.H)))
@@ -260,12 +296,8 @@ class RectangularManifoldController:
             rux = np.array(data.get("residual_ux", []), dtype=float)
             ruy = np.array(data.get("residual_uy", []), dtype=float)
             if rux.shape == (self.grid_size, self.grid_size):
-                if np.any(np.abs(rux) > 32.0) or np.any(np.abs(ruy) > 32.0):
-                    self.residual_ux = np.zeros((self.grid_size, self.grid_size), dtype=float)
-                    self.residual_uy = np.zeros((self.grid_size, self.grid_size), dtype=float)
-                else:
-                    self.residual_ux = rux
-                    self.residual_uy = ruy
+                self.residual_ux = np.clip(rux, -12.0, 12.0)
+                self.residual_uy = np.clip(ruy, -12.0, 12.0)
                 mid = self.grid_size // 2
                 self.residual_ux[mid, mid] = 0.0
                 self.residual_uy[mid, mid] = 0.0
@@ -385,27 +417,30 @@ class HardwareRectangleTrainer:
         vert_jump_x: List[float] = []
 
         prev_seg = None
-        K_trim = np.array([[0.58, -0.115], [-0.038, -0.285]], dtype=float)
+        K_trim = self.manifold.K_trim
         pos_prev_wp = self.get_rect_position()
-        cur_u_kin = (
-            self.manifold.pi_net.last_u_kin.copy()
-            if self.manifold.pi_net.last_u_kin is not None
-            else self.manifold.evaluate_kinematic_pulse(float(pos_prev_wp[0]), float(pos_prev_wp[1]))
-        )
+        prev_x_des = waypoints[0][1]
+        prev_y_des = waypoints[0][2]
+        cur_u_kin = self.manifold.evaluate_kinematic_pulse(prev_x_des, prev_y_des)
 
         for seg_name, x_des, y_des in waypoints:
             if prev_seg is not None and seg_name != prev_seg:
                 time.sleep(0.14)
                 pos_prev_wp = self.get_rect_position()
+                cur_u_kin = self.manifold.evaluate_kinematic_pulse(x_des, y_des)
+            else:
+                du_model = self.manifold.evaluate_kinematic_pulse(x_des, y_des) - self.manifold.evaluate_kinematic_pulse(prev_x_des, prev_y_des)
+                cur_u_kin = cur_u_kin + du_model
+            dxy_wp = (float(x_des - prev_x_des), float(y_des - prev_y_des))
             prev_seg = seg_name
+            prev_x_des = x_des
+            prev_y_des = y_des
 
-            cur_u_kin = self.manifold.evaluate_kinematic_pulse(x_des, y_des)
-
-            u_cmd_init = self.manifold.pi_net.step_play_operator(cur_u_kin, eps_us=1.0)
+            u_cmd_init = self.manifold.pi_net.step_play_operator(cur_u_kin, eps_us=1.8, dxy=dxy_wp)
             ux = float(np.clip(u_cmd_init[0], WS63ServoDriver.SAFE_MIN_US, WS63ServoDriver.SAFE_MAX_US))
             uy = float(np.clip(u_cmd_init[1], WS63ServoDriver.SAFE_MIN_US, WS63ServoDriver.SAFE_MAX_US))
             self.driver.send_raw_pulses(ux, uy)
-            time.sleep(step_dwell_s)
+            time.sleep(max(0.100, step_dwell_s))
 
             if seg_name.startswith("TRANSITION"):
                 pos_prev_wp = self.get_rect_position()
@@ -420,70 +455,75 @@ class HardwareRectangleTrainer:
             prev_du = np.zeros(2, dtype=float)
             damping = np.ones(2, dtype=float)
             p_prev_trim = pos_raw.copy()
+            stall_x = 0
+            stall_y = 0
 
-            for trim_k in range(7):
+            for trim_k in range(20):
                 p_m = self.get_rect_position()
                 ex = float(x_des - p_m[0])
                 ey = float(y_des - p_m[1])
-                if seg_name in ("TOP_EDGE", "BOTTOM_EDGE", "HORIZ_AXIS"):
-                    if abs(ey) <= 1.5 and abs(ex) <= 2.2:
-                        break
-                    e_perp_vec = np.array([0.75 * ex if abs(ex) > 1.2 else 0.0, ey if abs(ey) > 0.9 else 0.0], dtype=float)
-                elif seg_name in ("LEFT_EDGE", "RIGHT_EDGE", "VERT_AXIS"):
-                    if abs(ex) <= 1.5 and abs(ey) <= 2.2:
-                        break
-                    e_perp_vec = np.array([ex if abs(ex) > 0.9 else 0.0, 0.75 * ey if abs(ey) > 1.2 else 0.0], dtype=float)
-                else:
-                    break
 
                 moved_x = abs(float(p_m[0] - p_prev_trim[0]))
                 moved_y = abs(float(p_m[1] - p_prev_trim[1]))
                 p_prev_trim = p_m.copy()
 
-                du_raw = 0.78 * (K_trim @ e_perp_vec)
+                if trim_k > 0:
+                    if abs(ex) > 1.0 and moved_x < 1.0:
+                        stall_x += 1
+                    elif moved_x >= 1.5:
+                        stall_x = 0
+
+                    if abs(ey) > 1.0 and moved_y < 1.0:
+                        stall_y += 1
+                    elif moved_y >= 1.5:
+                        stall_y = 0
+
+                gain_x = 0.85 * (1.0 + 0.25 * min(stall_x, 3))
+                gain_y = 0.85 * (1.0 + 0.25 * min(stall_y, 3))
+
+                if seg_name in ("TOP_EDGE", "BOTTOM_EDGE", "HORIZ_AXIS"):
+                    if abs(ey) <= 1.0 and abs(ex) <= 1.5:
+                        break
+                    e_perp_vec = np.array([0.40 * ex if abs(ex) > 1.2 else 0.0, 1.35 * ey if abs(ey) > 0.5 else 0.0], dtype=float)
+                elif seg_name in ("LEFT_EDGE", "RIGHT_EDGE", "VERT_AXIS"):
+                    if abs(ex) <= 1.0 and abs(ey) <= 1.5:
+                        break
+                    e_perp_vec = np.array([1.35 * ex if abs(ex) > 0.5 else 0.0, 0.40 * ey if abs(ey) > 1.2 else 0.0], dtype=float)
+                else:
+                    break
+
+                gain_vec = np.array([gain_x, gain_y], dtype=float)
+                du_raw = gain_vec * (K_trim @ e_perp_vec)
                 for axis_i in (0, 1):
                     if prev_du[axis_i] * du_raw[axis_i] < -1e-4:
                         damping[axis_i] = max(0.38, damping[axis_i] * 0.58)
+                    elif prev_du[axis_i] * du_raw[axis_i] > 1e-4:
+                        damping[axis_i] = min(1.0, damping[axis_i] * 1.25)
                     prev_du[axis_i] = du_raw[axis_i]
 
                 du_trim = np.clip(damping * du_raw, -18.0, 18.0)
                 if trim_k >= 1:
-                    if abs(e_perp_vec[0]) > 1.8 and moved_x < 1.0 and abs(du_trim[0]) > 0.25:
+                    if abs(ex) > 1.8 and moved_x < 1.0 and abs(du_trim[0]) > 0.25:
                         du_trim[0] = float(np.sign(du_trim[0]) * max(abs(du_trim[0]) * 1.35, 2.6))
-                    if abs(e_perp_vec[1]) > 1.8 and moved_y < 1.0 and abs(du_trim[1]) > 0.20:
+                    if abs(ey) > 1.8 and moved_y < 1.0 and abs(du_trim[1]) > 0.20:
                         du_trim[1] = float(np.sign(du_trim[1]) * max(abs(du_trim[1]) * 1.35, 1.5))
 
                 cur_u_kin = cur_u_kin + du_trim
-
-                if flips[0] == 0 and abs(ex) > 2.2:
-                    if du_trim[0] > 0.9 and self.manifold.pi_net.play_g[0] < 0:
-                        self.manifold.pi_net.play_g[0] = self.manifold.pi_net.bx_pos
-                        flips[0] = 1
-                    elif du_trim[0] < -0.9 and self.manifold.pi_net.play_g[0] > 0:
-                        self.manifold.pi_net.play_g[0] = -self.manifold.pi_net.bx_neg
-                        flips[0] = 1
-
-                if flips[1] == 0 and abs(ey) > 3.2:
-                    if du_trim[1] > 1.0 and self.manifold.pi_net.play_g[1] < 0:
-                        self.manifold.pi_net.play_g[1] = self.manifold.pi_net.by_pos
-                        flips[1] = 1
-                    elif du_trim[1] < -1.0 and self.manifold.pi_net.play_g[1] > 0:
-                        self.manifold.pi_net.play_g[1] = -self.manifold.pi_net.by_neg
-                        flips[1] = 1
-
                 self.manifold.pi_net.last_u_kin = cur_u_kin.copy()
                 u_cmd_t = cur_u_kin + self.manifold.pi_net.play_g
                 ux = float(np.clip(u_cmd_t[0], WS63ServoDriver.SAFE_MIN_US, WS63ServoDriver.SAFE_MAX_US))
                 uy = float(np.clip(u_cmd_t[1], WS63ServoDriver.SAFE_MIN_US, WS63ServoDriver.SAFE_MAX_US))
 
-                kx = np.sign(du_trim[0]) * 5.5 if abs(du_trim[0]) > 0.18 else 0.0
-                ky = np.sign(du_trim[1]) * 3.6 if abs(du_trim[1]) > 0.15 else 0.0
+                extra_kick_x = 1.0 * min(stall_x, 3)
+                extra_kick_y = 1.0 * min(stall_y, 3)
+                kx = np.sign(du_trim[0]) * (5.5 + extra_kick_x) if (stall_x >= 1 and abs(du_trim[0]) > 0.18) else 0.0
+                ky = np.sign(du_trim[1]) * (4.5 + extra_kick_y) if (stall_y >= 1 and abs(du_trim[1]) > 0.18) else 0.0
                 if kx != 0.0 or ky != 0.0:
                     self.driver.send_raw_pulses(
                         float(np.clip(ux + kx, WS63ServoDriver.SAFE_MIN_US, WS63ServoDriver.SAFE_MAX_US)),
                         float(np.clip(uy + ky, WS63ServoDriver.SAFE_MIN_US, WS63ServoDriver.SAFE_MAX_US)),
                     )
-                    time.sleep(0.020)
+                    time.sleep(0.028)
                 self.driver.send_raw_pulses(ux, uy)
                 self.wait_until_settled(min_wait_s=0.065, max_wait_s=0.110, vel_tol_cnt=0.8)
 
@@ -514,7 +554,11 @@ class HardwareRectangleTrainer:
             })
 
         os.makedirs("experiments", exist_ok=True)
-        csv_path = f"experiments/rect_contour_iter_{iter_idx}.csv"
+        csv_path = (
+            f"experiments/rect_contour_iter_{iter_idx}.csv"
+            if update_weights
+            else f"experiments/rect_contour_eval_iter{iter_idx}.csv"
+        )
         with open(csv_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=list(samples[0].keys()))
             writer.writeheader()
@@ -592,17 +636,13 @@ class HardwareRectangleTrainer:
         u_kin_m_tgt = self.manifold.evaluate_kinematic_pulse(x_tgt, y_tgt)
         du_m_chord = u_kin_m_tgt - u_kin_m_start
 
-        if self.manifold.pi_net.last_u_kin is not None:
-            u_kin_start = self.manifold.pi_net.last_u_kin.copy()
-            u_kin_tgt = 0.85 * (u_kin_start + du_m_chord) + 0.15 * u_kin_m_tgt
-        else:
-            u_kin_start = u_kin_m_start
-            u_kin_tgt = u_kin_m_tgt
-
+        u_kin_start = u_kin_m_start
+        u_kin_tgt = u_kin_m_tgt
         du_kin_chord = u_kin_tgt - u_kin_start
 
+        dxy_target = (float(x_tgt - p_start[0]), float(y_tgt - p_start[1]))
         # Target lock pulse via Joint-Space Inverse Play Compensator
-        u_cmd_lock = self.manifold.pi_net.step_play_operator(u_kin_tgt, eps_us=1.0)
+        u_cmd_lock = self.manifold.pi_net.step_play_operator(u_kin_tgt, eps_us=1.8, dxy=dxy_target)
         ux_lock = float(np.clip(u_cmd_lock[0], WS63ServoDriver.SAFE_MIN_US, WS63ServoDriver.SAFE_MAX_US))
         uy_lock = float(np.clip(u_cmd_lock[1], WS63ServoDriver.SAFE_MIN_US, WS63ServoDriver.SAFE_MAX_US))
 
@@ -645,43 +685,52 @@ class HardwareRectangleTrainer:
         self.wait_until_settled(min_wait_s=0.095, max_wait_s=0.175, vel_tol_cnt=1.0)
 
         # Phase 2: DSS-Play + Differential K_trim + Stiction-Escape Impulse-Retract Micro-Trim
-        K_trim = np.array([[0.58, -0.115], [-0.038, -0.285]], dtype=float)
+        K_trim = self.manifold.K_trim
         cur_u_kin = u_kin_tgt.copy()
         p_prev_trim = self.get_rect_position()
         damping = np.ones(2, dtype=float)
         prev_err_sign = np.zeros(2, dtype=float)
+        stall_x = 0
+        stall_y = 0
 
-        for trim_idx in range(12):
+        for trim_idx in range(28):
             p_meas = self.get_rect_position()
             err_vec = p_target - p_meas
             err_cnt = float(np.hypot(err_vec[0], err_vec[1]))
             if err_cnt <= tol_counts:
                 break
 
+            moved_x = abs(float(p_meas[0] - p_prev_trim[0])) if trim_idx > 0 else 0.0
+            moved_y = abs(float(p_meas[1] - p_prev_trim[1])) if trim_idx > 0 else 0.0
+            p_prev_trim = p_meas.copy()
+
+            if trim_idx > 0:
+                if abs(err_vec[0]) > 1.0 and moved_x < 1.0:
+                    stall_x += 1
+                elif moved_x >= 1.5:
+                    stall_x = 0
+
+                if abs(err_vec[1]) > 1.0 and moved_y < 1.0:
+                    stall_y += 1
+                elif moved_y >= 1.5:
+                    stall_y = 0
+
             for i in (0, 1):
                 s = np.sign(err_vec[i]) if abs(err_vec[i]) > 1.2 else 0.0
                 if s != 0.0 and prev_err_sign[i] != 0.0 and s != prev_err_sign[i]:
-                    damping[i] = max(0.42, damping[i] * 0.62)
+                    damping[i] = max(0.45, damping[i] * 0.60)
+                elif s != 0.0 and s == prev_err_sign[i]:
+                    damping[i] = min(1.0, damping[i] * 1.25)
                 if s != 0.0:
                     prev_err_sign[i] = s
 
-            moved_last = float(np.hypot(p_meas[0] - p_prev_trim[0], p_meas[1] - p_prev_trim[1])) if trim_idx > 0 else 0.0
-            p_prev_trim = p_meas.copy()
+            gain_base = 0.82 if err_cnt >= 4.0 else 0.68
+            gain_x = gain_base * (1.0 + 0.35 * min(stall_x, 4))
+            gain_y = gain_base * (1.0 + 0.35 * min(stall_y, 4))
+            gain_vec = np.array([gain_x, gain_y], dtype=float)
 
-            gain = 0.45 if (moved_last >= 1.5 and err_cnt < 14.0) else 0.62
-            max_du = max(1.6, min(14.0, 0.38 * err_cnt))
-            du_kin_step = np.clip(damping * gain * (K_trim @ err_vec), -max_du, max_du)
-
-            if abs(du_kin_step[0]) > 0.30 and abs(err_vec[0]) > 2.2:
-                new_gx = self.manifold.pi_net.bx_pos if du_kin_step[0] > 0 else -self.manifold.pi_net.bx_neg
-                if new_gx != self.manifold.pi_net.play_g[0]:
-                    self.manifold.pi_net.play_g[0] = new_gx
-                    du_kin_step[0] *= 0.35
-            if abs(du_kin_step[1]) > 0.25 and abs(err_vec[1]) > 2.5:
-                new_gy = self.manifold.pi_net.by_pos if du_kin_step[1] > 0 else -self.manifold.pi_net.by_neg
-                if new_gy != self.manifold.pi_net.play_g[1]:
-                    self.manifold.pi_net.play_g[1] = new_gy
-                    du_kin_step[1] *= 0.35
+            max_du = max(2.5, min(18.0, 0.45 * err_cnt))
+            du_kin_step = np.clip(damping * gain_vec * (K_trim @ err_vec), -max_du, max_du)
 
             cur_u_kin = cur_u_kin + du_kin_step
             self.manifold.pi_net.last_u_kin = cur_u_kin.copy()
@@ -690,13 +739,15 @@ class HardwareRectangleTrainer:
             uy_cmd = float(np.clip(u_cmd[1], WS63ServoDriver.SAFE_MIN_US, WS63ServoDriver.SAFE_MAX_US))
 
             # Section III Impulse-Retract Kinetic Nudge to break MG996R 8us H-bridge comparator deadband
-            kick_x = np.sign(du_kin_step[0]) * 5.5 if abs(du_kin_step[0]) > 0.18 else 0.0
-            kick_y = np.sign(du_kin_step[1]) * 3.6 if abs(du_kin_step[1]) > 0.15 else 0.0
+            extra_kick_x = 1.0 * min(stall_x, 3)
+            extra_kick_y = 1.0 * min(stall_y, 3)
+            kick_x = np.sign(du_kin_step[0]) * (5.5 + extra_kick_x) if (stall_x >= 1 and abs(du_kin_step[0]) > 0.18) else 0.0
+            kick_y = np.sign(du_kin_step[1]) * (4.5 + extra_kick_y) if (stall_y >= 1 and abs(du_kin_step[1]) > 0.18) else 0.0
             if kick_x != 0.0 or kick_y != 0.0:
                 ux_imp = float(np.clip(ux_cmd + kick_x, WS63ServoDriver.SAFE_MIN_US, WS63ServoDriver.SAFE_MAX_US))
                 uy_imp = float(np.clip(uy_cmd + kick_y, WS63ServoDriver.SAFE_MIN_US, WS63ServoDriver.SAFE_MAX_US))
                 self.driver.send_raw_pulses(ux_imp, uy_imp)
-                time.sleep(0.020)
+                time.sleep(0.028)
 
             self.driver.send_raw_pulses(ux_cmd, uy_cmd)
             self.wait_until_settled(min_wait_s=0.065, max_wait_s=0.110, vel_tol_cnt=0.8)

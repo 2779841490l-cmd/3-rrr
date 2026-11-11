@@ -118,7 +118,9 @@ class NumpyPINBMInference:
         self.play_g[0] = self.bx_pos if sigma_init[0] >= 0 else -self.bx_neg
         self.play_g[1] = self.by_pos if sigma_init[1] >= 0 else -self.by_neg
 
-    def step_play_operator(self, u_kin_new: np.ndarray, eps_us: float = 1.8) -> np.ndarray:
+    def step_play_operator(
+        self, u_kin_new: np.ndarray, eps_us: float = 1.8, dxy: Optional[Tuple[float, float]] = None
+    ) -> np.ndarray:
         """
         Theorem 6 Joint-Space Inverse Play Compensator B^{-1}[u_kin]:
         Maintains tooth contact state g_i(k) in {-B_i^-, +B_i^+} driven strictly by macroscopic

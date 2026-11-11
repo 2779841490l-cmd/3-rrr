@@ -37,21 +37,30 @@ plt.rcParams.update({
 
 def plot_fig2_hysteresis():
     print("[1/4] Generating Fig. 2: Backlash & Hysteresis Loops...")
-    # Empirical data measured on hardware
-    s1_du = np.array([0, 10, 20, 30, 40, 50, 60, 55, 45, 35, 25, 15, 5, -5, -15, -25, -35, -45, -55, -60, -50, -40, -30, -20, -10, 0])
-    s1_dx = np.array([0, 0, 3, 13, 15, 32, 37, 37, 37, 37, 37, 31, 23, 23, 10, 3, -9, -10, -19, -37, -37, -37, -35, -27, -21, -9])
+    csv_path = "experiments/exp0_hysteresis_loop.csv"
+    if not os.path.exists(csv_path):
+        raise FileNotFoundError(f"Missing {csv_path}")
 
-    s2_du = np.array([0, 10, 20, 30, 40, 50, 60, 55, 45, 35, 25, 15, 5, -5, -15, -25, -35, -45, -55, -60, -50, -40, -30, -20, -10, 0])
-    s2_dy = np.array([0, 0, -6, -20, -33, -49, -55, -61, -61, -55, -45, -31, -20, -13, 10, 26, 33, 56, 73, 83, 83, 81, 73, 50, 33, 21])
+    s1_du, s1_dx_um, s2_du, s2_dy_um = [], [], [], []
+    with open(csv_path, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            s1_du.append(float(row["s1_du_us"]))
+            s1_dx_um.append(float(row["s1_dx_um"]))
+            s2_du.append(float(row["s2_du_us"]))
+            s2_dy_um.append(float(row["s2_dy_um"]))
 
-    um_per_cnt = 7.9375
+    s1_du = np.array(s1_du)
+    s1_dx = np.array(s1_dx_um)
+    s2_du = np.array(s2_du)
+    s2_dy = np.array(s2_dy_um)
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7.2, 3.2))
 
     # S1 X-Axis Loop
-    ax1.plot(s1_du, s1_dx * um_per_cnt, "b-o", label="Measured Response")
+    ax1.plot(s1_du, s1_dx, "b-o", label="Measured Response")
     ax1.axvspan(-10, 15, color="gray", alpha=0.18, label="Internal Deadband")
-    ax1.annotate("Backlash Gap\n$2B_x \\approx 50\\,\\mu\\mathrm{s}$", xy=(40, 37 * um_per_cnt), xytext=(5, 180),
+    ax1.annotate("Backlash Gap\n$2B_x \\approx 50\\,\\mu\\mathrm{s}$", xy=(40, 293.7), xytext=(5, 180),
                  arrowprops=dict(arrowstyle="->", color="darkred", lw=1.2), color="darkred", fontsize=8.5)
     ax1.set_xlabel("S1 Command Pulse $\\Delta u_1$ ($\\mu\\mathrm{s}$)")
     ax1.set_ylabel("Displacement $\\Delta X$ ($\\mu\\mathrm{m}$)")
@@ -60,9 +69,9 @@ def plot_fig2_hysteresis():
     ax1.legend(loc="lower right")
 
     # S2 Y-Axis Loop
-    ax2.plot(s2_du, s2_dy * um_per_cnt, "r-s", label="Measured Response")
+    ax2.plot(s2_du, s2_dy, "r-s", label="Measured Response")
     ax2.axvspan(-12, 12, color="gray", alpha=0.18, label="Internal Deadband")
-    ax2.annotate("Dual-Y Coupled Hysteresis\n$2B_y \\approx 22\\,\\mu\\mathrm{s}$", xy=(-45, 56 * um_per_cnt), xytext=(-55, -300),
+    ax2.annotate("Dual-Y Coupled Hysteresis\n$2B_y \\approx 22\\,\\mu\\mathrm{s}$", xy=(-45, 444.5), xytext=(-55, -300),
                  arrowprops=dict(arrowstyle="->", color="darkred", lw=1.2), color="darkred", fontsize=8.5)
     ax2.set_xlabel("S2 Command Pulse $\\Delta u_2$ ($\\mu\\mathrm{s}$)")
     ax2.set_ylabel("Displacement $\\Delta Y$ ($\\mu\\mathrm{m}$)")

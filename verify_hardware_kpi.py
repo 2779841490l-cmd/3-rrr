@@ -59,7 +59,7 @@ def main() -> int:
         grid_results = []
         grid_errs = []
         for idx, (tx, ty) in enumerate(test_pts, 1):
-            r = trainer.move_point_to_point(tx, ty, tol_counts=2.0)
+            r = trainer.move_point_to_point(tx, ty, tol_counts=1.2)
             grid_errs.append(r["err_counts"])
             grid_results.append(r)
             print(
@@ -104,7 +104,7 @@ def main() -> int:
         for idx, (sx, sy) in enumerate(screen_targets, 1):
             rx = float(np.clip(sx / scale_x, -max_rx, max_rx))
             ry = float(np.clip(sy / scale_y, -max_ry, max_ry))
-            r = trainer.move_point_to_point(rx, ry, tol_counts=2.0)
+            r = trainer.move_point_to_point(rx, ry, tol_counts=1.2)
             act_sx = round(r["final"][0] * scale_x, 1)
             act_sy = round(r["final"][1] * scale_y, 1)
             tgt_sx = int(round(r["target"][0] * scale_x))
