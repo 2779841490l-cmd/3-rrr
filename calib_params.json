@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-11-10T18:14:19.443970",
+  "timestamp": "2026-11-11T11:16:21.698379",
   "dpi": 3200,
   "neutral_us": {
     "s1_x": 1510,
@@ -8,38 +8,45 @@
     "s4_aux": 1500
   },
   "deadband_us": {
-    "x_pos": 8.0,
-    "x_neg": 9.0,
+    "x_pos": 20.0,
+    "x_neg": 11.0,
     "y_pos": 9.0,
-    "y_neg": 9.0
+    "y_neg": 11.0
   },
   "backlash_play_radius_us": {
-    "x_pos": 22.0,
-    "x_neg": 28.0,
+    "x_pos": 20.0,
+    "x_neg": 24.0,
     "y_pos": 11.0,
     "y_neg": 11.0
   },
   "jacobian_center_px_per_us": [
     [
-      0.8095238095238095,
-      -1.1492063492063493
+      1.1899543378995436,
+      -1.6954022988505748
     ],
     [
-      -0.1523809523809524,
-      -1.1396825396825396
+      -0.2561643835616439,
+      -2.4206896551724135
     ]
   ],
   "inverse_jacobian_center_us_per_px": [
     [
-      1.038229542512463,
-      -1.0469055554025397
+      0.7302645735373261,
+      -0.5114626049228661
     ],
     [
-      -0.13881620624122074,
-      -0.737461095656485
+      -0.0772787101879741,
+      -0.35898096033843224
     ]
   ],
-  "spatial_grid_samples": [
+  "physical_bounds_counts": {
+    "x_min": -947,
+    "x_max": 1080,
+    "y_min": -365,
+    "y_max": 1184
+  },
+  "workspace_map_file": "experiments/workspace_map_full.json",
+  "legacy_spatial_grid_samples": [
     {
       "offset_ux": -60.0,
       "offset_uy": -60.0,

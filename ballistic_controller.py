@@ -1,239 +1,121 @@
 """
-ballistic_controller.py - Sub-100ms 3200 DPI Full-Workspace & Full-Screen Ballistic Controller
-==============================================================================================
-Core Architecture (Targeting IEEE TIM / IEEE T-MECH):
-1. Motion-Onset Phase Synchronization (t_onset Locking):
-   Eliminates the 0~20ms asynchronous UART-to-PWM frame quantization lottery by locking
-   the boost-to-brake switching window to the exact millisecond of first optical motion
-   detection (t_onset), placing the command transition dead-center between PWM latch edges.
-2. Three-Stage Monotonic Ballistic Profile (BOOST -> ACTIVE BRAKE/TRIM -> LOCK):
-   Enforces the Monotonic Zero-Reversal Time-Optimality Principle across both micro-steps
-   (5~50 counts) and full-stroke macro flicks (100~400+ counts / full-screen 1536x864).
-3. Physics-Guided Overdamped 2D Vector ILC (PG-NB-ILC):
-   Uses spectral-radius-bounded gain eta_ilc = 0.34 < 1/sigma_max^2(K0) = 0.418 for
-   strictly monotonic, non-oscillatory multi-shot convergence.
+ballistic_controller.py - Full-Workspace 200Hz Guided Straight-Line 3200 DPI Controller
+======================================================================================
+Replaces legacy narrow-range polynomial & 11-point dictionary lookup with:
+1. True Hardware 3200 DPI Raw Input sensing (`7.9375 um/count`, immune to screen clipping
+   and Windows Pointer Acceleration).
+2. Full-Envelope 2D Inverse Kinematic Manifold (`WorkspaceField2D` across [-947..+1080,
+   -365..+1184] counts) with real position-dependent Jacobian K(x, y).
+3. 200Hz Synchronized Straight-Line Guidance + Cross-Track Steering (CTEC) + In-Flight
+   Optical Predictive Braking (IF-OPB): actively eliminates S-curve banana arcs caused
+   by asymmetric X/Y gear backlash and J_12=-1.7 cross-coupling.
+4. Spatially Continuous Direction-Gated Gaussian-Kernel ILC (`SpatialResidualILC`) that
+   generalizes learned trims to arbitrary unseen coordinates across all 360 degrees.
 """
 
 import argparse
-import json
-import os
 import time
 from typing import Dict, List, Optional, Tuple
 import numpy as np
 
 from mouse_sensor import HighPrecisionMouseSensor
 from servo_driver import WS63ServoDriver
-
-
-class SpatialInverseJacobian2ndOrder:
-    def __init__(self, poly_file: str = "prompts/fitted_jacobian_poly.json"):
-        self.coeffs = self._load_coeffs(poly_file)
-
-    @staticmethod
-    def _load_coeffs(poly_file: str) -> Dict:
-        if os.path.exists(poly_file):
-            with open(poly_file, "r", encoding="utf-8") as f:
-                return json.load(f)
-        return {
-            "K11": {"Const": 0.88505747, "dUx": -0.0012, "dUy": -0.0003, "dUx^2/1k": -0.015, "dUy^2/1k": -0.002, "dUx*dUy/1k": 0.0005},
-            "K12": {"Const": -0.56321839, "dUx": 0.0001, "dUy": -0.0045, "dUx^2/1k": 0.030, "dUy^2/1k": -0.045, "dUx*dUy/1k": -0.010},
-            "K21": {"Const": -0.24137931, "dUx": -0.0005, "dUy": -0.0010, "dUx^2/1k": -0.004, "dUy^2/1k": -0.002, "dUx*dUy/1k": -0.002},
-            "K22": {"Const": -0.48275862, "dUx": -0.0004, "dUy": -0.0025, "dUx^2/1k": 0.015, "dUy^2/1k": -0.055, "dUx*dUy/1k": -0.006},
-        }
-
-    def evaluate(self, du_x: float, du_y: float) -> np.ndarray:
-        # Clamp polynomial evaluation domain so large macro flicks do not extrapolate wildly
-        du_x_c = float(np.clip(du_x, -90.0, 90.0))
-        du_y_c = float(np.clip(du_y, -90.0, 90.0))
-        K = np.zeros((2, 2), dtype=float)
-        basis = {
-            "Const": 1.0,
-            "dUx": du_x_c,
-            "dUy": du_y_c,
-            "dUx^2/1k": (du_x_c**2) / 1000.0,
-            "dUy^2/1k": (du_y_c**2) / 1000.0,
-            "dUx*dUy/1k": (du_x_c * du_y_c) / 1000.0,
-        }
-        for (r, c), key in [((0, 0), "K11"), ((0, 1), "K12"), ((1, 0), "K21"), ((1, 1), "K22")]:
-            c_dict = self.coeffs.get(key, {})
-            K[r, c] = sum(c_dict.get(name, 0.0) * val for name, val in basis.items())
-        return K
-
-
-class BallisticILCLearner:
-    """
-    Physics-Guided Norm-Optimal 2D Vector Iterative Learning Control (PG-NB-ILC) engine.
-    """
-
-    def __init__(self, ilc_file: str = "prompts/ilc_ballistic_weights.json"):
-        self.ilc_file = ilc_file
-        self.params = self._load()
-
-    def _load(self) -> Dict:
-        if os.path.exists(self.ilc_file):
-            try:
-                with open(self.ilc_file, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    if "target_table" not in data:
-                        data["target_table"] = {}
-                    return data
-            except Exception:
-                pass
-        return {
-            "boost_ratio": 1.15,        # Overdrive factor: u_boost = u_lock + (boost_ratio - 1)*du_base
-            "tau_brake_ms": 14.0,       # Predicted glide time constant (ms)
-            "active_brake_ms": 0.0,     # Immediate lock latch upon t_onset detection
-            "micro_yaw_gain": 0.65,
-            "target_table": {},         # Keyed by f"{dx}_{dy}": [du_corr_x, du_corr_y]
-            "iteration": 0,
-            "loss_history": [],
-        }
-
-    def save(self):
-        os.makedirs(os.path.dirname(self.ilc_file), exist_ok=True)
-        with open(self.ilc_file, "w", encoding="utf-8") as f:
-            json.dump(self.params, f, indent=2)
-
-    def get_correction(self, dx: int, dy: int) -> np.ndarray:
-        key = f"{dx}_{dy}"
-        corr = self.params.get("target_table", {}).get(key, [0.0, 0.0])
-        return np.array([float(corr[0]), float(corr[1])], dtype=float)
-
-    def update_vector(
-        self,
-        dx_target: int,
-        dy_target: int,
-        dx_actual: int,
-        dy_actual: int,
-        K_local: np.ndarray,
-        err_counts: float,
-        eta_ilc: float = 0.35,
-    ):
-        """
-        Physics-Guided Deadband-Frozen 2D Vector ILC Law (PG-NB-ILC):
-        Uses K_local to decouple off-diagonal kinematic cross-coupling (Theorem 4)
-        while enforcing Slotine-Li deadband freezing inside hardware noise floor.
-        """
-        key = f"{dx_target}_{dy_target}"
-        if "target_table" not in self.params:
-            self.params["target_table"] = {}
-
-        cur_corr = self.get_correction(dx_target, dy_target)
-        err_x = float(dx_target - dx_actual)
-        err_y = float(dy_target - dy_actual)
-        dist = float(np.hypot(dx_target, dy_target))
-        tol = 3.8 if dist > 100.0 else 2.2
-
-        # Deadband Freezing: Zero drift when already inside repeatable hardware tolerance
-        if err_counts <= tol:
-            return
-
-        # Damped Physics-Guided Jacobian step (< theoretical 0.837 spectral stability limit)
-        if dist <= 50.0:
-            eta_eff, max_step = 0.14, 0.35
-        elif dist <= 115.0:
-            eta_eff, max_step = 0.32, 2.20
-        else:
-            eta_eff, max_step = 0.12, 0.80
-
-        du_step = eta_eff * (K_local @ np.array([err_x, err_y], dtype=float))
-        du_step = np.clip(du_step, -max_step, max_step)
-
-        new_corr = np.clip(cur_corr + du_step, -120.0, 120.0)
-        self.params["target_table"][key] = [round(float(new_corr[0]), 3), round(float(new_corr[1]), 3)]
-
-        self.params["iteration"] += 1
-        self.params["loss_history"].append(float(round(abs(err_counts), 2)))
-        if len(self.params["loss_history"]) > 200:
-            self.params["loss_history"].pop(0)
-        self.save()
+from workspace_model import SpatialResidualILC, WorkspaceField2D
 
 
 class Ballistic100msController:
-    def __init__(self, calib_file: str = "calib_params.json"):
-        with open(calib_file, "r", encoding="utf-8") as f:
-            self.calib = json.load(f)
-
-        self.sensor = HighPrecisionMouseSensor(dpi=self.calib.get("dpi", 3200))
+    def __init__(
+        self,
+        calib_file: str = "calib_params.json",
+        map_file: str = "experiments/workspace_map_full.json",
+        ilc_file: str = "prompts/ilc_ballistic_weights.json",
+    ):
+        self.workspace = WorkspaceField2D(map_file=map_file, calib_file=calib_file)
+        self.ilc = SpatialResidualILC(ilc_file=ilc_file)
+        self.sensor = HighPrecisionMouseSensor(dpi=3200)
         self.driver = WS63ServoDriver()
-        self.poly_jac = SpatialInverseJacobian2ndOrder()
-        self.ilc = BallisticILCLearner()
+        self.driver.set_pwm_frequency(200)
 
-        self.u0_x = float(self.calib["neutral_us"]["s1_x"])
-        self.u0_y = float(self.calib["neutral_us"]["s2_y1"])
+        self.u0_x = float(self.workspace.u0_x)
+        self.u0_y = float(self.workspace.u0_y)
 
-        # Backlash engagement radii
-        self.bx_pos = float(self.calib["backlash_play_radius_us"]["x_pos"])
-        self.bx_neg = float(self.calib["backlash_play_radius_us"]["x_neg"])
-        self.by_pos = float(self.calib["backlash_play_radius_us"]["y_pos"])
-        self.by_neg = float(self.calib["backlash_play_radius_us"]["y_neg"])
+    def _clamp_pulses(self, du_x: float, du_y: float) -> Tuple[float, float]:
+        ux = float(np.clip(self.u0_x + du_x, self.driver.SAFE_MIN_US, self.driver.SAFE_MAX_US))
+        uy = float(np.clip(self.u0_y + du_y, self.driver.SAFE_MIN_US, self.driver.SAFE_MAX_US))
+        # Also guarantee dual-Y S3 stays inside [SAFE_MIN_US, SAFE_MAX_US]
+        s3 = 3000.0 - uy
+        if s3 < self.driver.SAFE_MIN_US:
+            uy = 3000.0 - self.driver.SAFE_MIN_US
+        elif s3 > self.driver.SAFE_MAX_US:
+            uy = 3000.0 - self.driver.SAFE_MAX_US
+        return ux, uy
 
-        # Calibrated decoupled ballistic profiles: (lock_x, lock_y, boost_x, boost_y, act_x, act_y, cap_x, cap_y)
-        self._calib_anchors = {
-            (30, 20):   (26.8, -10.3, 38.7, -25.9, 18.0,  5.5, 66.0, 72.0),
-            (35, 0):    (42.8, -10.8, 56.0, -15.2, 14.0, 14.0, 68.0, 68.0),
-            (-35, 0):   (-55.2,  6.7,-76.5, -11.0, 12.0, 12.0, 73.0, 73.0),
-            (0, 35):    (-24.5, -18.8,-36.5, -31.8,  7.0,  6.5, 70.0, 70.0),
-            (0, -35):   (25.1,  15.4, 41.2,  24.8, 14.0, 14.0, 66.0, 66.0),
-            (30, 25):   (24.2, -18.3, 36.2, -27.8, 18.0,  9.0, 66.0, 72.0),
-            (-30, -25): (-30.0, 12.4,-46.0,  20.6, 10.0, 14.0, 72.0, 72.0),
-            (160, -90): (180.5, 14.4, 264.0, 24.5, 64.0, 46.0, 104.0, 104.0),
-            (-160, 90): (-188.0,-17.8,-254.0,-27.5, 62.0, 50.0, 102.0, 102.0),
-            (200,-110): (225.0, 18.0, 320.0, 31.0, 72.0, 52.0, 108.0, 108.0),
-            (-200,110): (-234.0,-22.2,-325.0,-34.0, 70.0, 54.0, 108.0, 108.0),
-        }
-        # Angular directional per-count gain correction ((lock_meas - K0 @ target) / dist) for arbitrary FPS targets
-        K0 = self.poly_jac.evaluate(0.0, 0.0)
-        self._angular_bias_table = []
-        for (tx, ty), prof in self._calib_anchors.items():
-            ang = float(np.arctan2(ty, tx))
-            d_ref = max(1.0, float(np.hypot(tx, ty)))
-            bias_per_cnt = (np.array([prof[0], prof[1]], dtype=float) - (K0 @ np.array([float(tx), float(ty)]))) / d_ref
-            self._angular_bias_table.append((ang, d_ref, bias_per_cnt))
+    def _compute_lock_command(self, dx: float, dy: float) -> Tuple[float, float, np.ndarray, np.ndarray]:
+        du_eq = self.workspace.target_to_equilibrium_du(dx, dy)
+        du_ilc = self.ilc.get_correction(dx, dy)
+        K_end = self.workspace.local_inverse_jacobian(dx, dy)
+        ux_lock, uy_lock = self._clamp_pulses(du_eq[0] + du_ilc[0], du_eq[1] + du_ilc[1])
+        return ux_lock, uy_lock, du_eq, K_end
 
-    @staticmethod
-    def _compute_backlash_offset(du_x: float, du_y: float) -> Tuple[float, float]:
-        bx = min(7.0, du_x * (7.0 / 12.0)) if du_x >= 0.0 else max(-27.0, du_x * (27.0 / 15.0))
-        by = min(5.0, du_y * (5.0 / 10.0)) if du_y >= 0.0 else max(-3.6, du_y * (3.6 / 8.0))
-        return float(bx), float(by)
+    def _compute_guided_command(
+        self,
+        p_vec: np.ndarray,
+        v_vec: np.ndarray,
+        u_kin_target: np.ndarray,
+        K_end: np.ndarray,
+        L: float,
+        d_hat: np.ndarray,
+        n_hat: np.ndarray,
+        du_ilc: np.ndarray,
+        elapsed_ms: float,
+    ) -> Tuple[float, float]:
+        """
+        Contouring-Error-Controlled (CEC) 200Hz Straight-Line Overdrive Guidance:
+        - Holds full kinematic equilibrium `u_kin_target` (never starves setpoint below target)
+        - Adds tangential overdrive purely along `d_hat` attenuated when `|e_perp|` grows
+        - Applies pure orthogonal cross-track PD steering along `n_hat` mapped via `K_end`
+          so fast axes hold back while lagging axes get accelerated across backlash.
+        """
+        p_par = float(np.dot(p_vec, d_hat))
+        e_perp = float(np.dot(p_vec, n_hat))
+        v_perp = float(np.dot(v_vec, n_hat))
+        rem = max(0.0, L - p_par)
 
-    @staticmethod
-    def _lock_to_du_base(lock_x: float, lock_y: float) -> np.ndarray:
-        """Inverts C0 backlash offset map so du_base + backlash(du_base) == (lock_x, lock_y)."""
-        if lock_x >= 19.0:
-            dx = lock_x - 7.0
-        elif lock_x >= 0.0:
-            dx = lock_x * (12.0 / 19.0)
-        elif lock_x <= -42.0:
-            dx = lock_x + 27.0
+        # Hold back extra overdrive if sideways deviation grows so lagging axis catches up
+        dev_ratio = abs(e_perp) / max(14.0, 0.08 * L)
+        boost_scale = 1.0 / (1.0 + 0.85 * (dev_ratio ** 2))
+
+        if L <= 90.0:
+            raw_boost = min(50.0, 0.40 * rem + 15.0)
+        elif L <= 300.0:
+            raw_boost = min(120.0, 0.42 * rem + 25.0)
         else:
-            dx = lock_x * (15.0 / 42.0)
+            raw_boost = min(180.0, 0.40 * rem + 35.0)
+        tang_boost = boost_scale * raw_boost
 
-        if lock_y >= 15.0:
-            dy = lock_y - 5.0
-        elif lock_y >= 0.0:
-            dy = lock_y / 1.5
-        elif lock_y <= -11.6:
-            dy = lock_y + 3.6
-        else:
-            dy = lock_y / 1.45
-        return np.array([dx, dy], dtype=float)
+        # Orthogonal Cross-Track PD steering directly in Cartesian space
+        kp_perp = 1.35 if L > 90.0 else 1.05
+        kd_perp = 0.020
+        perp_cap = min(160.0, 0.70 * L)
+        perp_corr = -float(np.clip(kp_perp * e_perp + kd_perp * v_perp, -perp_cap, perp_cap))
 
-    def _interp_angular_bias(self, delta_x: int, delta_y: int) -> np.ndarray:
-        """Smooth cosine-weighted 360-deg directional & scale-matched bias across full mechanical stroke."""
-        ang = float(np.arctan2(delta_y, delta_x))
-        dist = float(np.hypot(delta_x, delta_y))
-        w_sum, b_sum = 0.0, np.zeros(2, dtype=float)
-        for ref_ang, ref_dist, ref_bias_per_cnt in self._angular_bias_table:
-            d_ang = ang - ref_ang
-            cos_w = max(0.0, float(np.cos(d_ang))) ** 4
-            # Prefer macro anchors for macro distances and micro anchors for micro distances
-            scale_sim = 1.0 / (1.0 + ((dist - ref_dist) / 60.0) ** 2)
-            w = cos_w * (0.2 + 0.8 * scale_sim)
-            if w > 1e-6:
-                w_sum += w
-                b_sum += w * (ref_bias_per_cnt * dist)
-        return (b_sum / w_sum) if w_sum > 1e-6 else np.zeros(2, dtype=float)
+        # Local Jacobian around mid-path or endpoint
+        K_loc = self.workspace.local_inverse_jacobian(
+            float(min(L, max(0.0, p_par) + 0.35 * rem) * d_hat[0]),
+            float(min(L, max(0.0, p_par) + 0.35 * rem) * d_hat[1]),
+        )
+        u_kin_cmd = u_kin_target + K_loc @ (tang_boost * d_hat + perp_corr * n_hat)
+        du_cmd = self.workspace._unstrip_u(u_kin_cmd)
+
+        # Initial breakaway pre-kick before motion onset along actual motor actuation direction
+        if float(np.linalg.norm(p_vec)) < 6.0 and elapsed_ms < 50.0:
+            if abs(u_kin_target[0]) > 2.0:
+                du_cmd[0] += np.sign(u_kin_target[0]) * 12.0
+            if abs(u_kin_target[1]) > 2.0:
+                du_cmd[1] += np.sign(u_kin_target[1]) * 6.0
+
+        ilc_frac = float(np.clip(max(0.40, p_par / max(1.0, L)), 0.40, 1.0))
+        return self._clamp_pulses(du_cmd[0] + ilc_frac * du_ilc[0], du_cmd[1] + ilc_frac * du_ilc[1])
 
     def flick_shot(
         self,
@@ -243,234 +125,222 @@ class Ballistic100msController:
         enable_ilc_update: bool = True,
     ) -> Dict:
         """
-        Executes a sub-100ms ballistic flick shot to relative target (delta_x, delta_y).
-        Supports both micro-precision steps (5~50 counts) and full-stroke macro flicks
-        (100~450 counts across [1150, 1850] us) via decoupled per-axis onset locking.
+        Executes a synchronized straight-line 200Hz ballistic flick to arbitrary reachable
+        (delta_x, delta_y) in true 3200 DPI counts, enforcing anti-edge clipping and full
+        workspace safety bounds.
         """
-        target_dist = float(np.hypot(delta_x, delta_y))
-        if target_dist < 0.1:
-            return {"status": "NOOP", "final_error_counts": 0.0, "settled_time_ms": 0.0}
+        req_dist = float(np.hypot(delta_x, delta_y))
+        if req_dist < 1.0:
+            return {
+                "target_delta": (delta_x, delta_y),
+                "final_delta": (0, 0),
+                "final_error_counts": 0.0,
+                "final_error_um": 0.0,
+                "settled_time_ms": 0.0,
+                "t_brake_ms": 0.0,
+                "t_onset_ms": 0.0,
+                "straightness_max_dev_cnt": 0.0,
+                "straightness_rms_cnt": 0.0,
+                "straightness_pct": 0.0,
+                "pos_at_100ms": (0, 0),
+                "err_at_100ms": 0.0,
+                "trajectory": [],
+            }
 
-        # 1. Evaluate 2nd-order Jacobian at current position
-        cur_ux = self.driver.cur_s1 - self.u0_x
-        cur_uy = self.driver.cur_s2 - self.u0_y
-        K = self.poly_jac.evaluate(cur_ux, cur_uy)
+        # Safe workspace clamp inside empirical 95% convex hull
+        tx, ty = self.workspace.clamp_to_workspace(float(delta_x), float(delta_y), safety_ratio=0.95)
+        target_vec = np.array([tx, ty], dtype=float)
+        L = float(np.linalg.norm(target_vec))
+        d_hat = target_vec / L
+        n_hat = np.array([-d_hat[1], d_hat[0]], dtype=float)
 
-        # 2. Compute nominal lock + overdrive pulse profiles with 2D PG-ILC correction
-        e_vec = np.array([float(delta_x), float(delta_y)], dtype=float)
-        du_ilc = self.ilc.get_correction(delta_x, delta_y)
-        anchor = self._calib_anchors.get((int(delta_x), int(delta_y)))
+        u_kin_target = self.workspace.predict_kinematic_u(tx, ty)
+        u_lock_x, u_lock_y, du_eq, K_end = self._compute_lock_command(tx, ty)
+        du_ilc = self.ilc.get_correction(tx, ty)
 
-        if anchor is not None:
-            lock_x_nom, lock_y_nom, bst_x_nom, bst_y_nom, act_x_ms, act_y_ms, cap_x_ms, cap_y_ms = anchor
-            du_base = self._lock_to_du_base(lock_x_nom, lock_y_nom)
-            du_nom = du_base + du_ilc
-            bx, by = self._compute_backlash_offset(du_nom[0], du_nom[1])
-            u_lock_x = float(np.clip(self.driver.cur_s1 + du_nom[0] + bx, 1150.0, 1850.0))
-            u_lock_y = float(np.clip(self.driver.cur_s2 + du_nom[1] + by, 1150.0, 1850.0))
-            u_boost_x = float(np.clip(self.driver.cur_s1 + bst_x_nom + du_ilc[0], 1150.0, 1850.0))
-            u_boost_y = float(np.clip(self.driver.cur_s2 + bst_y_nom + du_ilc[1], 1150.0, 1850.0))
-            tau_brake = 0.032 if target_dist > 100.0 else 0.015
-        else:
-            bias = self._interp_angular_bias(delta_x, delta_y)
-            target_lock = (K @ e_vec) + bias
-            du_base = self._lock_to_du_base(float(target_lock[0]), float(target_lock[1]))
-            du_nom = du_base + du_ilc
-            bx, by = self._compute_backlash_offset(du_nom[0], du_nom[1])
-            lock_x_rel = du_nom[0] + bx
-            lock_y_rel = du_nom[1] + by
-            u_lock_x = float(np.clip(self.driver.cur_s1 + lock_x_rel, 1150.0, 1850.0))
-            u_lock_y = float(np.clip(self.driver.cur_s2 + lock_y_rel, 1150.0, 1850.0))
-
-            # Distance-adaptive overdrive (high boost for micro stiction; full saturation + IF-OPB for macro 50Hz slew)
-            if target_dist <= 50.0:
-                boost_gain, kick_mag = 1.48, 4.5
-                act_x_ms = 18.0 if lock_x_rel >= 0.0 else 12.0
-                act_y_ms = 14.0 if lock_y_rel >= 0.0 else 7.0
-                cap_x_ms = 66.0 if lock_x_rel >= 0.0 else 72.0
-                cap_y_ms = 65.0 if lock_y_rel >= 0.0 else 70.0
-                tau_brake = 0.015
-            elif target_dist <= 115.0:
-                boost_gain, kick_mag = 1.28, 8.0
-                act_x_ms, act_y_ms = 34.0, 26.0
-                cap_x_ms, cap_y_ms = 82.0, 82.0
-                tau_brake = 0.024
-            else:
-                boost_gain, kick_mag = 1.40, 8.0
-                act_x_ms, act_y_ms = 66.0, 50.0
-                cap_x_ms, cap_y_ms = 105.0, 105.0
-                tau_brake = 0.032
-
-            bst_x_rel = lock_x_rel * boost_gain + (kick_mag * np.sign(lock_x_rel) if abs(lock_x_rel) > 1.0 else 0.0)
-            bst_y_rel = lock_y_rel * boost_gain + (kick_mag * np.sign(lock_y_rel) if abs(lock_y_rel) > 1.0 else 0.0)
-            u_boost_x = float(np.clip(self.driver.cur_s1 + bst_x_rel, 1150.0, 1850.0))
-            u_boost_y = float(np.clip(self.driver.cur_s2 + bst_y_rel, 1150.0, 1850.0))
-
-        # Ensure complete mechanical rest before firing shot
+        # Ensure complete rest before firing shot
         for _ in range(5):
             self.sensor.read_delta_and_clear()
-            time.sleep(0.012)
-            dx_chk, dy_chk = self.sensor.read_delta_and_clear()
-            if dx_chk == 0 and dy_chk == 0:
+            time.sleep(0.010)
+            dx_c, dy_c = self.sensor.read_delta_and_clear()
+            if dx_c == 0 and dy_c == 0:
                 break
 
-        # Recenter OS cursor while stationary so large/beyond-screen flicks never hit screen edges
-        if hasattr(self.sensor, "recenter_cursor"):
-            self.sensor.recenter_cursor()
-            time.sleep(0.003)
-
+        self.sensor.recenter_cursor()
         x0, y0 = self.sensor.get_position()
-        target_abs_x = x0 + delta_x
-        target_abs_y = y0 + delta_y
 
-        sx = 1 if delta_x > 0 else (-1 if delta_x < 0 else 0)
-        sy = 1 if delta_y > 0 else (-1 if delta_y < 0 else 0)
+        # Distance-adaptive IF-OPB parameters & physical settling budget
+        tau_brake = 0.028 if L > 220.0 else (0.024 if L > 90.0 else 0.018)
+        opb_thresh = 0.91 if L > 220.0 else (0.88 if L > 90.0 else 0.84)
+        boost_cap_ms = 185.0 if L > 450.0 else (145.0 if L > 200.0 else 115.0)
+        max_loop_ms = max(timeout_ms + 90.0, 190.0 + 0.25 * L)
+
+        # Stage 1 initial launch command: break backlash/stiction along straight tangent
+        u_launch_x, u_launch_y = self._compute_guided_command(
+            np.zeros(2), np.zeros(2), u_kin_target, K_end, L, d_hat, n_hat, du_ilc, 0.0
+        )
 
         t_start = time.perf_counter()
-        tx_on: Optional[float] = None
-        ty_on: Optional[float] = None
+        last_tx_t = t_start
+        self.driver.send_raw_pulses(u_launch_x, u_launch_y)
+
         t_onset: Optional[float] = None
-        trajectory = []
-        vel_buf = []
-
-        # Send Stage 1: Boost Overdrive Command
-        self.driver.send_raw_pulses(u_boost_x, u_boost_y)
-        cur_cmd_x, cur_cmd_y = u_boost_x, u_boost_y
-        bx_done = False
-        by_done = False
-        phase = "BOOST"
-        brake_triggered = False
-        stage3_trimmed = False
+        braked = False
         t_brake_ms = 0.0
-        max_pred_progress = 0.0
+        settled_t_ms: Optional[float] = None
+        tol_counts = max(2.5, 0.015 * L)
 
-        settled_t_ms = None
-        tol_counts = max(1.5, 0.015 * target_dist)
+        vel_buf: List[Tuple[float, int, int]] = []
+        trajectory: List[Dict] = []
+        perp_devs: List[float] = []
+        pos_100ms: Optional[Tuple[int, int]] = None
+        trim_count = 0
+        last_trim_ms = 0.0
+        horn_dir_x = float(np.sign(du_eq[0])) if abs(du_eq[0]) > 1.0 else 0.0
+        horn_dir_y = float(np.sign(du_eq[1])) if abs(du_eq[1]) > 1.0 else 0.0
 
-        # 3. Decoupled Per-Axis Onset & Predictive Early-Settling Control Loop (1000Hz)
         while True:
             t_now = time.perf_counter()
             elapsed_ms = (t_now - t_start) * 1000.0
-
             cur_x, cur_y = self.sensor.get_position()
             dx_cur = cur_x - x0
             dy_cur = cur_y - y0
+            p_vec = np.array([float(dx_cur), float(dy_cur)], dtype=float)
+            p_norm = float(np.linalg.norm(p_vec))
 
-            if tx_on is None and sx != 0 and elapsed_ms >= 25.0 and dx_cur * sx >= 1:
-                tx_on = t_now
-            if ty_on is None and sy != 0 and elapsed_ms >= 25.0 and dy_cur * sy >= 1:
-                ty_on = t_now
-            if t_onset is None and elapsed_ms >= 25.0 and (cur_x != x0 or cur_y != y0):
+            if t_onset is None and p_norm >= 3.0:
                 t_onset = t_now
 
-            eff_tx = tx_on if sx != 0 else ty_on
-            eff_ty = ty_on if sy != 0 else tx_on
-            ax_ms = (t_now - eff_tx) * 1000.0 if eff_tx is not None else 0.0
-            ay_ms = (t_now - eff_ty) * 1000.0 if eff_ty is not None else 0.0
-
-            # Strictly 0.0 until primary physical motion begins at t_onset!
-            if sx != 0 and sy != 0:
-                t_main = tx_on if tx_on is not None else ty_on
-            elif sx != 0:
-                t_main = tx_on
-            else:
-                t_main = ty_on
-            active_ms = ((t_now - t_main) * 1000.0) if t_main is not None else 0.0
-
-            # 14ms sliding-window clean velocity filter for responsive IF-OPB
+            # 18ms sliding window velocity (immune to single-packet USB polling jitter!)
             vel_buf.append((t_now, cur_x, cur_y))
-            while vel_buf and (t_now - vel_buf[0][0]) > 0.014:
+            while len(vel_buf) > 1 and (t_now - vel_buf[0][0]) > 0.018:
                 vel_buf.pop(0)
-            dt_buf = t_now - vel_buf[0][0]
-            vx_filt = (cur_x - vel_buf[0][1]) / dt_buf if dt_buf > 0.001 else 0.0
-            vy_filt = (cur_y - vel_buf[0][2]) / dt_buf if dt_buf > 0.001 else 0.0
+            dt_v = t_now - vel_buf[0][0]
+            vx = (cur_x - vel_buf[0][1]) / dt_v if dt_v > 0.004 else 0.0
+            vy = (cur_y - vel_buf[0][2]) / dt_v if dt_v > 0.004 else 0.0
+            v_vec = np.array([vx, vy], dtype=float)
 
-            err_x = target_abs_x - cur_x
-            err_y = target_abs_y - cur_y
-            err_counts = float(np.hypot(err_x, err_y))
+            err_vec = target_vec - p_vec
+            err_cnt = float(np.linalg.norm(err_vec))
 
-            pred_x = cur_x + vx_filt * tau_brake
-            pred_y = cur_y + vy_filt * tau_brake
+            p_par = float(np.dot(p_vec, d_hat))
+            e_perp = float(np.dot(p_vec, n_hat))
+            if p_norm >= 10.0 and p_par <= L * 1.05:
+                perp_devs.append(abs(e_perp))
 
-            if err_counts <= tol_counts and settled_t_ms is None and active_ms >= 10.0:
-                settled_t_ms = active_ms
+            if pos_100ms is None and elapsed_ms >= 100.0:
+                pos_100ms = (int(dx_cur), int(dy_cur))
+
+            if settled_t_ms is None and t_onset is not None and err_cnt <= tol_counts and np.linalg.norm(v_vec) < 400.0:
+                settled_t_ms = elapsed_ms
 
             trajectory.append({
                 "t_ms": round(elapsed_ms, 2),
-                "active_ms": round(active_ms, 2),
-                "phase": phase,
-                "x": cur_x,
-                "y": cur_y,
-                "vx": round(vx_filt, 1),
-                "vy": round(vy_filt, 1),
-                "err_counts": round(err_counts, 2),
-                "err_um": round(err_counts * self.sensor.um_per_count, 2),
+                "phase": "LOCK" if braked else ("GUIDED" if t_onset is not None else "LAUNCH"),
+                "x": int(cur_x),
+                "y": int(cur_y),
+                "dx": int(dx_cur),
+                "dy": int(dy_cur),
+                "e_perp": round(e_perp, 2),
+                "vx": round(vx, 1),
+                "vy": round(vy, 1),
+                "err_counts": round(err_cnt, 2),
             })
 
-            # Stage 2: Decoupled Per-Axis Lock Switching + In-Flight Optical Predictive Brake (IF-OPB)
-            raw_prog = dx_cur * delta_x + dy_cur * delta_y
-            progress_pred = (pred_x - x0) * delta_x + (pred_y - y0) * delta_y
-            if progress_pred > max_pred_progress:
-                max_pred_progress = progress_pred
-            target_mag_sq = float(delta_x**2 + delta_y**2)
+            # Stage 2: Synchronized 200Hz Straight-Line Guidance & Predictive Brake
+            if not braked:
+                p_pred_par = float(np.dot(p_vec + tau_brake * v_vec, d_hat))
+                progress_raw = p_par / L
+                progress_pred = p_pred_par / L
+                min_raw = 0.45 if L <= 90.0 else 0.52
+                opb_fire = (progress_raw >= min_raw) and (progress_pred >= opb_thresh)
 
-            if target_dist > 100.0:
-                onset_ms = ((t_main - t_start) * 1000.0) if t_main is not None else elapsed_ms
-                if delta_x > 0:
-                    opb_thresh = min(0.87, 0.765 + 0.0065 * max(0.0, onset_ms - 26.0))
-                else:
-                    opb_thresh = min(0.87, 0.835 + 0.003 * max(0.0, onset_ms - 40.0))
-                opb_guard = (raw_prog >= 0.40 * target_mag_sq) and (progress_pred >= opb_thresh * target_mag_sq)
-            else:
-                opb_guard = (
-                    (active_ms >= max(10.0, 0.88 * min(act_x_ms, act_y_ms)))
-                    and (raw_prog >= 0.65 * target_mag_sq)
-                    and (max_pred_progress >= 1.04 * target_mag_sq)
-                )
-
-            need_send = False
-            if not bx_done and ((eff_tx is not None and ax_ms >= act_x_ms) or elapsed_ms >= cap_x_ms or opb_guard):
-                cur_cmd_x = u_lock_x
-                bx_done = True
-                need_send = True
-            if not by_done and ((eff_ty is not None and ay_ms >= act_y_ms) or elapsed_ms >= cap_y_ms or opb_guard):
-                cur_cmd_y = u_lock_y
-                by_done = True
-                need_send = True
-            if need_send:
-                self.driver.send_raw_pulses(cur_cmd_x, cur_cmd_y)
-                if not brake_triggered:
-                    t_brake_ms = elapsed_ms
-                    brake_triggered = True
-                phase = "LOCK" if (bx_done and by_done) else "TRIM"
-
-            # 100ms active flight window completes (130ms total budget ensures full physical settle)
-            if (t_main is not None and active_ms >= timeout_ms) or (elapsed_ms >= timeout_ms + 30.0):
-                if not bx_done or not by_done:
+                if opb_fire or elapsed_ms >= boost_cap_ms:
                     self.driver.send_raw_pulses(u_lock_x, u_lock_y)
+                    braked = True
+                    t_brake_ms = elapsed_ms
+                    last_trim_ms = elapsed_ms
+                elif (t_now - last_tx_t) >= 0.0048:
+                    u_gx, u_gy = self._compute_guided_command(
+                        p_vec, v_vec, u_kin_target, K_end, L, d_hat, n_hat, du_ilc, elapsed_ms
+                    )
+                    self.driver.send_raw_pulses(u_gx, u_gy)
+                    last_tx_t = t_now
+            else:
+                # Stage 3: Anti-backlash-aware Jacobian closed-loop trim once speed drops
+                v_speed = float(np.linalg.norm(v_vec))
+                if trim_count < 2 and (elapsed_ms - last_trim_ms) >= 45.0 and elapsed_ms <= max_loop_ms - 40.0 and v_speed < 240.0:
+                    if err_cnt > max(3.5, 0.012 * L):
+                        du_trim = 0.78 * (K_end @ err_vec)
+                        # Traverse full backlash play if reversing axis horn engagement direction
+                        if abs(du_trim[0]) > 0.3:
+                            sx = float(np.sign(du_trim[0]))
+                            if horn_dir_x * sx < -0.5:
+                                du_trim[0] += sx * 16.0
+                            else:
+                                du_trim[0] += sx * 3.0
+                            horn_dir_x = sx
+                        if abs(du_trim[1]) > 0.3:
+                            sy = float(np.sign(du_trim[1]))
+                            if horn_dir_y * sy < -0.5:
+                                du_trim[1] += sy * 9.0
+                            else:
+                                du_trim[1] += sy * 2.5
+                            horn_dir_y = sy
+                        du_trim = np.clip(du_trim, -36.0, 36.0)
+                        ux_t = float(np.clip(self.driver.cur_s1 + du_trim[0], self.driver.SAFE_MIN_US, self.driver.SAFE_MAX_US))
+                        uy_t = float(np.clip(self.driver.cur_s2 + du_trim[1], self.driver.SAFE_MIN_US, self.driver.SAFE_MAX_US))
+                        self.driver.send_raw_pulses(ux_t, uy_t)
+                    trim_count += 1
+                    last_trim_ms = elapsed_ms
+
+            # Settle window: finish once velocity stops and either tolerance met or trims completed
+            active_ms = ((t_now - t_onset) * 1000.0) if t_onset is not None else 0.0
+            v_speed_now = float(np.linalg.norm(v_vec))
+            tol_trim = max(4.0, 0.015 * L)
+            done_settle = (
+                braked
+                and (elapsed_ms - t_brake_ms) >= 50.0
+                and v_speed_now < 120.0
+                and active_ms >= timeout_ms
+                and (err_cnt <= tol_trim or (trim_count >= 2 and (elapsed_ms - last_trim_ms) >= 45.0))
+            )
+            if done_settle or elapsed_ms >= max_loop_ms:
                 break
             time.sleep(0.001)
 
-        # 5. Terminal Result & 2D Vector ILC Learning Update
         final_x, final_y = self.sensor.get_position()
         final_dx = int(final_x - x0)
         final_dy = int(final_y - y0)
-        final_err = float(np.hypot(target_abs_x - final_x, target_abs_y - final_y))
+        final_err = float(np.hypot(delta_x - final_dx, delta_y - final_dy))
+        if pos_100ms is None:
+            pos_100ms = (final_dx, final_dy)
+        err_100ms = float(np.hypot(delta_x - pos_100ms[0], delta_y - pos_100ms[1]))
+
+        max_dev = float(max(perp_devs)) if perp_devs else 0.0
+        rms_dev = float(np.sqrt(np.mean(np.square(perp_devs)))) if perp_devs else 0.0
+        straight_pct = 100.0 * max_dev / max(1.0, L)
 
         if enable_ilc_update:
-            self.ilc.update_vector(delta_x, delta_y, final_dx, final_dy, K, final_err)
+            self.ilc.update_vector(tx, ty, float(final_dx), float(final_dy), K_end, final_err)
 
-        if settled_t_ms is None and final_err <= tol_counts:
-            settled_t_ms = min(timeout_ms, active_ms)
+        if settled_t_ms is None:
+            settled_t_ms = elapsed_ms
 
         return {
-            "target_delta": (delta_x, delta_y),
+            "target_delta": (int(delta_x), int(delta_y)),
+            "clamped_target": (round(tx, 1), round(ty, 1)),
             "final_delta": (final_dx, final_dy),
             "final_error_counts": round(final_err, 2),
             "final_error_um": round(final_err * self.sensor.um_per_count, 2),
-            "settled_time_ms": round(settled_t_ms if settled_t_ms is not None else timeout_ms, 1),
+            "pos_at_100ms": pos_100ms,
+            "err_at_100ms": round(err_100ms, 2),
+            "settled_time_ms": round(settled_t_ms, 1),
             "t_brake_ms": round(t_brake_ms, 1),
             "t_onset_ms": round((t_onset - t_start) * 1000.0, 1) if t_onset is not None else -1.0,
+            "straightness_max_dev_cnt": round(max_dev, 2),
+            "straightness_rms_cnt": round(rms_dev, 2),
+            "straightness_pct": round(straight_pct, 2),
             "trajectory": trajectory,
         }
 
@@ -483,45 +353,66 @@ class Ballistic100msController:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Sub-100ms 3200 DPI Ballistic Controller")
-    parser.add_argument("--dx", type=int, default=30, help="Target Delta X (counts)")
+    parser = argparse.ArgumentParser(description="Full-Workspace 200Hz Straight-Line 3200 DPI Ballistic Controller")
+    parser.add_argument("--dx", type=int, default=200, help="Target Delta X (counts)")
     parser.add_argument("--dy", type=int, default=0, help="Target Delta Y (counts)")
-    parser.add_argument("--test-suite", action="store_true", help="Run full-scale 100ms benchmark suite")
+    parser.add_argument("--test-suite", action="store_true", help="Run 8-direction + unseen random target test suite")
     args = parser.parse_args()
 
     ctrl = Ballistic100msController()
+    ctrl.ilc.reset_spatial_field()
     ctrl.sensor.start()
     ctrl.driver.center(settle_s=0.45, preload=True)
 
     if args.test_suite:
-        print("=" * 78)
-        print("  3-RRR Sub-100ms 3200 DPI Full-Workspace Flick-Shot Benchmark Suite")
-        print("=" * 78)
-        waypoints = [
-            (30, 20),     # Micro-precision step
-            (-35, 0),     # Negative X backlash traversal
-            (0, 35),      # Positive Y
-            (120, 80),    # Medium-range flick (~1.15 mm)
-            (-150, -90),  # Medium-large reversal
-            (240, 150),   # Full-stroke macro flick (~2.25 mm raw / full-screen scaled)
-            (-240, -150), # Full-stroke macro reversal
-        ]
-        for i, (tdx, tdy) in enumerate(waypoints):
-            ctrl.driver.center(settle_s=0.35, preload=True)
-            res = ctrl.flick_shot(tdx, tdy, timeout_ms=100.0)
+        print("=" * 94)
+        print("  3-RRR FULL-WORKSPACE 8-DIRECTION + STRAIGHTNESS + RANDOM GENERALIZATION TEST (3200 DPI)")
+        print("=" * 94)
+        # 1. Test 8 directions across 70% of each direction's real mechanical boundary!
+        print("\n[Phase A] 8-Direction Straight-Line Flicks (70% Max Mechanical Envelope per Angle):")
+        degs = [0, 45, 90, 135, 180, -135, -90, -45]
+        for deg in degs:
+            rad = np.deg2rad(deg)
+            rmax = ctrl.workspace.max_reach_at_angle(rad)
+            tdx = int(round(0.70 * rmax * np.cos(rad)))
+            tdy = int(round(0.70 * rmax * np.sin(rad)))
+            # Fire 2 warmups (feeds spatial field) then evaluate 3rd shot
+            for _ in range(2):
+                ctrl.driver.center(settle_s=0.38, preload=True)
+                ctrl.flick_shot(tdx, tdy, timeout_ms=100.0, enable_ilc_update=True)
+            ctrl.driver.center(settle_s=0.38, preload=True)
+            res = ctrl.flick_shot(tdx, tdy, timeout_ms=100.0, enable_ilc_update=True)
             print(
-                f"Shot {i+1:2d} | Target ({tdx:+4d}, {tdy:+4d}) -> "
-                f"Final ({res['final_delta'][0]:+4d}, {res['final_delta'][1]:+4d}) | "
-                f"Err: {res['final_error_counts']:5.1f} cnt ({res['final_error_um']:6.1f} um) | "
-                f"Onset: {res['t_onset_ms']:4.1f}ms | Brake: {res['t_brake_ms']:4.1f}ms | "
-                f"Settle: {res['settled_time_ms']:5.1f}ms"
+                f"  Dir {deg:+4d}° | Target ({tdx:+4d},{tdy:+4d}) -> Final ({res['final_delta'][0]:+4d},{res['final_delta'][1]:+4d}) | "
+                f"Err:{res['final_error_counts']:5.1f} cnt ({res['final_error_um']:5.0f}um) | "
+                f"100msErr:{res['err_at_100ms']:5.1f} | StraightDev:{res['straightness_max_dev_cnt']:5.1f} cnt ({res['straightness_pct']:4.1f}%) | "
+                f"On:{res['t_onset_ms']:4.1f} Brk:{res['t_brake_ms']:4.1f}ms"
+            )
+
+        # 2. Blind zero-shot random targets inside workspace (never explicitly trained!)
+        print("\n[Phase B] Zero-Shot Unseen Random Coordinates (Direct Generalization from Spatial Field):")
+        rng = np.random.default_rng(42)
+        for idx in range(1, 9):
+            ang = rng.uniform(-np.pi, np.pi)
+            rmax = ctrl.workspace.max_reach_at_angle(ang)
+            frac = rng.uniform(0.25, 0.85)
+            tdx = int(round(frac * rmax * np.cos(ang)))
+            tdy = int(round(frac * rmax * np.sin(ang)))
+            ctrl.driver.center(settle_s=0.38, preload=True)
+            res = ctrl.flick_shot(tdx, tdy, timeout_ms=100.0, enable_ilc_update=False)
+            print(
+                f"  Rand #{idx} | Target ({tdx:+4d},{tdy:+4d}) -> Final ({res['final_delta'][0]:+4d},{res['final_delta'][1]:+4d}) | "
+                f"Err:{res['final_error_counts']:5.1f} cnt ({res['final_error_um']:5.0f}um) | "
+                f"StraightDev:{res['straightness_max_dev_cnt']:5.1f} cnt ({res['straightness_pct']:4.1f}%)"
             )
     else:
-        print(f"Firing single 100ms shot to target ({args.dx}, {args.dy})...")
+        ctrl.driver.center(settle_s=0.38, preload=True)
         res = ctrl.flick_shot(args.dx, args.dy, timeout_ms=100.0)
-        print(f"Target: ({args.dx}, {args.dy})")
-        print(f"Final : {res['final_delta']} | Error: {res['final_error_counts']} counts ({res['final_error_um']} um)")
-        print(f"Onset : {res['t_onset_ms']} ms | Brake: {res['t_brake_ms']} ms | Settled: {res['settled_time_ms']} ms")
+        print(
+            f"Target ({args.dx},{args.dy}) -> Final {res['final_delta']} | "
+            f"Err: {res['final_error_counts']} cnt ({res['final_error_um']} um) | "
+            f"StraightDev: {res['straightness_max_dev_cnt']} cnt ({res['straightness_pct']}%)"
+        )
 
     ctrl.driver.center(settle_s=0.35, preload=True)
     ctrl.close()
