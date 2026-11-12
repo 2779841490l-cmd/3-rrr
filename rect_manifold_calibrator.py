@@ -348,8 +348,11 @@ class HardwareRectangleTrainer:
         time.sleep(0.22)
 
         self.manifold.pi_net.reset_play_state(u0_kin, sigma_init=(1.0, 1.0))
+        # 实测死区 6~14 us(见 experiments/ 自校验)，而标定得到的 hyst_y_pos 仅 3.8 us，
+        # 即 Y 轴预载根本没能越过空程 => Y 原点落位不确定(实测 X 同向复现中位 1.0 cnt，
+        # 而 Y 中位 11~29 cnt)。X 的 hyst_x_pos=9.0 us 已验证可用，此处只修 Y，保持归因干净。
         ux0 = float(u0_kin[0] + self.manifold.hyst_x_pos)
-        uy0 = float(u0_kin[1] + self.manifold.hyst_y_pos)
+        uy0 = float(u0_kin[1] + max(float(self.manifold.hyst_y_pos), 15.0))
         self.driver.send_raw_pulses(ux0, uy0)
         time.sleep(settle_s)
 
@@ -825,9 +828,13 @@ class HardwareRectangleTrainer:
             self.manifold.pi_net.last_u_kin = np.array(u, dtype=float).copy()
             self.wait_until_settled(min_wait_s=0.070, max_wait_s=0.125, vel_tol_cnt=0.8)
 
-        def _approach(u, sgn, ov):
-            """按 sgn 侧过冲 ov us 后回到 u，使执行器从确定的一侧齿面接近。"""
-            rx, ry = _raw(np.array(u, dtype=float) + sgn * ov)
+        def _approach(u, sx, sy, ov):
+            """两轴各自独立过冲 ov us 后回到 u，使两轴同时锁定到指定的确定齿面。
+
+            Y 轴原先共用同一符号(只覆盖 ++/-- 两个对角)，而实测两轴都是独立双簇，
+            故必须扫满 2x2 = 4 个象限，才能拿到整张并集晶格。
+            """
+            rx, ry = _raw(np.array(u, dtype=float) + np.array([sx * ov, sy * ov], dtype=float))
             _clip_send(rx, ry)
             time.sleep(0.18)
             _send(u)
@@ -843,16 +850,20 @@ class HardwareRectangleTrainer:
         e_start = best_e
         trials = 0
 
-        # --- 1) 双侧接近：同一名义脉冲，分别从下侧/上侧齿面落位（复现双簇 14.25 cnt）
-        best_side = -1.0
-        for sgn in (-1.0, +1.0):
-            _approach(base_u, sgn, ov_us)
-            trials += 1
-            p = self.get_rect_position()
-            e = _err(p)
-            if e < best_e - eps_cnt:
-                best_e, best_u, best_p = e, base_u.copy(), np.array(p, dtype=float)
-                best_side = sgn
+        # --- 1) 四象限双侧接近：同一名义脉冲，两轴各自从上/下齿面落位
+        #    实测: X 双簇相距 14.25 cnt(4.79*sd)，Y 修预载后 15.75 cnt(2.64*sd)
+        best_side = (-1.0, -1.0)
+        side_e = None
+        for sx in (-1.0, +1.0):
+            for sy in (-1.0, +1.0):
+                _approach(base_u, sx, sy, ov_us)
+                trials += 1
+                p = self.get_rect_position()
+                e = _err(p)
+                if side_e is None or e < side_e:
+                    side_e, best_side = e, (sx, sy)
+                if e < best_e - eps_cnt:
+                    best_e, best_u, best_p = e, base_u.copy(), np.array(p, dtype=float)
 
         # --- 2) 在胜出的那一侧内，用 >= 死区(6~14us) 的步长走台阶
         #    注意: 1~4 us 的微步物理上不动(max_du=2.5 的同一个坑)，故最小步长 6 us。
@@ -868,7 +879,7 @@ class HardwareRectangleTrainer:
                         break
                     for sgn in (+1.0, -1.0):
                         cand = best_u + sgn * mag * unit
-                        _approach(cand, best_side, ov_us)
+                        _approach(cand, best_side[0], best_side[1], ov_us)
                         trials += 1
                         walked += 1
                         p = self.get_rect_position()
