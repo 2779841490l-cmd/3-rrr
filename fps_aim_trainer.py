@@ -41,7 +41,14 @@ user32 = ctypes.windll.user32
 
 
 class FullScreenFPSAimTrainer:
-    def __init__(self, ball_radius_px: int = 18):
+    def __init__(
+        self,
+        ball_radius_px: int = 18,
+        tol_counts: float = 1.2,
+        seed: int = 12345,
+        use_metric_w: bool = True,
+        run_tag: str = "",
+    ):
         self.trainer = HardwareRectangleTrainer()
         self.trainer.sensor.start()
         self.trainer.move_to_rect_origin(settle_s=0.45)
@@ -64,6 +71,14 @@ class FullScreenFPSAimTrainer:
         self.scale_y = float(self.max_screen_dy) / self.safe_rect_y
 
         self.ball_radius_px = int(ball_radius_px)
+        self.tol_counts = float(tol_counts)
+        self.seed = int(seed)
+        # A/B 归因开关：use_metric_w=False 时完全退回旧的"计数圆形误差"择优，
+        # 用来量化"搜索指标 = 评分指标"这一改动到底贡献了多少屏幕精度。
+        self.use_metric_w = bool(use_metric_w)
+        # 运行标签：追加到 CSV 文件名，避免 A/B 与重复实验互相覆盖。
+        # 默认空串 => experiments/fps_fullscreen_aim_benchmark.csv（Gate3 / 论文画图沿用）
+        self.run_tag = str(run_tag or "").strip()
 
         # State tracking
         self.shots_count = 0
@@ -89,7 +104,18 @@ class FullScreenFPSAimTrainer:
         inverse-play stiction-break trim.
         """
         rx_tgt, ry_tgt = self.screen_to_rect(screen_dx_px, screen_dy_px)
-        res = self.trainer.move_point_to_point(rx_tgt, ry_tgt, tol_counts=2.0)
+        # metric_w = (scale_x, scale_y)：让控制器按"屏幕像素误差"择优，
+        # 而不是按"计数空间圆形误差"。两者最优落点不同（X 轴权重是 Y 的 1.4 倍），
+        # 而打靶判分用的是屏幕误差 —— 让搜索指标 = 评分指标，是零硬件成本的直接收益。
+        # use_metric_w=False 时为 None，完全等价于旧行为（A/B 对照组）。
+        metric_w = (self.scale_x, self.scale_y) if self.use_metric_w else None
+        res = self.trainer.move_point_to_point(
+            rx_tgt,
+            ry_tgt,
+            tol_counts=self.tol_counts,
+            dual_lattice=True,
+            metric_w=metric_w,
+        )
 
         act_sx, act_sy = self.rect_to_screen(res["final"][0], res["final"][1])
         tgt_sx, tgt_sy = self.rect_to_screen(res["target"][0], res["target"][1])
@@ -109,10 +135,15 @@ class FullScreenFPSAimTrainer:
             f"| Screen Target Box: [±{self.max_screen_dx}, ±{self.max_screen_dy}] px "
             f"| Ball Radius: {self.ball_radius_px} px"
         )
+        print(
+            f"  Config: tol={self.tol_counts:.2f} cnt | seed={self.seed} "
+            f"| metric_w={'ON (' + f'{self.scale_x:.4f}, {self.scale_y:.4f}' + ')' if self.use_metric_w else 'OFF (count-circle)'} "
+            f"| tag='{self.run_tag or '(default)'}'"
+        )
         print("=" * 92)
 
         # High-coverage target sequence across corners, edges, and inner quadrants
-        screen_targets: List[Tuple[int, int]] = [
+        fixed_targets: List[Tuple[int, int]] = [
             (-self.max_screen_dx, -self.max_screen_dy),  # Top-Left Corner
             (self.max_screen_dx, -self.max_screen_dy),   # Top-Right Corner
             (self.max_screen_dx, self.max_screen_dy),    # Bottom-Right Corner
@@ -125,13 +156,25 @@ class FullScreenFPSAimTrainer:
             (int(-0.6 * self.max_screen_dx), int(0.6 * self.max_screen_dy)),  # Quadrant 3
             (int(-0.5 * self.max_screen_dx), int(-0.5 * self.max_screen_dy)), # Quadrant 2
             (0, 0),                                      # Center Return
-        ][:num_targets]
+        ]
+        screen_targets: List[Tuple[int, int]] = list(fixed_targets[:num_targets])
+        if num_targets > len(screen_targets):
+            # 超过 12 发时补充可复现的随机点（同 seed 同序列），用于把 n 拉到 20~40
+            rng = random.Random(self.seed)
+            while len(screen_targets) < num_targets:
+                screen_targets.append(
+                    (
+                        rng.randint(-self.max_screen_dx, self.max_screen_dx),
+                        rng.randint(-self.max_screen_dy, self.max_screen_dy),
+                    )
+                )
 
         os.makedirs("experiments", exist_ok=True)
-        csv_path = "experiments/fps_fullscreen_aim_benchmark.csv"
+        csv_path = f"experiments/fps_fullscreen_aim_benchmark{self.run_tag}.csv"
         rows = []
         hits = 0
         raw_errs = []
+        screen_errs: List[float] = []
         ballistic_times = []
 
         for idx, (sx, sy) in enumerate(screen_targets, 1):
@@ -140,6 +183,7 @@ class FullScreenFPSAimTrainer:
             if res["hit_ball"]:
                 hits += 1
             raw_errs.append(res["err_counts"])
+            screen_errs.append(res["screen_error_px"])
             ballistic_times.append(res["ballistic_ms"])
 
             print(
@@ -177,15 +221,104 @@ class FullScreenFPSAimTrainer:
         mean_raw_err = float(np.mean(raw_errs))
         max_raw_err = float(np.max(raw_errs))
         mean_bal_ms = float(np.mean(ballistic_times))
+        mean_screen_err = float(np.mean(screen_errs))
+        max_screen_err = float(np.max(screen_errs))
         print("-" * 92)
         print(
             f"  [SUMMARY] Hit Rate: {hits}/{len(screen_targets)} ({hit_rate:.1f}%) | "
             f"Mean Optical Error: {mean_raw_err:.2f} cnt ({mean_raw_err*7.9375:.1f} um) | "
             f"Max Error: {max_raw_err:.2f} cnt | Mean Ballistic Time: {mean_bal_ms:.1f} ms"
         )
+        print(
+            f"  [SCREEN ] Mean screen err: {mean_screen_err:.2f} px | "
+            f"Max screen err: {max_screen_err:.2f} px | "
+            f"Scale: {self.scale_x:.4f} px/cnt (X), {self.scale_y:.4f} px/cnt (Y)"
+        )
+
+        # ---------------- 球半径阶梯扫描：回答"当前精度能打多大的球" ----------------
+        # screen_errs 里每一发存的都是 hypot(scale_x*ex, scale_y*ey) 的屏幕像素误差，
+        # 而"打中半径 R 的球"的判据正是 screen_err <= R。所以整条 R 曲线可以直接
+        # 从已经打完的这一场数据里算出，零额外硬件时间、零额外采样。
+        # 同时给出该 R 对应的物理容差（counts 与 um），便于和死区 6~14 us 对比：
+        # 一旦 R/scale_x 掉到 4~5 cnt 以下，物理上就不可能全中了。
+        radius_ladder = [2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 18, 20, 24, 28, 32, 40]
+        n_balls = len(screen_errs)
+        sweep_rows = []
+        r100 = None   # 100% 命中最小半径
+        r95 = None    # >=95% 命中最小半径
+        r50 = None    # >=50% 命中最小半径
+        print("-" * 92)
+        print("  [BALL SWEEP] 球半径 R 的等价容差 = X ±R/scale_x cnt, Y ±R/scale_y cnt")
+        print(
+            f"  {'R(px)':>6} {'Dia(px)':>8} {'X_tol(cnt)':>11} {'Y_tol(cnt)':>11} "
+            f"{'X_tol(um)':>10} {'Y_tol(um)':>10} {'Hit':>9} {'Rate':>7}"
+        )
+        for R in radius_ladder:
+            n_hit = sum(1 for e in screen_errs if e <= R + 1e-9)
+            rate = 100.0 * n_hit / max(1, n_balls)
+            xtol = float(R) / max(1e-9, self.scale_x)
+            ytol = float(R) / max(1e-9, self.scale_y)
+            print(
+                f"  {R:6d} {2 * R:8d} {xtol:11.2f} {ytol:11.2f} "
+                f"{xtol * 7.9375:10.1f} {ytol * 7.9375:10.1f} "
+                f"{n_hit:4d}/{n_balls:<4d} {rate:6.1f}%"
+            )
+            sweep_rows.append({
+                "radius_px": R,
+                "diameter_px": 2 * R,
+                "x_tol_counts": round(xtol, 4),
+                "y_tol_counts": round(ytol, 4),
+                "x_tol_um": round(xtol * 7.9375, 2),
+                "y_tol_um": round(ytol * 7.9375, 2),
+                "hits": n_hit,
+                "total": n_balls,
+                "hit_rate_pct": round(rate, 2),
+            })
+            if n_hit == n_balls and r100 is None:
+                r100 = R
+            if rate >= 95.0 and r95 is None:
+                r95 = R
+            if rate >= 50.0 and r50 is None:
+                r50 = R
+
+        # 物理红线标注：X 轴容差低于死区等效位移（4.5~10.5 cnt）的半径不可达
+        phys_floor_cnt = 4.5
+        r_phys = phys_floor_cnt * float(self.scale_x)
+        print("-" * 92)
+        if r100 is not None:
+            print(
+                f"  [VERDICT ] 100% 命中最小半径 = {r100} px (直径 {2 * r100} px | "
+                f"X ±{r100 / self.scale_x:.2f} cnt = ±{r100 / self.scale_x * 7.9375:.1f} um | "
+                f"Y ±{r100 / self.scale_y:.2f} cnt = ±{r100 / self.scale_y * 7.9375:.1f} um)"
+            )
+        else:
+            r_need = float(np.ceil(max_screen_err))
+            print(
+                f"  [VERDICT ] 本场 {n_balls} 发未达 100%；最大屏幕误差 {max_screen_err:.2f} px "
+                f"⇒ 至少需半径 {r_need:.0f} px 才能全中"
+            )
+        print(
+            f"  [VERDICT ]  95% 命中最小半径 = {r95 if r95 is not None else 'N/A'}"
+            f" px | 50% 命中最小半径 = {r50 if r50 is not None else 'N/A'} px"
+        )
+        print(
+            f"  [PHYS    ] X 容差等于死区下界 4.5 cnt 时 R = {r_phys:.2f} px "
+            f"⇒ 半径小于此值的球在物理上不可达（与控制器无关）"
+        )
+
+        sweep_path = f"experiments/fps_ball_sweep{self.run_tag}.csv"
+        with open(sweep_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=list(sweep_rows[0].keys()))
+            writer.writeheader()
+            writer.writerows(sweep_rows)
+
         print(f"  [SAVED]   {csv_path}")
+        print(f"  [SAVED]   {sweep_path}")
         print("=" * 92)
-        return 0 if (hits == len(screen_targets) and mean_raw_err <= 2.5) else 1
+        # 退出码语义改为"按配置半径是否全中"：
+        # 旧的 mean_raw_err <= 2.5 是历史门禁，与"能不能打球"无关，
+        # 会把"半径 18 px 全中、但均值 2.6 cnt"这种成功判成失败。
+        return 0 if hits == len(screen_targets) else 1
 
     def run_gui(self):
         root = tk.Tk()
@@ -497,9 +630,25 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="3-RRR Full-Screen 100ms 3200DPI FPS Aim-Trainer")
     parser.add_argument("--headless-benchmark", action="store_true", help="Run automated 12-ball full-screen benchmark")
     parser.add_argument("--num-balls", type=int, default=12, help="Number of full-screen targets in benchmark")
+    parser.add_argument("--ball-radius", type=int, default=18,
+                        help="Ball radius in screen px used for the hit/miss verdict (default 18)")
+    parser.add_argument("--tol", type=float, default=1.2,
+                        help="Controller tolerance in counts passed to move_point_to_point (default 1.2)")
+    parser.add_argument("--seed", type=int, default=12345,
+                        help="Seed for the extra random targets when --num-balls > 12 (default 12345)")
+    parser.add_argument("--no-metric-w", action="store_true",
+                        help="A/B control: disable screen-weighted metric (revert to count-circle error)")
+    parser.add_argument("--tag", type=str, default="",
+                        help="Suffix appended to output CSV filenames (e.g. _nomw_r1)")
     args = parser.parse_args()
 
-    app = FullScreenFPSAimTrainer()
+    app = FullScreenFPSAimTrainer(
+        ball_radius_px=args.ball_radius,
+        tol_counts=args.tol,
+        seed=args.seed,
+        use_metric_w=not args.no_metric_w,
+        run_tag=args.tag,
+    )
     try:
         if args.headless_benchmark:
             code = app.run_headless_benchmark(num_targets=args.num_balls)

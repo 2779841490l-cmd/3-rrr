@@ -604,6 +604,7 @@ class HardwareRectangleTrainer:
         max_settle_ms: Optional[float] = None,
         tol_counts: float = 2.0,
         dual_lattice: bool = True,
+        metric_w: Optional[Tuple[float, float]] = None,
     ) -> Dict:
         """
         Stage III: High-Speed Ballistic + Anchored Differential DSS-Play Control on PI-NBM-Net.
@@ -771,7 +772,7 @@ class HardwareRectangleTrainer:
         cur_err_pre = float(np.hypot(x_tgt - p_final[0], y_tgt - p_final[1]))
         if dual_lattice and cur_err_pre > tol_counts:
             cur_u_kin, p_final, dual_info = self._dual_side_refine(
-                cur_u_kin, p_target, tol_counts=tol_counts
+                cur_u_kin, p_target, tol_counts=tol_counts, metric_w=metric_w
             )
             dual_trials = dual_info["trials"]
             dual_gain = dual_info["gain_cnt"]
@@ -802,6 +803,7 @@ class HardwareRectangleTrainer:
         ov_us: float = 20.0,
         max_walk: int = 4,
         eps_cnt: float = 1.0,
+        metric_w: Optional[Tuple[float, float]] = None,
     ):
         """在同一次访问内，用"双侧接近 + 1us 步进"磨损量化台阶。
 
@@ -839,7 +841,23 @@ class HardwareRectangleTrainer:
             time.sleep(0.18)
             _send(u)
 
+        # 评分指标权重 (wx, wy)。
+        #   None -> 计数空间圆形误差（向后兼容，Gate2/Gate3 用这个）
+        #   (2.0, 1.43) -> 屏幕空间加权误差（fps_aim_trainer 的 scale_x/scale_y）
+        # 为什么重要：打靶判分是 hypot(2.0*ex, 1.43*ey)，X 轴权重是 Y 的 1.4 倍。
+        # 在圆形计数误差下"更好"的一个落点，换算到屏幕可能反而更差。
+        # 让搜索指标 = 评分指标，是纯软件、零硬件成本的直接收益。
+        if metric_w is None:
+            wx, wy = 1.0, 1.0
+        else:
+            wx, wy = float(metric_w[0]), float(metric_w[1])
+
         def _err(p):
+            """加权误差：择优唯一依据（= 真正被判分的那个量）。"""
+            return float(np.hypot(wx * (p_target[0] - p[0]), wy * (p_target[1] - p[1])))
+
+        def _err_raw(p):
+            """计数空间圆形误差：只用于 tol 停机判据与对外 gain 报告，保持与历史可比。"""
             return float(np.hypot(p_target[0] - p[0], p_target[1] - p[1]))
 
         base_u = np.array(u_kin, dtype=float)
@@ -847,7 +865,7 @@ class HardwareRectangleTrainer:
         best_e = _err(p_now)
         best_u = base_u.copy()
         best_p = np.array(p_now, dtype=float).copy()
-        e_start = best_e
+        e_start = _err_raw(p_now)
         trials = 0
 
         # --- 1) 四象限双侧接近：同一名义脉冲，两轴各自从上/下齿面落位
@@ -870,15 +888,17 @@ class HardwareRectangleTrainer:
         #    单点 n=20 从 3.83 cnt 恶化到 5.67 cnt（等效 sd 3.49 -> 4.90），
         #    原因是试探次数从 8~9 涨到 10、单点耗时变长导致漂移累积超过收益。
         #    故维持 (6,9,12)us + max_walk=4：只要步长 > 死区下限即可，不再追大步长。
-        if best_e > tol_counts:
-            err_vec = p_target - best_p
+        if _err_raw(best_p) > tol_counts:
+            # 台阶方向也用加权误差向量，保证是在最小化被判分的那把尺
+            err_vec = np.array([wx * (p_target[0] - best_p[0]),
+                                wy * (p_target[1] - best_p[1])], dtype=float)
             step_dir = self.manifold.K_trim @ err_vec
             nrm = float(np.hypot(step_dir[0], step_dir[1]))
             if nrm > 1e-6:
                 unit = step_dir / nrm
                 walked = 0
                 for mag in (6.0, 9.0, 12.0):
-                    if walked >= max_walk or best_e <= tol_counts:
+                    if walked >= max_walk or _err_raw(best_p) <= tol_counts:
                         break
                     for sgn in (+1.0, -1.0):
                         cand = best_u + sgn * mag * unit
@@ -890,7 +910,7 @@ class HardwareRectangleTrainer:
                         if e < best_e - eps_cnt:
                             best_e, best_u, best_p = e, cand.copy(), np.array(p, dtype=float)
                             break
-        return best_u, best_p, {"trials": trials, "gain_cnt": round(e_start - best_e, 2)}
+        return best_u, best_p, {"trials": trials, "gain_cnt": round(e_start - _err_raw(best_p), 2)}
 
     def close(self):
         try:
