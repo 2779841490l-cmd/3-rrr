@@ -54,11 +54,23 @@ class FullScreenFPSAimTrainer:
         # OFF 在均值与命中率上更好，尾部也无额外收益 => 加权会扭曲离散晶格上的择优，
         # 在量化平台上"加权更近"不等于"落点更好"。故默认回到 OFF 的计数圆形误差。
         use_metric_w: bool = False,
+        # 双侧晶格精修"台阶行走"次数上限（_dual_side_refine 的 max_walk）。
+        # 遥测依据 experiments/fps_fullscreen_aim_benchmark_tel_r1.csv:
+        #   20 发里 dual_trials 均值 6.4、max 8，约 12/20 发把 4 次行走走完仍未收敛。
+        # 【否证：默认维持 4】据此做了单变量复测 --dual-max-walk 6（tag _w6_r1，
+        # 同 seed=12345、同 20 发目标），结果整体变差：
+        #   mw=4: 20/20 命中 | 均光学 3.60 cnt | 100% 命中半径 14 px  (=_default_r1)
+        #   mw=6: 18/20 命中 | 均光学 4.85 cnt | 100% 命中半径 24 px  (=_w6_r1)
+        # mw=6 时 trials 均值 8.4、平均增益 +1.33 cnt（精修确实在收敛），但整发更差：
+        # 每次行走都多一轮 0.18 s 过冲+静置，漂移累积速度超过精修收益。
+        # 注意历史那次否证是"加大步长+放宽 max_walk"混合改动，本条是单独放宽的结论。
+        dual_max_walk: int = 4,
         run_tag: str = "",
     ):
         self.trainer = HardwareRectangleTrainer()
         self.trainer.sensor.start()
         self.trainer.move_to_rect_origin(settle_s=0.45)
+        self.dual_max_walk = int(dual_max_walk)
 
         self.sw = user32.GetSystemMetrics(0) or 1536
         self.sh = user32.GetSystemMetrics(1) or 864
@@ -122,6 +134,7 @@ class FullScreenFPSAimTrainer:
             tol_counts=self.tol_counts,
             dual_lattice=True,
             metric_w=metric_w,
+            dual_max_walk=self.dual_max_walk,
         )
 
         act_sx, act_sy = self.rect_to_screen(res["final"][0], res["final"][1])
@@ -201,6 +214,15 @@ class FullScreenFPSAimTrainer:
                 f"Err: {res['err_counts']:4.2f} cnt ({res['err_um']:4.1f} um) | "
                 f"Ballistic: {res['ballistic_ms']:4.1f} ms"
             )
+            # 接近方向：本发目标 - 上一发实际落点。
+            # analyze_aim_bias.py 用它按象限分桶，检验"X 负向接近是否过冲"。
+            # 第 1 发无前序落点，记为 0。
+            if rows:
+                appr_dx = float(res["target"][0] - rows[-1]["raw_actual_dx_cnt"])
+                appr_dy = float(res["target"][1] - rows[-1]["raw_actual_dy_cnt"])
+            else:
+                appr_dx = 0.0
+                appr_dy = 0.0
             rows.append({
                 "ball_id": idx,
                 "screen_target_x_px": res["target_screen_delta_px"][0],
@@ -217,6 +239,15 @@ class FullScreenFPSAimTrainer:
                 "ballistic_time_ms": res["ballistic_ms"],
                 "settled_time_ms": res["elapsed_ms"],
                 "hit": int(res["hit_ball"]),
+                # ---- 遥测：判断"双侧晶格精修"是否已被 max_walk 绑定 ----
+                # dual_trials 打到上限(=4) 且 err 仍 > tol => 加步长还有收益空间；
+                # dual_trials 很小却失败 => 已经死在量化死区，加步长无意义。
+                "dual_trials": int(res.get("dual_trials", 0)),
+                "dual_gain_cnt": round(float(res.get("dual_gain_cnt", 0.0)), 2),
+                "u_kin_final_x_us": round(float(res.get("u_kin_final", [0.0, 0.0])[0]), 2),
+                "u_kin_final_y_us": round(float(res.get("u_kin_final", [0.0, 0.0])[1]), 2),
+                "approach_dx_cnt": round(appr_dx, 1),
+                "approach_dy_cnt": round(appr_dy, 1),
             })
 
         with open(csv_path, "w", newline="", encoding="utf-8") as f:
@@ -241,6 +272,32 @@ class FullScreenFPSAimTrainer:
             f"Max screen err: {max_screen_err:.2f} px | "
             f"Scale: {self.scale_x:.4f} px/cnt (X), {self.scale_y:.4f} px/cnt (Y)"
         )
+        # [DUAL] 双侧晶格精修遥测：只做诊断，不再据此推荐调参（见下方否证记录）。
+        #   语义：阶段1(四象限双侧接近)固定 4 试探；阶段2 每次行走 1~2 试探。
+        #   因此 trials==4 => 阶段1 一次就达标；trials>=4+max_walk => 阶段2 走完上限仍失败。
+        # [已实测否证 / _w6_r1] max_walk=4 时遥测为 trials 均值 6.4 / max 8，
+        #   "走完上限仍失败" 占多数，一度据此判定"行走次数是绑定约束"。随后做
+        #   单变量复测 --dual-max-walk 6（同 seed 12345、同 20 发目标）：
+        #     hits 18/20 (90%)、mean 4.85 cnt (38.5 um)、max 12.08 cnt、
+        #     mean screen 8.55 px、100% 命中半径 24 px；
+        #   对照默认 max_walk=4：hits 20/20、mean 3.60 cnt、100% 命中半径 14 px。
+        #   trials 均值升到 8.4、平均增益 +1.33 cnt —— 精修本身确实在收敛，整发却更差：
+        #   每次行走都多一轮 0.18 s 过冲+静置，漂移累积速度超过精修收益。
+        #   => max_walk=4 已在最优点附近，默认保持 4，不要再用"加大预算"这条路线。
+        dt_arr = np.array([r["dual_trials"] for r in rows], dtype=float)
+        dg_arr = np.array([r["dual_gain_cnt"] for r in rows], dtype=float)
+        n_s1 = int(np.sum(dt_arr <= 4))
+        n_cap = int(np.sum(dt_arr >= 4 + self.dual_max_walk))
+        print(
+            f"  [DUAL   ] dual_trials: mean={dt_arr.mean():.1f} max={dt_arr.max():.0f} "
+            f"| max_walk={self.dual_max_walk} | 阶段1即达标={n_s1}/{len(rows)} "
+            f"| 走完上限仍失败={n_cap}/{len(rows)} | 平均增益={dg_arr.mean():+.2f} cnt"
+        )
+        if n_cap >= 0.4 * len(rows):
+            print("  [DUAL   ] 多数发走完台阶仍不达标，但已实测加大预算更差(_w6_r1) "
+                  "=> 瓶颈是行走间漂移累积，不是预算不足，勿再加大 --dual-max-walk。")
+        elif n_s1 >= 0.8 * len(rows):
+            print("  [DUAL   ] 多数发阶段1 就达标 => 残差已落在量化死区内，软件侧无剩余杠杆。")
 
         # ---------------- 球半径阶梯扫描：回答"当前精度能打多大的球" ----------------
         # screen_errs 里每一发存的都是 hypot(scale_x*ex, scale_y*ey) 的屏幕像素误差，
@@ -645,6 +702,8 @@ if __name__ == "__main__":
                         help="Seed for the extra random targets when --num-balls > 12 (default 12345)")
     parser.add_argument("--metric-w", action="store_true",
                         help="Enable screen-weighted selection metric (default OFF: measured worse, kept only for A/B repro)")
+    parser.add_argument("--dual-max-walk", type=int, default=4,
+                        help="Dual-lattice refine step-walk budget (default 4). Telemetry shows 4 is binding.")
     parser.add_argument("--tag", type=str, default="",
                         help="Suffix appended to output CSV filenames (e.g. _nomw_r1)")
     args = parser.parse_args()
@@ -654,6 +713,7 @@ if __name__ == "__main__":
         tol_counts=args.tol,
         seed=args.seed,
         use_metric_w=bool(args.metric_w),
+        dual_max_walk=args.dual_max_walk,
         run_tag=args.tag,
     )
     try:

@@ -605,6 +605,7 @@ class HardwareRectangleTrainer:
         tol_counts: float = 2.0,
         dual_lattice: bool = True,
         metric_w: Optional[Tuple[float, float]] = None,
+        dual_max_walk: int = 4,
     ) -> Dict:
         """
         Stage III: High-Speed Ballistic + Anchored Differential DSS-Play Control on PI-NBM-Net.
@@ -772,7 +773,8 @@ class HardwareRectangleTrainer:
         cur_err_pre = float(np.hypot(x_tgt - p_final[0], y_tgt - p_final[1]))
         if dual_lattice and cur_err_pre > tol_counts:
             cur_u_kin, p_final, dual_info = self._dual_side_refine(
-                cur_u_kin, p_target, tol_counts=tol_counts, metric_w=metric_w
+                cur_u_kin, p_target, tol_counts=tol_counts, metric_w=metric_w,
+                max_walk=dual_max_walk,
             )
             dual_trials = dual_info["trials"]
             dual_gain = dual_info["gain_cnt"]
