@@ -718,11 +718,7 @@ class HardwareRectangleTrainer:
             for i in (0, 1):
                 s = np.sign(err_vec[i]) if abs(err_vec[i]) > 1.2 else 0.0
                 if s != 0.0 and prev_err_sign[i] != 0.0 and s != prev_err_sign[i]:
-                    damping[i] = max(0.40, damping[i] * 0.55)
-                    if i == 0:
-                        stall_x = 0
-                    else:
-                        stall_y = 0
+                    damping[i] = max(0.45, damping[i] * 0.60)
                 elif s != 0.0 and s == prev_err_sign[i]:
                     damping[i] = min(1.0, damping[i] * 1.25)
                 if s != 0.0:
@@ -733,7 +729,7 @@ class HardwareRectangleTrainer:
             gain_y = gain_base * (1.0 + 0.35 * min(stall_y, 4))
             gain_vec = np.array([gain_x, gain_y], dtype=float)
 
-            max_du = max(2.5, min(20.0, 0.48 * err_cnt))
+            max_du = max(2.5, min(18.0, 0.45 * err_cnt))
             du_kin_step = np.clip(damping * gain_vec * (K_trim @ err_vec), -max_du, max_du)
 
             cur_u_kin = cur_u_kin + du_kin_step
@@ -742,11 +738,11 @@ class HardwareRectangleTrainer:
             ux_cmd = float(np.clip(u_cmd[0], WS63ServoDriver.SAFE_MIN_US, WS63ServoDriver.SAFE_MAX_US))
             uy_cmd = float(np.clip(u_cmd[1], WS63ServoDriver.SAFE_MIN_US, WS63ServoDriver.SAFE_MAX_US))
 
-            # Section III Impulse-Retract Kinetic Nudge to break MG996R + rubber band stiction deadband (~20us)
-            extra_kick_x = 2.0 * min(stall_x, 3)
-            extra_kick_y = 1.5 * min(stall_y, 3)
-            kick_x = np.sign(du_kin_step[0]) * (6.5 + extra_kick_x) if (stall_x >= 1 and abs(du_kin_step[0]) > 0.18) else 0.0
-            kick_y = np.sign(du_kin_step[1]) * (5.0 + extra_kick_y) if (stall_y >= 1 and abs(du_kin_step[1]) > 0.18) else 0.0
+            # Section III Impulse-Retract Kinetic Nudge to break MG996R 8us H-bridge comparator deadband
+            extra_kick_x = 1.0 * min(stall_x, 3)
+            extra_kick_y = 1.0 * min(stall_y, 3)
+            kick_x = np.sign(du_kin_step[0]) * (5.5 + extra_kick_x) if (stall_x >= 1 and abs(du_kin_step[0]) > 0.18) else 0.0
+            kick_y = np.sign(du_kin_step[1]) * (4.5 + extra_kick_y) if (stall_y >= 1 and abs(du_kin_step[1]) > 0.18) else 0.0
             if kick_x != 0.0 or kick_y != 0.0:
                 ux_imp = float(np.clip(ux_cmd + kick_x, WS63ServoDriver.SAFE_MIN_US, WS63ServoDriver.SAFE_MAX_US))
                 uy_imp = float(np.clip(uy_cmd + kick_y, WS63ServoDriver.SAFE_MIN_US, WS63ServoDriver.SAFE_MAX_US))
@@ -754,7 +750,7 @@ class HardwareRectangleTrainer:
                 time.sleep(0.028)
 
             self.driver.send_raw_pulses(ux_cmd, uy_cmd)
-            self.wait_until_settled(min_wait_s=0.055, max_wait_s=0.095, vel_tol_cnt=0.8)
+            self.wait_until_settled(min_wait_s=0.065, max_wait_s=0.110, vel_tol_cnt=0.8)
 
         p_final = self.get_rect_position()
         final_err = float(np.hypot(x_tgt - p_final[0], y_tgt - p_final[1]))
