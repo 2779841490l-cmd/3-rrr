@@ -801,7 +801,7 @@ class HardwareRectangleTrainer:
         tol_counts: float = 1.5,
         ov_us: float = 20.0,
         max_walk: int = 4,
-        eps_cnt: float = 0.3,
+        eps_cnt: float = 1.0,
     ):
         """在同一次访问内，用"双侧接近 + 1us 步进"磨损量化台阶。
 
@@ -866,7 +866,10 @@ class HardwareRectangleTrainer:
                     best_e, best_u, best_p = e, base_u.copy(), np.array(p, dtype=float)
 
         # --- 2) 在胜出的那一侧内，用 >= 死区(6~14us) 的步长走台阶
-        #    注意: 1~4 us 的微步物理上不动(max_du=2.5 的同一个坑)，故最小步长 6 us。
+        #    [已实测否证] 曾试过把步长改成"晶格周期" (7,14,19)us 并放宽 max_walk=6，
+        #    单点 n=20 从 3.83 cnt 恶化到 5.67 cnt（等效 sd 3.49 -> 4.90），
+        #    原因是试探次数从 8~9 涨到 10、单点耗时变长导致漂移累积超过收益。
+        #    故维持 (6,9,12)us + max_walk=4：只要步长 > 死区下限即可，不再追大步长。
         if best_e > tol_counts:
             err_vec = p_target - best_p
             step_dir = self.manifold.K_trim @ err_vec
