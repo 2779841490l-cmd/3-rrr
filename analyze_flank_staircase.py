@@ -50,6 +50,7 @@ def main(path):
     print("=" * 96)
 
     widths_all = {"X": [], "Y": []}
+    edge_all = {"X": [], "Y": []}
     jumps_all = {"X": [], "Y": []}
 
     for (run_id, axis), recs in groups.items():
@@ -72,9 +73,15 @@ def main(path):
                 jumps_all[axis].append(abs(j))
         if jumps:
             print("    jumps(cnt): " + ", ".join(f"{j:+.1f}" for j in jumps))
-        for a, b, v in segs:
-            if (b - a) >= CORE_W:
-                widths_all[axis].append(b - a)
+        # 新：首段与末段是 move_to_rect_origin 的进场伪影，单独统计，不混入判据
+        for i, (a, b, v) in enumerate(segs):
+            w = b - a
+            if w < CORE_W:
+                continue
+            if i == 0 or i == len(segs) - 1:
+                edge_all[axis].append(w)
+            else:
+                widths_all[axis].append(w)
 
     def _stat(v):
         if not v:
@@ -86,6 +93,8 @@ def main(path):
     print("\n" + "=" * 96)
     print("[汇总]  内部平台宽度(>= {} us)   X: {}".format(CORE_W, _stat(widths_all["X"])))
     print("                              Y: {}".format(_stat(widths_all["Y"])))
+    print("[端点伪影]  端点平台宽度(>= {} us)   X: {}".format(CORE_W, _stat(edge_all["X"])))
+    print("                              Y: {}".format(_stat(edge_all["Y"])))
     print("[汇总]  大跳变幅度(>= {} cnt)    X: {}".format(BIG_JUMP, _stat(jumps_all["X"])))
     print("                              Y: {}".format(_stat(jumps_all["Y"])))
     print("=" * 96)
