@@ -51,6 +51,38 @@ user32.GetRawInputData.argtypes = [
     ctypes.POINTER(wintypes.UINT), wintypes.UINT
 ]
 user32.GetRawInputData.restype = wintypes.UINT
+user32.GetRawInputDeviceInfoW.argtypes = [
+    wintypes.HANDLE, wintypes.UINT, ctypes.c_void_p, ctypes.POINTER(wintypes.UINT)
+]
+user32.GetRawInputDeviceInfoW.restype = wintypes.UINT
+RIDI_DEVICENAME = 0x20000007
+
+# 设备过滤配置文件：一行，内容为机构鼠标设备名的子串（如 "VID_1BCF&PID_0005"）。
+# 文件不存在 -> 接受所有鼠标（旧行为，会打印警告）。
+DEVICE_FILTER_FILE = "mouse_device.txt"
+
+
+def raw_device_name(hdev) -> str:
+    try:
+        n = wintypes.UINT(0)
+        user32.GetRawInputDeviceInfoW(hdev, RIDI_DEVICENAME, None, ctypes.byref(n))
+        if n.value == 0:
+            return ""
+        buf = ctypes.create_unicode_buffer(n.value + 1)
+        user32.GetRawInputDeviceInfoW(hdev, RIDI_DEVICENAME, buf, ctypes.byref(n))
+        return buf.value
+    except Exception:
+        return ""
+
+
+def load_device_filter() -> str:
+    import os
+    p = os.path.join(os.path.dirname(os.path.abspath(__file__)), DEVICE_FILTER_FILE)
+    if os.path.exists(p):
+        with open(p, encoding="utf-8") as f:
+            s = f.read().strip()
+            return s.upper()
+    return ""
 
 
 class _WNDCLASSEXW(ctypes.Structure):
@@ -150,6 +182,14 @@ class HighPrecisionMouseSensor:
         self._hwnd = None
         self._wndproc_ref = None
 
+        # 设备过滤：只累加机构鼠标；其他鼠标/触控板的位移计入 rejected_counts 供诊断
+        self.device_filter = load_device_filter()
+        self._dev_ok = {}            # hDevice -> bool
+        self.rejected_counts = 0
+        self.per_device = {}         # name -> abs count sum (诊断用)
+        if not self.device_filter:
+            print("[WARN] mouse_device.txt 不存在：接受所有鼠标输入，操作自己的鼠标会污染读数。")
+
         attach_interactive_desktop()
         self.screen_w = user32.GetSystemMetrics(0) or 1536
         self.screen_h = user32.GetSystemMetrics(1) or 864
@@ -231,6 +271,19 @@ class HighPrecisionMouseSensor:
                     if ri.header.dwType == RIM_TYPEMOUSE and (ri.mouse.usFlags & 0x01) == 0:
                         dx = int(ri.mouse.lLastX)
                         dy = int(ri.mouse.lLastY)
+                        hdev = ri.header.hDevice
+                        key = int(hdev or 0)
+                        if key not in self._dev_ok:
+                            name = raw_device_name(hdev).upper()
+                            self._dev_ok[key] = (not self.device_filter) or (self.device_filter in name)
+                            self._dev_name = getattr(self, "_dev_name", {})
+                            self._dev_name[key] = name or f"<handle {key}>"
+                        if dx != 0 or dy != 0:
+                            nm = self._dev_name[key]
+                            self.per_device[nm] = self.per_device.get(nm, 0) + abs(dx) + abs(dy)
+                        if not self._dev_ok[key]:
+                            self.rejected_counts += abs(dx) + abs(dy)
+                            dx = dy = 0
                         if dx != 0 or dy != 0:
                             with self._lock:
                                 self._accum_x += dx
