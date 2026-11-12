@@ -363,6 +363,13 @@ class FullScreenFPSAimTrainer:
             hw_x = int(round(cx + cur_sx))
             hw_y = int(round(cy + cur_sy))
 
+            # Continuously sync the real Windows OS mouse pointer to the 3-RRR hardware position!
+            if self.is_busy:
+                try:
+                    user32.SetCursorPos(hw_x, hw_y)
+                except Exception:
+                    pass
+
             # Record in trajectory history during active aiming
             if self.is_busy:
                 with self.traj_lock:
