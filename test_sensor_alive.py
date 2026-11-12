@@ -32,33 +32,46 @@ def main():
     print("=" * 78)
     trainer = HardwareRectangleTrainer()
     try:
+        # 关键：HardwareRectangleTrainer.__init__ 不启动传感器线程，必须显式 start()
+        trainer.sensor.start()
+        time.sleep(0.30)
+        trainer.sensor.reset_origin()
+
         print("[1] 回原点并读取基准位置 ...")
         trainer.move_to_rect_origin(settle_s=0.45)
         p0 = read_pos(trainer, "base")
 
-        print("[2] 只发一次 X 轴 +20 counts 的纯运动学脉冲 ...")
-        u = trainer.manifold.evaluate_kinematic_pulse(20.0, 0.0)
+        # 用 60 counts（~31 us 偏移）确保越过 20 us 静默储能区，避免假阴性
+        print("[2] 只发一次 X 轴 +60 counts 的纯运动学脉冲 ...")
+        u = trainer.manifold.evaluate_kinematic_pulse(60.0, 0.0)
         print(f"      target pulse = (u_x={u[0]:.2f} us, u_y={u[1]:.2f} us)")
         trainer.driver.send_raw_pulses(float(u[0]), float(u[1]))
-        time.sleep(0.45)
+        time.sleep(0.55)
 
-        p1 = read_pos(trainer, "after +20X")
+        p1 = read_pos(trainer, "after +60X")
         d = p1 - p0
+        ev = getattr(trainer.sensor, "_event_count", -1)
+        pd = dict(getattr(trainer.sensor, "per_device", {}))
         print("-" * 78)
         print(f"  delta = ({d[0]:+8.2f}, {d[1]:+8.2f}) cnt | |delta| = {float(np.hypot(d[0], d[1])):.2f} cnt")
-        if float(np.hypot(d[0], d[1])) >= 3.0:
-            print("  [VERDICT] 传感器 + 执行器都活着（位移 >= 3 cnt）。上一场是偶发掉线，重跑即可。")
+        print(f"  events = {ev}  per_device = {pd}")
+        if float(np.hypot(d[0], d[1])) >= 10.0:
+            print("  [VERDICT] 传感器 + 执行器都活着（位移 >= 10 cnt）。上一场是偶发掉线，重跑即可。")
         else:
-            print("  [VERDICT] 位移 < 3 cnt。请肉眼确认平台是否真的动了：")
+            print("  [VERDICT] 位移 < 10 cnt。请肉眼确认平台是否真的动了：")
             print("            - 平台动了 => 传感器死了（Raw Input 未绑定 / 鼠标被拔 / 换了 USB 口）")
             print("            - 平台没动 => 执行器没动（舵机供电 / WS63 固件 / COM 口）")
         print("=" * 78)
     finally:
         try:
             trainer.driver.center(0.3)
-            trainer.close()
         except Exception:
             pass
+        try:
+            trainer.sensor.stop()
+        except Exception:
+            pass
+        trainer.close()
 
 
 if __name__ == "__main__":

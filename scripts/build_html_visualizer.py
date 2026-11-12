@@ -534,3 +534,4 @@ html = f"""<!DOCTYPE html>
 with open(out_path, "w", encoding="utf-8") as f:
     f.write(html)
 print(f"Generated {out_path} ({len(html)} bytes)")
+

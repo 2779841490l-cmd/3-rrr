@@ -56,6 +56,7 @@ ORIGIN_SETTLE_S = 0.36
 SETTLE_S = 0.46            # 断电后静置
 DRIFT_S = 0.26             # 蠕变观察窗
 BRAKE_TIMEOUT_MS = 140.0   # 轮询超时保护，防止空转到天荒地老
+DRIVE_CAP_MS = 40.0        # 【安全硬上限】kick 驱动时长绝不超过 40ms（防堵转/热保护）
 
 # ---------------- 判定 ---------------- 
 PASS_MEAN_LO, PASS_MEAN_HI = 2.0, 5.0
@@ -154,11 +155,14 @@ def _trial(
     _send(trainer, *_u(sign * kick_us))
 
     # 3) 轮询：沿 e 的位移一旦够 target_cnt 立刻断电
+    #    安全红线：kick 驱动时长硬上限 DRIVE_CAP_MS，绝不长时间满偏置堵转
     proj_brake = 0.0
     n_poll = 0
+    hit_cap = 0.0
+    cap_ms = min(float(timeout_ms), DRIVE_CAP_MS)
     if target_cnt > 0.0:
         while True:
-            if (time.perf_counter() - t0) * 1000.0 >= timeout_ms:
+            if (time.perf_counter() - t0) * 1000.0 >= cap_ms:
                 break
             p = trainer.get_rect_position()
             n_poll += 1
@@ -169,6 +173,8 @@ def _trial(
             if proj_brake >= target_cnt:
                 break
     t_brake_ms = (time.perf_counter() - t0) * 1000.0
+    if target_cnt > 0.0 and proj_brake < target_cnt:
+        hit_cap = 1.0
 
     # 4) catch 相：切到 hold（默认 0us => 回到 u0，撤掉驱动）
     _send(trainer, *_u(sign * hold_us))
@@ -190,6 +196,7 @@ def _trial(
         "t_brake_ms": t_brake_ms,
         "n_poll": float(n_poll),
         "proj_brake": proj_brake,
+        "hit_cap": hit_cap,
     }
 
 
@@ -215,6 +222,8 @@ def main() -> int:
     signs = (1.0, -1.0) if args.both else (1.0,)
 
     trainer = HardwareRectangleTrainer()
+    trainer.sensor.start()   # 关键：HardwareRectangleTrainer.__init__ 不启动传感器线程
+    time.sleep(0.30)
     t_start = time.perf_counter()
     try:
         trainer.move_to_rect_origin(settle_s=0.45)
