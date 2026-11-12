@@ -600,6 +600,7 @@ class HardwareRectangleTrainer:
         duration_ms: Optional[float] = None,
         max_settle_ms: Optional[float] = None,
         tol_counts: float = 2.0,
+        dual_lattice: bool = True,
     ) -> Dict:
         """
         Stage III: High-Speed Ballistic + Anchored Differential DSS-Play Control on PI-NBM-Net.
@@ -715,6 +716,11 @@ class HardwareRectangleTrainer:
                 elif moved_y >= 1.5:
                     stall_y = 0
 
+            # 双侧连续 3 次推不动 => 已经掉进量化死区(实测 6~14 us)，
+            # 而本循环单步下限是 2.5 us(< 死区)，继续 trim 只是空转刷时间。
+            if stall_x >= 3 and stall_y >= 3:
+                break
+
             for i in (0, 1):
                 s = np.sign(err_vec[i]) if abs(err_vec[i]) > 1.2 else 0.0
                 if s != 0.0 and prev_err_sign[i] != 0.0 and s != prev_err_sign[i]:
@@ -752,7 +758,20 @@ class HardwareRectangleTrainer:
             self.driver.send_raw_pulses(ux_cmd, uy_cmd)
             self.wait_until_settled(min_wait_s=0.065, max_wait_s=0.110, vel_tol_cnt=0.8)
 
+        # Phase 3: 双侧晶格精修 —— 实测依据(experiments/dual_lattice_*.csv):
+        #   同一名义脉冲，从下侧接近落点 1.38+-2.97 cnt，从上侧落点 15.62+-2.39 cnt，
+        #   两簇相距 14.25 cnt(簇内 sd 的 4.8 倍)，并集可达间隙仅 1~3 cnt。
+        #   因此"双侧切换 + 1us 步进"可把量化地板从 ~q/2(~7 cnt) 压到 ~3 cnt。
+        dual_trials = 0
+        dual_gain = 0.0
         p_final = self.get_rect_position()
+        cur_err_pre = float(np.hypot(x_tgt - p_final[0], y_tgt - p_final[1]))
+        if dual_lattice and cur_err_pre > tol_counts:
+            cur_u_kin, p_final, dual_info = self._dual_side_refine(
+                cur_u_kin, p_target, tol_counts=tol_counts
+            )
+            dual_trials = dual_info["trials"]
+            dual_gain = dual_info["gain_cnt"]
         final_err = float(np.hypot(x_tgt - p_final[0], y_tgt - p_final[1]))
         max_dev = float(max(perp_devs)) if perp_devs else 0.0
         elapsed_total = (time.perf_counter() - t0) * 1000.0
@@ -767,8 +786,97 @@ class HardwareRectangleTrainer:
             "straight_dev_pct": round(100.0 * max_dev / max(1.0, L), 2),
             "ballistic_ms": round(ballistic_ms, 1),
             "elapsed_ms": round(elapsed_total, 1),
+            "dual_trials": dual_trials,
+            "dual_gain_cnt": dual_gain,
             "u_kin_final": cur_u_kin.tolist(),
         }
+
+    def _dual_side_refine(
+        self,
+        u_kin: np.ndarray,
+        p_target: np.ndarray,
+        tol_counts: float = 1.5,
+        ov_us: float = 20.0,
+        max_walk: int = 4,
+        eps_cnt: float = 0.3,
+    ):
+        """在同一次访问内，用"双侧接近 + 1us 步进"磨损量化台阶。
+
+        依据 test_dual_lattice.py 实测: X 轴同脉冲双侧落点相距 14.25 cnt、
+        簇内 sd 仅 2.4~3.0 cnt、并集间隙 1~3 cnt。
+        返回 (u_kin_best, p_best, info)。
+        """
+
+        pg = np.array(self.manifold.pi_net.play_g, dtype=float)
+
+        def _clip_send(ux: float, uy: float):
+            self.driver.send_raw_pulses(
+                float(np.clip(ux, WS63ServoDriver.SAFE_MIN_US, WS63ServoDriver.SAFE_MAX_US)),
+                float(np.clip(uy, WS63ServoDriver.SAFE_MIN_US, WS63ServoDriver.SAFE_MAX_US)),
+            )
+
+        def _raw(u):
+            """kinematic 脉冲 -> 实际下发脉冲（统一加 play_g，保证两侧过冲/回位在同一命令空间）。"""
+            return (float(u[0]) + float(pg[0]), float(u[1]) + float(pg[1]))
+
+        def _send(u):
+            rx, ry = _raw(u)
+            _clip_send(rx, ry)
+            self.manifold.pi_net.last_u_kin = np.array(u, dtype=float).copy()
+            self.wait_until_settled(min_wait_s=0.070, max_wait_s=0.125, vel_tol_cnt=0.8)
+
+        def _approach(u, sgn, ov):
+            """按 sgn 侧过冲 ov us 后回到 u，使执行器从确定的一侧齿面接近。"""
+            rx, ry = _raw(np.array(u, dtype=float) + sgn * ov)
+            _clip_send(rx, ry)
+            time.sleep(0.18)
+            _send(u)
+
+        def _err(p):
+            return float(np.hypot(p_target[0] - p[0], p_target[1] - p[1]))
+
+        base_u = np.array(u_kin, dtype=float)
+        p_now = self.get_rect_position()
+        best_e = _err(p_now)
+        best_u = base_u.copy()
+        best_p = np.array(p_now, dtype=float).copy()
+        e_start = best_e
+        trials = 0
+
+        # --- 1) 双侧接近：同一名义脉冲，分别从下侧/上侧齿面落位（复现双簇 14.25 cnt）
+        best_side = -1.0
+        for sgn in (-1.0, +1.0):
+            _approach(base_u, sgn, ov_us)
+            trials += 1
+            p = self.get_rect_position()
+            e = _err(p)
+            if e < best_e - eps_cnt:
+                best_e, best_u, best_p = e, base_u.copy(), np.array(p, dtype=float)
+                best_side = sgn
+
+        # --- 2) 在胜出的那一侧内，用 >= 死区(6~14us) 的步长走台阶
+        #    注意: 1~4 us 的微步物理上不动(max_du=2.5 的同一个坑)，故最小步长 6 us。
+        if best_e > tol_counts:
+            err_vec = p_target - best_p
+            step_dir = self.manifold.K_trim @ err_vec
+            nrm = float(np.hypot(step_dir[0], step_dir[1]))
+            if nrm > 1e-6:
+                unit = step_dir / nrm
+                walked = 0
+                for mag in (6.0, 9.0, 12.0):
+                    if walked >= max_walk or best_e <= tol_counts:
+                        break
+                    for sgn in (+1.0, -1.0):
+                        cand = best_u + sgn * mag * unit
+                        _approach(cand, best_side, ov_us)
+                        trials += 1
+                        walked += 1
+                        p = self.get_rect_position()
+                        e = _err(p)
+                        if e < best_e - eps_cnt:
+                            best_e, best_u, best_p = e, cand.copy(), np.array(p, dtype=float)
+                            break
+        return best_u, best_p, {"trials": trials, "gain_cnt": round(e_start - best_e, 2)}
 
     def close(self):
         try:
