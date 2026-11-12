@@ -46,7 +46,14 @@ class FullScreenFPSAimTrainer:
         ball_radius_px: int = 18,
         tol_counts: float = 1.2,
         seed: int = 12345,
-        use_metric_w: bool = True,
+        # 【否证：默认关闭】把搜索指标从"计数圆形误差"改成"屏幕加权误差"，
+        # 直觉上应该直接降屏幕误差（X 权重 2.0 是 Y 的 1.4 倍），但实测是负结果。
+        # 同 seed=12345、同 20 发、相邻时段的配对实验（experiments/fps_*_{mw,nomw}_r*.csv）：
+        #   ON  r1/r2: 19/20 & 18/20 命中 | 均光学 5.04 & 3.96 cnt | 均屏幕 8.53 & 6.91 px
+        #   OFF r2/r3: 20/20 & 19/20 命中 | 均光学 3.66 & 3.49 cnt | 均屏幕 6.76 & 6.39 px
+        # OFF 在均值与命中率上更好，尾部也无额外收益 => 加权会扭曲离散晶格上的择优，
+        # 在量化平台上"加权更近"不等于"落点更好"。故默认回到 OFF 的计数圆形误差。
+        use_metric_w: bool = False,
         run_tag: str = "",
     ):
         self.trainer = HardwareRectangleTrainer()
@@ -636,8 +643,8 @@ if __name__ == "__main__":
                         help="Controller tolerance in counts passed to move_point_to_point (default 1.2)")
     parser.add_argument("--seed", type=int, default=12345,
                         help="Seed for the extra random targets when --num-balls > 12 (default 12345)")
-    parser.add_argument("--no-metric-w", action="store_true",
-                        help="A/B control: disable screen-weighted metric (revert to count-circle error)")
+    parser.add_argument("--metric-w", action="store_true",
+                        help="Enable screen-weighted selection metric (default OFF: measured worse, kept only for A/B repro)")
     parser.add_argument("--tag", type=str, default="",
                         help="Suffix appended to output CSV filenames (e.g. _nomw_r1)")
     args = parser.parse_args()
@@ -646,7 +653,7 @@ if __name__ == "__main__":
         ball_radius_px=args.ball_radius,
         tol_counts=args.tol,
         seed=args.seed,
-        use_metric_w=not args.no_metric_w,
+        use_metric_w=bool(args.metric_w),
         run_tag=args.tag,
     )
     try:
