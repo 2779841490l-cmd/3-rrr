@@ -1,0 +1,19 @@
+
+================================================================================================
+  P0-A 定案3 汇总分析：S2 vs S3 启停阈值与滑移量子
+================================================================================================
+
+[sign=+1]
+  S2_ONLY : 首次动(>=2cnt)=  7.0 us | 稳定动(>=2/3次)=  9.0 us | 有效位移量子: median=4.7, min=2.0, max=6.1 cnt
+  S3_ONLY : 首次动(>=2cnt)=  7.0 us | 稳定动(>=2/3次)=  8.0 us | 有效位移量子: median=23.0, min=4.0, max=38.0 cnt
+  PAIR    : 首次动(>=2cnt)=  7.0 us | 稳定动(>=2/3次)=  8.0 us | 有效位移量子: median=14.7, min=2.0, max=30.1 cnt
+  => 阈值差 Δth = th(S2) - th(S3) = +1.0 us
+
+[sign=-1]
+  S2_ONLY : 首次动(>=2cnt)=  5.0 us | 稳定动(>=2/3次)=  8.0 us | 有效位移量子: median=5.4, min=2.2, max=7.6 cnt
+  S3_ONLY : 首次动(>=2cnt)=  6.0 us | 稳定动(>=2/3次)=  8.0 us | 有效位移量子: median=4.0, min=2.0, max=21.1 cnt
+  PAIR    : 首次动(>=2cnt)=  4.0 us | 稳定动(>=2/3次)=  7.0 us | 有效位移量子: median=5.4, min=2.0, max=23.4 cnt
+  => 阈值差 Δth = th(S2) - th(S3) = +0.0 us
+
+[SAVED] experiments/s2_s3_fine_threshold_diff.csv
+[SAVED] experiments/analysis_s2_s3_fine_threshold_diff.txt
