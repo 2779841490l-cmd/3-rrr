@@ -48,3 +48,4 @@
 | `y-` | `-3.60 ± 1.95 cnt` (`-6..-1`, 串扰 `+0.40`, `51.7 ms`) | **`-4.60 ± 0.89 cnt`** (`-6..-4`, 串扰 `+0.60`, `43.1 ms`) | **PASS** |
 
 > **物理结论**：时间域脉冲内闭环预测制动已把 MG996R Y 轴可控微步压缩至 **`2.8~4.6 cnt`、`sd <= 0.89 cnt`**，成功绕开 `4.33 cnt/us` 静态脉冲量化墙，具备向 [`rect_manifold_calibrator.py`](../rect_manifold_calibrator.py) 精修阶段集成与跑 [`verify_hardware_kpi.py`](../verify_hardware_kpi.py) 门禁的条件。
+
