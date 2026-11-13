@@ -62,6 +62,9 @@ class RectangularManifoldController:
         # Kinematic Jacobian matrices (Physical Prior & Local Differential Micro-Trim)
         self.K_lin = np.array([[0.515, -0.275], [-0.070, -0.295]], dtype=float)
         self.K_trim = np.array([[0.58, -0.115], [-0.038, -0.285]], dtype=float)
+        # 定案4 (2026-11-13, experiments/real_jacobian_2x2.csv) 实测全 2x2 逆雅可比与通道死区
+        self.K_meas = np.array([[0.46520, -0.22578], [-0.06323, -0.22590]], dtype=float)
+        self.deadband_ff_us = np.array([6.78, 5.90], dtype=float)
 
         # 2. Physics-Informed Neural Ballistic Manifold Network (PI-NBM-Net)
         self.pi_net = NumpyPINBMInference(W=self.W, H=self.H)
@@ -288,6 +291,10 @@ class RectangularManifoldController:
                 self.pi_net.K_lin = self.K_lin.copy()
             if "K_trim_us_per_cnt" in data:
                 self.K_trim = np.array(data["K_trim_us_per_cnt"], dtype=float)
+            if "K_meas_us_per_cnt" in data:
+                self.K_meas = np.array(data["K_meas_us_per_cnt"], dtype=float)
+            if "deadband_ff_us" in data:
+                self.deadband_ff_us = np.array(data["deadband_ff_us"], dtype=float)
             if "rectangle_half_size_counts" in data:
                 self.W = max(380.0, float(data["rectangle_half_size_counts"].get("W", self.W)))
                 self.H = max(290.0, float(data["rectangle_half_size_counts"].get("H", self.H)))
@@ -606,6 +613,7 @@ class HardwareRectangleTrainer:
         dual_lattice: bool = True,
         metric_w: Optional[Tuple[float, float]] = None,
         dual_max_walk: int = 4,
+        use_p1bp: bool = True,
     ) -> Dict:
         """
         Stage III: High-Speed Ballistic + Anchored Differential DSS-Play Control on PI-NBM-Net.
@@ -690,78 +698,147 @@ class HardwareRectangleTrainer:
         ballistic_ms = (time.perf_counter() - t0) * 1000.0 + 48.0
         self.wait_until_settled(min_wait_s=0.095, max_wait_s=0.175, vel_tol_cnt=1.0)
 
-        # Phase 2: DSS-Play + Differential K_trim + Stiction-Escape Impulse-Retract Micro-Trim
-        K_trim = self.manifold.K_trim
+        # Phase 2: DSS-Play + Deadband-Feedforward K_meas (P1-B') or legacy Differential K_trim
         cur_u_kin = u_kin_tgt.copy()
         p_prev_trim = self.get_rect_position()
-        damping = np.ones(2, dtype=float)
-        prev_err_sign = np.zeros(2, dtype=float)
-        stall_x = 0
-        stall_y = 0
 
-        for trim_idx in range(28):
-            p_meas = self.get_rect_position()
-            err_vec = p_target - p_meas
-            err_cnt = float(np.hypot(err_vec[0], err_vec[1]))
-            if err_cnt <= tol_counts:
-                break
+        if use_p1bp:
+            K_trim = self.manifold.K_meas
+            damping = np.ones(2, dtype=float)
+            prev_err_sign = np.zeros(2, dtype=float)
+            stall_x = 0
+            stall_y = 0
 
-            moved_x = abs(float(p_meas[0] - p_prev_trim[0])) if trim_idx > 0 else 0.0
-            moved_y = abs(float(p_meas[1] - p_prev_trim[1])) if trim_idx > 0 else 0.0
-            p_prev_trim = p_meas.copy()
+            for trim_idx in range(20):
+                p_meas = p_prev_trim if trim_idx == 0 else self.get_rect_position()
+                err_vec = p_target - p_meas
+                err_cnt = float(np.hypot(err_vec[0], err_vec[1]))
+                if err_cnt <= tol_counts:
+                    break
 
-            if trim_idx > 0:
-                if abs(err_vec[0]) > 1.0 and moved_x < 1.0:
-                    stall_x += 1
-                elif moved_x >= 1.5:
-                    stall_x = 0
+                moved_x = abs(float(p_meas[0] - p_prev_trim[0])) if trim_idx > 0 else 0.0
+                moved_y = abs(float(p_meas[1] - p_prev_trim[1])) if trim_idx > 0 else 0.0
+                p_prev_trim = p_meas.copy()
 
-                if abs(err_vec[1]) > 1.0 and moved_y < 1.0:
-                    stall_y += 1
-                elif moved_y >= 1.5:
-                    stall_y = 0
+                if trim_idx > 0:
+                    if abs(err_vec[0]) > 1.0 and moved_x < 1.0:
+                        stall_x += 1
+                    elif moved_x >= 1.5:
+                        stall_x = 0
 
-            # 双侧连续 3 次推不动 => 已经掉进量化死区(实测 6~14 us)，
-            # 而本循环单步下限是 2.5 us(< 死区)，继续 trim 只是空转刷时间。
-            if stall_x >= 3 and stall_y >= 3:
-                break
+                    if abs(err_vec[1]) > 1.0 and moved_y < 1.0:
+                        stall_y += 1
+                    elif moved_y >= 1.5:
+                        stall_y = 0
 
-            for i in (0, 1):
-                s = np.sign(err_vec[i]) if abs(err_vec[i]) > 1.2 else 0.0
-                if s != 0.0 and prev_err_sign[i] != 0.0 and s != prev_err_sign[i]:
-                    damping[i] = max(0.45, damping[i] * 0.60)
-                elif s != 0.0 and s == prev_err_sign[i]:
-                    damping[i] = min(1.0, damping[i] * 1.25)
-                if s != 0.0:
-                    prev_err_sign[i] = s
+                if stall_x >= 3 and stall_y >= 3:
+                    break
 
-            gain_base = 0.82 if err_cnt >= 4.0 else 0.68
-            gain_x = gain_base * (1.0 + 0.35 * min(stall_x, 4))
-            gain_y = gain_base * (1.0 + 0.35 * min(stall_y, 4))
-            gain_vec = np.array([gain_x, gain_y], dtype=float)
+                for i in (0, 1):
+                    s = np.sign(err_vec[i]) if abs(err_vec[i]) > 1.2 else 0.0
+                    if s != 0.0 and prev_err_sign[i] != 0.0 and s != prev_err_sign[i]:
+                        damping[i] = max(0.45, damping[i] * 0.60)
+                    elif s != 0.0 and s == prev_err_sign[i]:
+                        damping[i] = min(1.0, damping[i] * 1.25)
+                    if s != 0.0:
+                        prev_err_sign[i] = s
 
-            max_du = max(2.5, min(18.0, 0.45 * err_cnt))
-            du_kin_step = np.clip(damping * gain_vec * (K_trim @ err_vec), -max_du, max_du)
+                gain_base = 0.85 if err_cnt >= 4.0 else 0.72
+                gain_x = gain_base * (1.0 + 0.35 * min(stall_x, 4))
+                gain_y = gain_base * (1.0 + 0.35 * min(stall_y, 4))
+                gain_vec = np.array([gain_x, gain_y], dtype=float)
 
-            cur_u_kin = cur_u_kin + du_kin_step
-            self.manifold.pi_net.last_u_kin = cur_u_kin.copy()
-            u_cmd = cur_u_kin + self.manifold.pi_net.play_g
-            ux_cmd = float(np.clip(u_cmd[0], WS63ServoDriver.SAFE_MIN_US, WS63ServoDriver.SAFE_MAX_US))
-            uy_cmd = float(np.clip(u_cmd[1], WS63ServoDriver.SAFE_MIN_US, WS63ServoDriver.SAFE_MAX_US))
+                max_du = max(2.5, min(18.0, 0.45 * err_cnt))
+                du_kin_step = np.clip(damping * gain_vec * (K_trim @ err_vec), -max_du, max_du)
 
-            # Section III Impulse-Retract Kinetic Nudge to break MG996R 8us H-bridge comparator deadband
-            extra_kick_x = 1.0 * min(stall_x, 3)
-            extra_kick_y = 1.0 * min(stall_y, 3)
-            kick_x = np.sign(du_kin_step[0]) * (5.5 + extra_kick_x) if (stall_x >= 1 and abs(du_kin_step[0]) > 0.18) else 0.0
-            kick_y = np.sign(du_kin_step[1]) * (4.5 + extra_kick_y) if (stall_y >= 1 and abs(du_kin_step[1]) > 0.18) else 0.0
-            if kick_x != 0.0 or kick_y != 0.0:
-                ux_imp = float(np.clip(ux_cmd + kick_x, WS63ServoDriver.SAFE_MIN_US, WS63ServoDriver.SAFE_MAX_US))
-                uy_imp = float(np.clip(uy_cmd + kick_y, WS63ServoDriver.SAFE_MIN_US, WS63ServoDriver.SAFE_MAX_US))
-                self.driver.send_raw_pulses(ux_imp, uy_imp)
-                time.sleep(0.028)
+                cur_u_kin = cur_u_kin + du_kin_step
+                self.manifold.pi_net.last_u_kin = cur_u_kin.copy()
+                u_cmd = cur_u_kin + self.manifold.pi_net.play_g
+                ux_cmd = float(np.clip(u_cmd[0], WS63ServoDriver.SAFE_MIN_US, WS63ServoDriver.SAFE_MAX_US))
+                uy_cmd = float(np.clip(u_cmd[1], WS63ServoDriver.SAFE_MIN_US, WS63ServoDriver.SAFE_MAX_US))
 
-            self.driver.send_raw_pulses(ux_cmd, uy_cmd)
-            self.wait_until_settled(min_wait_s=0.065, max_wait_s=0.110, vel_tol_cnt=0.8)
+                # 遇到停滞时用实测死区 (6.78, 5.90) 作为临时冲量微扰（不永久累加进 cur_u_kin，避免双计 play_g）
+                d_hat = self.manifold.deadband_ff_us
+                kick_x = np.sign(du_kin_step[0]) * (float(d_hat[0]) + 1.0 * min(stall_x, 2)) if (stall_x >= 1 and abs(du_kin_step[0]) > 0.18) else 0.0
+                kick_y = np.sign(du_kin_step[1]) * (float(d_hat[1]) + 1.0 * min(stall_y, 2)) if (stall_y >= 1 and abs(du_kin_step[1]) > 0.18) else 0.0
+                if kick_x != 0.0 or kick_y != 0.0:
+                    ux_imp = float(np.clip(ux_cmd + kick_x, WS63ServoDriver.SAFE_MIN_US, WS63ServoDriver.SAFE_MAX_US))
+                    uy_imp = float(np.clip(uy_cmd + kick_y, WS63ServoDriver.SAFE_MIN_US, WS63ServoDriver.SAFE_MAX_US))
+                    self.driver.send_raw_pulses(ux_imp, uy_imp)
+                    time.sleep(0.040)
+
+                self.driver.send_raw_pulses(ux_cmd, uy_cmd)
+                self.wait_until_settled(min_wait_s=0.065, max_wait_s=0.110, vel_tol_cnt=0.8)
+        else:
+            K_trim = self.manifold.K_trim
+            damping = np.ones(2, dtype=float)
+            prev_err_sign = np.zeros(2, dtype=float)
+            stall_x = 0
+            stall_y = 0
+
+            for trim_idx in range(28):
+                p_meas = self.get_rect_position()
+                err_vec = p_target - p_meas
+                err_cnt = float(np.hypot(err_vec[0], err_vec[1]))
+                if err_cnt <= tol_counts:
+                    break
+
+                moved_x = abs(float(p_meas[0] - p_prev_trim[0])) if trim_idx > 0 else 0.0
+                moved_y = abs(float(p_meas[1] - p_prev_trim[1])) if trim_idx > 0 else 0.0
+                p_prev_trim = p_meas.copy()
+
+                if trim_idx > 0:
+                    if abs(err_vec[0]) > 1.0 and moved_x < 1.0:
+                        stall_x += 1
+                    elif moved_x >= 1.5:
+                        stall_x = 0
+
+                    if abs(err_vec[1]) > 1.0 and moved_y < 1.0:
+                        stall_y += 1
+                    elif moved_y >= 1.5:
+                        stall_y = 0
+
+                # 双侧连续 3 次推不动 => 已经掉进量化死区(实测 6~14 us)，
+                # 而本循环单步下限是 2.5 us(< 死区)，继续 trim 只是空转刷时间。
+                if stall_x >= 3 and stall_y >= 3:
+                    break
+
+                for i in (0, 1):
+                    s = np.sign(err_vec[i]) if abs(err_vec[i]) > 1.2 else 0.0
+                    if s != 0.0 and prev_err_sign[i] != 0.0 and s != prev_err_sign[i]:
+                        damping[i] = max(0.45, damping[i] * 0.60)
+                    elif s != 0.0 and s == prev_err_sign[i]:
+                        damping[i] = min(1.0, damping[i] * 1.25)
+                    if s != 0.0:
+                        prev_err_sign[i] = s
+
+                gain_base = 0.82 if err_cnt >= 4.0 else 0.68
+                gain_x = gain_base * (1.0 + 0.35 * min(stall_x, 4))
+                gain_y = gain_base * (1.0 + 0.35 * min(stall_y, 4))
+                gain_vec = np.array([gain_x, gain_y], dtype=float)
+
+                max_du = max(2.5, min(18.0, 0.45 * err_cnt))
+                du_kin_step = np.clip(damping * gain_vec * (K_trim @ err_vec), -max_du, max_du)
+
+                cur_u_kin = cur_u_kin + du_kin_step
+                self.manifold.pi_net.last_u_kin = cur_u_kin.copy()
+                u_cmd = cur_u_kin + self.manifold.pi_net.play_g
+                ux_cmd = float(np.clip(u_cmd[0], WS63ServoDriver.SAFE_MIN_US, WS63ServoDriver.SAFE_MAX_US))
+                uy_cmd = float(np.clip(u_cmd[1], WS63ServoDriver.SAFE_MIN_US, WS63ServoDriver.SAFE_MAX_US))
+
+                # Section III Impulse-Retract Kinetic Nudge to break MG996R 8us H-bridge comparator deadband
+                extra_kick_x = 1.0 * min(stall_x, 3)
+                extra_kick_y = 1.0 * min(stall_y, 3)
+                kick_x = np.sign(du_kin_step[0]) * (5.5 + extra_kick_x) if (stall_x >= 1 and abs(du_kin_step[0]) > 0.18) else 0.0
+                kick_y = np.sign(du_kin_step[1]) * (4.5 + extra_kick_y) if (stall_y >= 1 and abs(du_kin_step[1]) > 0.18) else 0.0
+                if kick_x != 0.0 or kick_y != 0.0:
+                    ux_imp = float(np.clip(ux_cmd + kick_x, WS63ServoDriver.SAFE_MIN_US, WS63ServoDriver.SAFE_MAX_US))
+                    uy_imp = float(np.clip(uy_cmd + kick_y, WS63ServoDriver.SAFE_MIN_US, WS63ServoDriver.SAFE_MAX_US))
+                    self.driver.send_raw_pulses(ux_imp, uy_imp)
+                    time.sleep(0.028)
+
+                self.driver.send_raw_pulses(ux_cmd, uy_cmd)
+                self.wait_until_settled(min_wait_s=0.065, max_wait_s=0.110, vel_tol_cnt=0.8)
 
         # Phase 3: 双侧晶格精修 —— 实测依据(experiments/dual_lattice_*.csv):
         #   同一名义脉冲，从下侧接近落点 1.38+-2.97 cnt，从上侧落点 15.62+-2.39 cnt，
@@ -774,7 +851,7 @@ class HardwareRectangleTrainer:
         if dual_lattice and cur_err_pre > tol_counts:
             cur_u_kin, p_final, dual_info = self._dual_side_refine(
                 cur_u_kin, p_target, tol_counts=tol_counts, metric_w=metric_w,
-                max_walk=dual_max_walk,
+                max_walk=dual_max_walk, use_p1bp=use_p1bp,
             )
             dual_trials = dual_info["trials"]
             dual_gain = dual_info["gain_cnt"]
@@ -806,6 +883,7 @@ class HardwareRectangleTrainer:
         max_walk: int = 4,
         eps_cnt: float = 1.0,
         metric_w: Optional[Tuple[float, float]] = None,
+        use_p1bp: bool = True,
     ):
         """在同一次访问内，用"双侧接近 + 1us 步进"磨损量化台阶。
 
@@ -894,7 +972,8 @@ class HardwareRectangleTrainer:
             # 台阶方向也用加权误差向量，保证是在最小化被判分的那把尺
             err_vec = np.array([wx * (p_target[0] - best_p[0]),
                                 wy * (p_target[1] - best_p[1])], dtype=float)
-            step_dir = self.manifold.K_trim @ err_vec
+            K_step = self.manifold.K_meas if use_p1bp else self.manifold.K_trim
+            step_dir = K_step @ err_vec
             nrm = float(np.hypot(step_dir[0], step_dir[1]))
             if nrm > 1e-6:
                 unit = step_dir / nrm

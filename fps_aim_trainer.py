@@ -65,12 +65,14 @@ class FullScreenFPSAimTrainer:
         # 每次行走都多一轮 0.18 s 过冲+静置，漂移累积速度超过精修收益。
         # 注意历史那次否证是"加大步长+放宽 max_walk"混合改动，本条是单独放宽的结论。
         dual_max_walk: int = 4,
+        use_p1bp: bool = True,
         run_tag: str = "",
     ):
         self.trainer = HardwareRectangleTrainer()
         self.trainer.sensor.start()
         self.trainer.move_to_rect_origin(settle_s=0.45)
         self.dual_max_walk = int(dual_max_walk)
+        self.use_p1bp = bool(use_p1bp)
 
         self.sw = user32.GetSystemMetrics(0) or 1536
         self.sh = user32.GetSystemMetrics(1) or 864
@@ -135,6 +137,7 @@ class FullScreenFPSAimTrainer:
             dual_lattice=True,
             metric_w=metric_w,
             dual_max_walk=self.dual_max_walk,
+            use_p1bp=self.use_p1bp,
         )
 
         act_sx, act_sy = self.rect_to_screen(res["final"][0], res["final"][1])
@@ -704,6 +707,8 @@ if __name__ == "__main__":
                         help="Enable screen-weighted selection metric (default OFF: measured worse, kept only for A/B repro)")
     parser.add_argument("--dual-max-walk", type=int, default=4,
                         help="Dual-lattice refine step-walk budget (default 4). Telemetry shows 4 is binding.")
+    parser.add_argument("--no-p1bp", action="store_true",
+                        help="Disable P1-B' deadband feedforward + K_meas (revert to legacy K_trim for A/B check)")
     parser.add_argument("--tag", type=str, default="",
                         help="Suffix appended to output CSV filenames (e.g. _nomw_r1)")
     args = parser.parse_args()
@@ -714,6 +719,7 @@ if __name__ == "__main__":
         seed=args.seed,
         use_metric_w=bool(args.metric_w),
         dual_max_walk=args.dual_max_walk,
+        use_p1bp=not bool(args.no_p1bp),
         run_tag=args.tag,
     )
     try:
