@@ -325,25 +325,49 @@ class HardwareRectangleTrainer:
         self.manifold = RectangularManifoldController()
         self.sensor = HighPrecisionMouseSensor(dpi=3200)
         self.driver = WS63ServoDriver()
-        self.driver.set_pwm_frequency(200)
+        self.driver.set_pwm_frequency(100)
         self.origin_sensor_xy = np.zeros(2, dtype=float)
+        # Online secant plant-gain scaler (d_meas / d_cmd_unscaled) clipped to [0.4, 1.5]
+        self.alpha_gain = np.ones(2, dtype=float)
+        # Per-direction ILC feedforward table: dir_key -> np.zeros((2, 2)) where [0]=ilc_bst, [1]=ilc_eq
+        self.dir_ilc: Dict[Tuple[int, int], np.ndarray] = {}
+        # Track last engaged motion sign (+1 / -1) in joint space for same-flank vs reversal compensation
+        self.last_motion_dir = np.ones(2, dtype=float)
 
-    def wait_until_settled(self, min_wait_s: float = 0.075, max_wait_s: float = 0.165, vel_tol_cnt: float = 1.0):
-        """Waits at least min_wait_s (past 48ms servo onset), then exits as soon as optical velocity is zero."""
-        time.sleep(min_wait_s)
-        t_start = time.perf_counter()
+    def reset_online_adaptation(self, reset_alpha: bool = True, reset_ilc: bool = True):
+        """Reset online secant gain scaler and/or per-direction ILC bias table."""
+        if reset_alpha:
+            self.alpha_gain = np.ones(2, dtype=float)
+        if reset_ilc:
+            self.dir_ilc.clear()
+
+    def wait_until_settled(
+        self,
+        min_wait_s: float = 0.065,
+        max_wait_s: float = 0.145,
+        vel_tol_cnt: float = 1.0,
+        t_ref: Optional[float] = None,
+        poll_s: float = 0.005,
+        still_need: int = 3,
+    ) -> float:
+        """Wait until optical velocity settles, returning backtraced last non-zero motion timestamp."""
+        base_t = time.perf_counter() if t_ref is None else float(t_ref)
+        rem_min = min_wait_s - (time.perf_counter() - base_t)
+        if rem_min > 0.0:
+            time.sleep(rem_min)
         p_prev = self.get_rect_position()
         still_cnt = 0
-        while (time.perf_counter() - t_start) < (max_wait_s - min_wait_s):
-            time.sleep(0.015)
+        while (time.perf_counter() - base_t) < max_wait_s:
+            time.sleep(poll_s)
             p_now = self.get_rect_position()
             if float(np.hypot(p_now[0] - p_prev[0], p_now[1] - p_prev[1])) <= vel_tol_cnt:
                 still_cnt += 1
-                if still_cnt >= 2:
+                if still_cnt >= still_need:
                     break
             else:
                 still_cnt = 0
             p_prev = p_now
+        return self.sensor.get_last_motion_time()
 
     def move_to_rect_origin(self, settle_s: float = 0.45):
         """
@@ -367,6 +391,7 @@ class HardwareRectangleTrainer:
         sx, sy = self.sensor.get_position()
         self.origin_sensor_xy = np.array([float(sx), float(sy)], dtype=float)
         self.manifold.cur_rect_pos = np.zeros(2, dtype=float)
+        self.last_motion_dir = np.ones(2, dtype=float)
 
     def get_rect_position(self) -> np.ndarray:
         sx, sy = self.sensor.get_position()
@@ -603,6 +628,178 @@ class HardwareRectangleTrainer:
             "csv_path": csv_path,
         }
 
+    def _stage2_p0b_step(
+        self,
+        p_s1: np.ndarray,
+        p_target: np.ndarray,
+        u_s1_cmd: np.ndarray,
+        u_hold_ref: np.ndarray,
+        chord_vec: np.ndarray,
+        s1_dir_hint: Optional[np.ndarray] = None,
+        t0_ref: Optional[float] = None,
+        tol_counts: float = 1.2,
+    ) -> Tuple[np.ndarray, float, int]:
+        """
+        Execute up to 2 gentle same-flank-preferring closed-loop corrections (Stage 2).
+        Enforces:
+        1. No-Harm Guardrail: skip Stage 2 when |e1| <= 2.8 or (|e_major| <= 1.5 and |e_minor| <= 3.0).
+        2. Anti-Slip Clamp: when correcting one axis while the other axis is already landed,
+           apply -2.8us reverse sub-deadband clamp on the landed axis during the kick to prevent 2D slip.
+        """
+        p_final = np.asarray(p_s1, dtype=float).copy()
+        u_cmd = np.asarray(u_s1_cmd, dtype=float).copy()
+        dir_hint = np.sign(s1_dir_hint) if s1_dir_hint is not None else np.zeros(2, dtype=float)
+        t_s2_last = self.sensor.get_last_motion_time()
+        trials = 0
+
+        err0 = p_target - p_final
+        e1_norm = float(np.hypot(err0[0], err0[1]))
+        major_ax = 0 if abs(float(chord_vec[0])) >= abs(float(chord_vec[1])) else 1
+        minor_ax = 1 - major_ax
+        minor_lim = 3.0 if abs(float(chord_vec[minor_ax])) < 0.5 * abs(float(chord_vec[major_ax])) else 2.2
+        if e1_norm <= 2.7 or (abs(float(err0[major_ax])) <= 1.5 and abs(float(err0[minor_ax])) <= minor_lim):
+            return p_final, t_s2_last, 0
+
+        base_t = time.perf_counter() if t0_ref is None else float(t0_ref)
+        for _step_idx in range(2):
+            if (time.perf_counter() - base_t) > 0.124:
+                break
+            err_vec = p_target - p_final
+            err_now = float(np.hypot(err_vec[0], err_vec[1]))
+            if err_now <= max(1.2, float(tol_counts)):
+                break
+
+            K_s2 = np.array([
+                [0.195, -0.075 if err_vec[1] >= 0.0 else -0.220],
+                [-0.025, -0.170 if err_vec[1] >= 0.0 else -0.225],
+            ], dtype=float)
+            du_s2 = K_s2 @ err_vec
+            d_kick = np.zeros(2, dtype=float)
+            ramp_step = np.zeros(2, dtype=float)
+            db_hold = np.zeros(2, dtype=float)
+            ax_active = [False, False]
+
+            for ax in (0, 1):
+                err_ax = abs(float(err_vec[ax]))
+                if err_ax > 1.35 and abs(float(du_s2[ax])) > 0.14:
+                    is_rev = (abs(float(dir_hint[ax])) > 0.0) and (float(du_s2[ax]) * float(dir_hint[ax]) < 0.0)
+                    sgn_s2 = float(np.sign(du_s2[ax]))
+                    if ax == 0:
+                        if is_rev and err_ax > 2.0 and (float(err_vec[0]) * float(du_s2[0]) > 0.0 or abs(float(du_s2[0])) > 0.8):
+                            rev_scale = min(1.0, abs(float(u_cmd[0] - u_hold_ref[0])) / 14.0)
+                            d0 = (8.8 + 0.60 * min(err_ax, 8.0)) * (0.45 + 0.55 * rev_scale)
+                            db_hold[0] = sgn_s2 * min(11.0, 10.0 * rev_scale)
+                            ramp_step[0] = sgn_s2 * 2.8
+                            ax_active[0] = True
+                        elif not is_rev:
+                            d0 = 5.8 + 0.52 * min(err_ax, 8.0)
+                            ramp_step[0] = sgn_s2 * 2.4
+                            ax_active[0] = True
+                        else:
+                            d0 = 0.0
+                    else:
+                        if is_rev and sgn_s2 < 0.0:
+                            d0 = 3.4 + 0.22 * min(err_ax, 10.0)
+                            ramp_step[1] = sgn_s2 * 1.4
+                        elif (not is_rev) and sgn_s2 < 0.0:
+                            d0 = 10.5 + 0.48 * min(err_ax, 8.0)
+                            ramp_step[1] = sgn_s2 * 2.4
+                        elif is_rev and sgn_s2 > 0.0:
+                            d0 = 7.0 + 0.35 * min(err_ax, 8.0)
+                            ramp_step[1] = sgn_s2 * 2.0
+                        else:
+                            d0 = 8.6 + 0.42 * min(err_ax, 8.0)
+                            ramp_step[1] = sgn_s2 * 2.2
+                        ax_active[1] = True
+                    d_kick[ax] = sgn_s2 * d0
+
+            if not (ax_active[0] or ax_active[1]):
+                break
+
+            trials += 1
+            u_base = u_cmd + du_s2 + db_hold
+            u_eq2 = np.clip(
+                u_cmd + 0.90 * du_s2 + db_hold,
+                WS63ServoDriver.SAFE_MIN_US,
+                WS63ServoDriver.SAFE_MAX_US,
+            )
+
+            # Anti-Slip Clamp: if one axis is already landed (not active), apply -2.8us sub-deadband
+            # clamp opposite Stage-1 motion direction during kick so 2D friction cone opening won't slip it.
+            anti_slip = np.zeros(2, dtype=float)
+            for ax_i in (0, 1):
+                if not ax_active[ax_i] and abs(float(dir_hint[ax_i])) > 0.0:
+                    anti_slip[ax_i] = -2.8 * float(np.sign(dir_hint[ax_i]))
+
+            def _build_kick(dk_now: np.ndarray, done_flags: List[bool]) -> np.ndarray:
+                pulse = u_eq2.copy()
+                for ax_i in (0, 1):
+                    if not done_flags[ax_i]:
+                        pulse[ax_i] = u_base[ax_i] + dk_now[ax_i]
+                    elif abs(anti_slip[ax_i]) > 0.0:
+                        pulse[ax_i] = u_eq2[ax_i] + anti_slip[ax_i]
+                if not done_flags[1] and abs(dk_now[1]) > 4.0:
+                    cff = 0.24 if float(dir_hint[0]) < 0.0 else (0.12 if ax_active[0] else 0.08)
+                    pulse[0] += cff * dk_now[1]
+                return np.clip(pulse, WS63ServoDriver.SAFE_MIN_US, WS63ServoDriver.SAFE_MAX_US)
+
+            t_s2_0 = time.perf_counter()
+            p_step_start = p_final.copy()
+            ax_done = [not ax_active[0], not ax_active[1]]
+            dk_cur = d_kick.copy()
+            cur_out = _build_kick(dk_cur, ax_done)
+            self.driver.send_raw_pulses(float(cur_out[0]), float(cur_out[1]))
+            ramp_idx = 0
+            next_ramp_ms = 5.8
+            while not (ax_done[0] and ax_done[1]):
+                time.sleep(0.0003)
+                now = time.perf_counter()
+                el_ms = (now - t_s2_0) * 1000.0
+                if el_ms >= 21.0 or (now - base_t) >= 0.130:
+                    break
+                p_live = self.get_rect_position()
+                changed = False
+                for ax in (0, 1):
+                    if ax_done[ax]:
+                        continue
+                    sgn_e = 1.0 if err_vec[ax] >= 0.0 else -1.0
+                    dp_ax = (p_live[ax] - p_step_start[ax]) * sgn_e
+                    e_ax = abs(float(err_vec[ax]))
+                    ax_is_rev = (abs(float(dir_hint[ax])) > 0.0) and (float(du_s2[ax]) * float(dir_hint[ax]) < 0.0)
+                    cut_ratio = 0.42 if ax_is_rev else 0.56
+                    if dp_ax >= max(1.0, cut_ratio * e_ax):
+                        ax_done[ax] = True
+                        changed = True
+                if not (ax_done[0] and ax_done[1]) and el_ms >= next_ramp_ms and ramp_idx < 2:
+                    ramp_idx += 1
+                    next_ramp_ms += 5.8
+                    for ax in (0, 1):
+                        if not ax_done[ax]:
+                            dk_cur[ax] += ramp_step[ax]
+                    changed = True
+                if changed:
+                    if ax_done[0] and ax_done[1]:
+                        break
+                    nxt = _build_kick(dk_cur, ax_done)
+                    self.driver.send_raw_pulses(float(nxt[0]), float(nxt[1]))
+
+            self.driver.send_raw_pulses(float(u_eq2[0]), float(u_eq2[1]))
+            t_s2_last = self.wait_until_settled(
+                min_wait_s=0.011,
+                max_wait_s=0.020,
+                vel_tol_cnt=0.8,
+                t_ref=time.perf_counter(),
+                poll_s=0.003,
+                still_need=2,
+            )
+            p_final = self.get_rect_position()
+            u_cmd = u_eq2.copy()
+            for ax in (0, 1):
+                if abs(float(du_s2[ax])) > 0.2:
+                    dir_hint[ax] = float(np.sign(du_s2[ax]))
+
+        return p_final, t_s2_last, trials
+
     def move_point_to_point(
         self,
         x_target: float,
@@ -614,14 +811,16 @@ class HardwareRectangleTrainer:
         metric_w: Optional[Tuple[float, float]] = None,
         dual_max_walk: int = 4,
         use_p1bp: bool = True,
+        two_stage: bool = True,
+        enable_ilc_update: bool = False,
     ) -> Dict:
         """
-        Stage III: High-Speed Ballistic + Anchored Differential DSS-Play Control on PI-NBM-Net.
-        - Phase 1 (Anchored Differential Feedforward + Ballistic Overdrive Boost + 1000Hz Braking):
-          Anchors target pulse to the converged equilibrium state at p_start plus the neural
-          manifold chord differential, cancelling slow drift and row-wise slack offsets.
-        - Phase 2 (DSS-Play + Stiction-Escape + Bisection-Damped Impulse-Retract Micro-Trim):
-          Converges reliably to <= 2.0 counts across the entire 780x600 workspace.
+        Two-stage fast positioning controller:
+        - Pre-Shot (t < t0): 20ms sub-deadband Directional Pre-load to engage firing gear flank.
+        - Stage 1 (0~72ms): Conservative 0.84*target undershoot using WS63 B-command hardware timer
+          with 1000Hz PC optical pos_cut H-override guard.
+        - Stage 2 (72~145ms): Same-flank closed-loop correction with No-Harm Guardrail & Anti-Slip Clamp.
+        Pass two_stage=False for legacy multi-walk refine ablation.
         """
         x_tgt = float(np.clip(x_target, -0.95 * self.manifold.W, 0.95 * self.manifold.W))
         y_tgt = float(np.clip(y_target, -0.95 * self.manifold.H, 0.95 * self.manifold.H))
@@ -640,67 +839,319 @@ class HardwareRectangleTrainer:
                 "straight_dev_pct": 0.0,
                 "ballistic_ms": 0.0,
                 "elapsed_ms": 0.0,
+                "settled_ms": 0.0,
+                "dual_trials": 0,
+                "dual_gain_cnt": 0.0,
+                "u_kin_final": self.manifold.evaluate_kinematic_pulse(float(p_start[0]), float(p_start[1])).tolist(),
+            }
+
+        u_hold = np.array([self.driver.cur_s1, self.driver.cur_s2], dtype=float)
+        u_kin_m_start = self.manifold.evaluate_kinematic_pulse(float(p_start[0]), float(p_start[1]))
+        u_kin_m_tgt = self.manifold.evaluate_kinematic_pulse(x_tgt, y_tgt)
+
+        if two_stage:
+            def _get_K_meas(dx: float, dy: float) -> np.ndarray:
+                return np.array([
+                    [0.19800, -0.14500 if dy >= 0.0 else -0.51500],
+                    [0.02500 if dx >= 0.0 else -0.06200, -0.17000 if dy >= 0.0 else -0.26600],
+                ], dtype=float)
+
+            K_meas = _get_K_meas(float(chord_vec[0]), float(chord_vec[1]))
+            du_pre_est = K_meas @ chord_vec
+
+            # Pre-Shot Directional Pre-load (~24ms sub-deadband hold before t0 at F7000)
+            # Only preload axes with intentional commanded displacement so Y-only shots do not pre-slip X.
+            pre_du = np.zeros(2, dtype=float)
+            for ax in (0, 1):
+                if abs(float(chord_vec[ax])) >= 5.0:
+                    drv = float(K_meas[ax, ax] * chord_vec[ax])
+                    sgn = float(np.sign(drv))
+                    same_flk = (drv * float(self.last_motion_dir[ax]) >= 0.0)
+                    amp_pre = (4.2 if same_flk else 12.5) if ax == 0 else (4.2 if same_flk else 5.0)
+                    pre_du[ax] = sgn * amp_pre * min(1.0, abs(float(chord_vec[ax])) / 15.0)
+            if np.any(np.abs(pre_du) > 0.2):
+                u_pre = np.clip(
+                    u_hold + pre_du,
+                    WS63ServoDriver.SAFE_MIN_US,
+                    WS63ServoDriver.SAFE_MAX_US,
+                )
+                self.driver.ser.write(b"F 7000\n")
+                self.driver.send_raw_pulses(float(u_pre[0]), float(u_pre[1]))
+                t_pre_end = time.perf_counter() + 0.024
+                while time.perf_counter() < t_pre_end:
+                    time.sleep(0.002)
+                    p_chk = self.get_rect_position()
+                    if float(np.hypot(p_chk[0] - p_start[0], p_chk[1] - p_start[1])) >= 1.5:
+                        break
+                p_start = self.get_rect_position()
+                chord_vec = p_target - p_start
+                L = max(1.0, float(np.linalg.norm(chord_vec)))
+                K_meas = _get_K_meas(float(chord_vec[0]), float(chord_vec[1]))
+
+            d_hat = chord_vec / L
+            n_hat = np.array([-d_hat[1], d_hat[0]], dtype=float)
+            dir_key = (int(round(x_tgt - p_start[0])), int(round(y_tgt - p_start[1])))
+
+            # Conservative Route-1 Stage-1 Target: ~0.85*L (undershoot 4~6 cnt to favor same-flank Stage 2)
+            tgt_s1 = p_start + (0.85 * chord_vec if L >= 18.0 else (chord_vec - min(4.0, 0.15 * L) * d_hat))
+            du_lin = K_meas @ chord_vec
+            du_lin_s1 = K_meas @ (tgt_s1 - p_start)
+
+            near_origin = float(np.hypot(p_start[0], p_start[1])) <= 12.0
+            db_eq = np.zeros(2, dtype=float)
+            db_bst = np.zeros(2, dtype=float)
+            for ax in (0, 1):
+                if ax == 0:
+                    x_intent = float(K_meas[0, 0] * chord_vec[0] + 0.35 * K_meas[0, 1] * chord_vec[1])
+                    sgn = float(np.sign(x_intent)) if abs(x_intent) > 1e-6 else 0.0
+                    same_flank = (x_intent * float(self.last_motion_dir[0]) >= 0.0)
+                    if same_flank:
+                        w_dir = min(1.0, abs(K_meas[0, 0] * float(chord_vec[0])) / 5.2)
+                        w_cpl = min(1.0, abs(float(du_lin[0])) / 6.0)
+                        w_bst = max(w_dir, 0.55 * w_cpl) if abs(float(chord_vec[0])) > 5.0 else 0.35 * w_cpl
+                        w_eq = 0.0
+                        amp_bst = 46.0 if float(chord_vec[0]) >= 0.0 else 43.5
+                        amp_eq = 0.0
+                    else:
+                        w_eq = min(1.0, abs(K_meas[0, 0] * float(chord_vec[0])) / 5.5)
+                        w_bst = min(1.0, (0.75 * abs(K_meas[0, 0] * float(chord_vec[0])) + 0.35 * abs(float(du_lin[0]))) / 6.0)
+                        amp_eq = 17.5
+                        amp_bst = 60.0 if float(chord_vec[0]) >= 0.0 else 58.0
+                else:
+                    same_flank = (du_lin[1] * float(self.last_motion_dir[1]) >= 0.0)
+                    amp_eq = 0.3 if same_flank else 0.0
+                    if du_lin[1] < 0.0:
+                        amp_bst = 8.6 if same_flank else 7.8
+                    else:
+                        amp_bst = 11.4 if same_flank else 9.6
+                    y_drive = max(abs(float(K_meas[1, 1] * float(chord_vec[1]))), abs(float(du_lin[1])))
+                    w_bst = min(1.0, y_drive / (4.2 if same_flank else 1.5))
+                    w_eq = min(1.0, abs(float(du_lin[1])) / (4.5 if same_flank else 1.5))
+                    sgn = float(np.sign(du_lin[1]))
+                db_eq[ax] = w_eq * sgn * amp_eq
+                db_bst[ax] = w_bst * sgn * amp_bst
+
+            if float(chord_vec[0]) > 5.0:
+                taper_y = max(0.0, 1.0 - abs(float(chord_vec[1])) / 22.0)
+                db_bst[1] -= 7.2 * taper_y * min(1.0, float(chord_vec[0]) / 30.0)
+
+            ilc_state = self.dir_ilc.get(dir_key, np.zeros((3, 2), dtype=float))
+            if not near_origin or ilc_state.shape != (3, 2):
+                ilc_state = np.zeros((3, 2), dtype=float)
+            ilc_bst, ilc_eq = ilc_state[0], ilc_state[1]
+            ilc_dur_us = float(ilc_state[2, 0])
+
+            if L <= 70.0:
+                bst_dur_us = int(np.clip(51500.0 + ilc_dur_us, 40000.0, 59000.0))
+                du_eq = du_lin_s1 + db_eq + ilc_eq
+                du_bst = 1.42 * du_lin + db_bst + ilc_bst
+                if abs(float(chord_vec[0])) < 8.0 and float(chord_vec[1]) < -10.0:
+                    # Moderate cross-X boost on pure -Y chords so +X does not bolt before Y breaks stiction
+                    du_bst[0] *= 0.80
+            else:
+                bst_dur_us = int(min(95000.0, 54000.0 + 180.0 * (L - 60.0)))
+                u_kin_s1 = self.manifold.evaluate_kinematic_pulse(float(tgt_s1[0]), float(tgt_s1[1]))
+                du_kin_s1 = u_kin_s1 - u_kin_m_start
+                hyst_g = np.zeros(2, dtype=float)
+                for ax in (0, 1):
+                    if abs(float(du_kin_s1[ax])) > 0.5 and (du_kin_s1[ax] * float(self.last_motion_dir[ax]) < 0.0):
+                        hyst_g[ax] = float(np.sign(du_kin_s1[ax])) * (15.0 if ax == 0 else 4.0)
+                du_eq = du_kin_s1 + hyst_g
+                du_bst = 1.35 * du_kin_s1 + hyst_g + db_bst
+
+            ux_boost = float(np.clip(u_hold[0] + du_bst[0], WS63ServoDriver.SAFE_MIN_US, WS63ServoDriver.SAFE_MAX_US))
+            uy_boost = float(np.clip(u_hold[1] + du_bst[1], WS63ServoDriver.SAFE_MIN_US, WS63ServoDriver.SAFE_MAX_US))
+            ux_lock = float(np.clip(u_hold[0] + du_eq[0], WS63ServoDriver.SAFE_MIN_US, WS63ServoDriver.SAFE_MAX_US))
+            uy_lock = float(np.clip(u_hold[1] + du_eq[1], WS63ServoDriver.SAFE_MIN_US, WS63ServoDriver.SAFE_MAX_US))
+
+            t0 = time.perf_counter()
+            try:
+                from collections import deque
+                self.driver.ser.write(b"F 7000\n")
+                self.driver.send_ballistic_pulse(ux_boost, uy_boost, ux_lock, uy_lock, bst_dur_us)
+
+                # Monitor at 1000Hz during MCU hardware countdown; override early with H on pos_cut/energy_cut.
+                pos_cut_early = (0.23 * L) if L <= 70.0 else (0.58 * L)
+                energy_cut = (0.31 * L) if L <= 70.0 else (0.72 * L)
+                dt_burn_lim = 8.4 if L <= 70.0 else min(55.0, 10.0 + 0.16 * (L - 60.0))
+                need_y_gate = abs(float(chord_vec[1])) >= 12.0
+                y_dir_sgn = 1.0 if float(chord_vec[1]) >= 0.0 else -1.0
+                y_min_early = 0.15 * abs(float(chord_vec[1]))
+                max_pc_wait_ms = bst_dur_us / 1000.0 + 1.0
+                hist = deque(maxlen=64)
+                perp_devs: List[float] = []
+                t_onset: Optional[float] = None
+                overrode_early = False
+
+                while True:
+                    time.sleep(0.00025)
+                    now = time.perf_counter()
+                    elapsed_ms = (now - t0) * 1000.0
+                    p_cur = self.get_rect_position()
+                    rel_vec = p_cur - p_start
+                    p_par = float(np.dot(rel_vec, d_hat))
+                    e_perp = float(np.dot(rel_vec, n_hat))
+                    hist.append((now, p_par))
+                    if 6.0 <= p_par <= 0.96 * L:
+                        perp_devs.append(abs(e_perp))
+
+                    y_ready = (not need_y_gate) or ((rel_vec[1] * y_dir_sgn) >= y_min_early)
+                    if t_onset is None and p_par >= max(1.8, 0.05 * min(L, 80.0)):
+                        t_onset = now
+                    if y_ready and p_par >= pos_cut_early:
+                        overrode_early = True
+                        break
+                    if t_onset is not None:
+                        dt_on = (now - t_onset) * 1000.0
+                        if y_ready and p_par >= 0.12 * L and dt_on >= 3.5:
+                            p_prev_w = p_par
+                            for th, ph in hist:
+                                if (now - th) >= 0.0035:
+                                    p_prev_w = ph
+                                else:
+                                    break
+                            dp_w = max(0.0, p_par - p_prev_w)
+                            if (p_par + 1.05 * dp_w) >= energy_cut:
+                                overrode_early = True
+                                break
+                        if y_ready and dt_on >= dt_burn_lim and p_par >= 0.13 * L:
+                            overrode_early = True
+                            break
+                        if dt_on >= (dt_burn_lim + 4.5):
+                            overrode_early = True
+                            break
+                    if elapsed_ms >= max_pc_wait_ms:
+                        break
+
+                if overrode_early:
+                    self.driver.send_raw_pulses(ux_lock, uy_lock)
+                t_brake = time.perf_counter()
+                max_s1_wait = 0.078 if L <= 70.0 else min(0.118, 0.078 + 0.00012 * (L - 70.0))
+                t_s1_last = self.wait_until_settled(
+                    min_wait_s=0.055 if L <= 70.0 else 0.065,
+                    max_wait_s=max_s1_wait,
+                    vel_tol_cnt=0.8,
+                    t_ref=t0,
+                    poll_s=0.0025,
+                    still_need=2,
+                )
+                ballistic_ms = (
+                    max(0.0, (t_s1_last - t0) * 1000.0)
+                    if t_s1_last >= t0
+                    else (t_brake - t0) * 1000.0
+                )
+
+                p_s1 = self.get_rect_position()
+                err_s1_vec = p_target - p_s1
+                err_s1 = float(np.hypot(err_s1_vec[0], err_s1_vec[1]))
+
+                # Stage 2: Same-flank closed-loop trim with No-Harm Guardrail & Anti-Slip Clamp
+                u_s1_cmd = np.array([ux_lock, uy_lock], dtype=float)
+                if dual_lattice:
+                    p_final, t_s2_last, dual_trials = self._stage2_p0b_step(
+                        p_s1,
+                        p_target,
+                        u_s1_cmd,
+                        u_hold,
+                        chord_vec,
+                        s1_dir_hint=np.sign(du_eq),
+                        t0_ref=t0,
+                        tol_counts=tol_counts,
+                    )
+                    settled_ms = (
+                        max(ballistic_ms, (t_s2_last - t0) * 1000.0)
+                        if t_s2_last >= t0
+                        else ballistic_ms
+                    )
+                else:
+                    p_final = p_s1
+                    dual_trials = 0
+                    settled_ms = ballistic_ms
+            finally:
+                self.driver.ser.write(b"F 10000\n")
+
+            if enable_ilc_update and near_origin:
+                proj_err_s1 = float(np.dot(tgt_s1 - p_s1, d_hat))
+                new_bst_us = float(np.clip(ilc_dur_us + 380.0 * proj_err_s1, -12000.0, 17000.0))
+                new_bst = np.clip(ilc_bst + 0.14 * (K_meas @ (tgt_s1 - p_s1)), -12.0, 12.0)
+                new_eq = np.clip(ilc_eq + 0.10 * (K_meas @ (p_target - p_final)), -3.0, 3.0)
+                self.dir_ilc[dir_key] = np.vstack([new_bst, new_eq, np.array([new_bst_us, 0.0], dtype=float)])
+
+            u_final_cmd = np.array([self.driver.cur_s1, self.driver.cur_s2], dtype=float)
+            du_net = u_final_cmd - u_hold
+            for ax in (0, 1):
+                if abs(float(du_net[ax])) > 0.5:
+                    self.last_motion_dir[ax] = float(np.sign(du_net[ax]))
+                elif abs(float(du_lin[ax])) > 0.8:
+                    self.last_motion_dir[ax] = float(np.sign(du_lin[ax]))
+
+            final_err = float(np.hypot(x_tgt - p_final[0], y_tgt - p_final[1]))
+            dual_gain = round(err_s1 - final_err, 2)
+            self.manifold.pi_net.last_u_kin = self.manifold.evaluate_kinematic_pulse(
+                float(p_final[0]), float(p_final[1])
+            )
+            max_dev = float(max(perp_devs)) if perp_devs else 0.0
+
+            return {
+                "start": (round(float(p_start[0]), 1), round(float(p_start[1]), 1)),
+                "target": (round(x_tgt, 1), round(y_tgt, 1)),
+                "final": (round(float(p_final[0]), 1), round(float(p_final[1]), 1)),
+                "err_counts": round(final_err, 2),
+                "err_um": round(final_err * 7.9375, 1),
+                "straight_dev_cnt": round(max_dev, 2),
+                "straight_dev_pct": round(100.0 * max_dev / max(1.0, L), 2),
+                "ballistic_ms": round(ballistic_ms, 1),
+                "elapsed_ms": round(settled_ms, 1),
+                "settled_ms": round(settled_ms, 1),
+                "dual_trials": dual_trials,
+                "dual_gain_cnt": dual_gain,
+                "u_kin_final": self.manifold.pi_net.last_u_kin.tolist(),
             }
 
         d_hat = chord_vec / L
         n_hat = np.array([-d_hat[1], d_hat[0]], dtype=float)
-
         t0 = time.perf_counter()
-        u_kin_m_start = self.manifold.evaluate_kinematic_pulse(float(p_start[0]), float(p_start[1]))
-        u_kin_m_tgt = self.manifold.evaluate_kinematic_pulse(x_tgt, y_tgt)
-        du_m_chord = u_kin_m_tgt - u_kin_m_start
-
-        u_kin_start = u_kin_m_start
         u_kin_tgt = u_kin_m_tgt
-        du_kin_chord = u_kin_tgt - u_kin_start
-
+        du_kin_chord = u_kin_tgt - u_kin_m_start
         dxy_target = (float(x_tgt - p_start[0]), float(y_tgt - p_start[1]))
-        # Target lock pulse via Joint-Space Inverse Play Compensator
         u_cmd_lock = self.manifold.pi_net.step_play_operator(u_kin_tgt, eps_us=1.8, dxy=dxy_target)
         ux_lock = float(np.clip(u_cmd_lock[0], WS63ServoDriver.SAFE_MIN_US, WS63ServoDriver.SAFE_MAX_US))
         uy_lock = float(np.clip(u_cmd_lock[1], WS63ServoDriver.SAFE_MIN_US, WS63ServoDriver.SAFE_MAX_US))
 
-        # Phase 1: Theorem 1 & 2 Ballistic Overdrive Boost + 1000Hz Predictive Braking
-        boost_ratio = 0.22 if L > 45.0 else 0.12
+        boost_ratio = 0.28 if L <= 60.0 else 0.22
         ux_boost = float(np.clip(ux_lock + boost_ratio * du_kin_chord[0], WS63ServoDriver.SAFE_MIN_US, WS63ServoDriver.SAFE_MAX_US))
         uy_boost = float(np.clip(uy_lock + boost_ratio * du_kin_chord[1], WS63ServoDriver.SAFE_MIN_US, WS63ServoDriver.SAFE_MAX_US))
-
         self.driver.send_raw_pulses(ux_boost, uy_boost)
 
-        max_boost_ms = min(55.0, max(20.0, 12.0 + 0.11 * L))
-        tau_brake_s = 0.022
-        perp_devs: List[float] = []
-        p_prev = p_start.copy()
-        t_prev = t0
-
+        max_pre_onset_ms = min(58.0, max(45.0, 38.0 + 0.08 * L))
+        max_dt_active_ms = 14.0
+        pos_cut = 0.75 * L
+        perp_devs = []
+        t_onset = None
         while True:
-            time.sleep(0.002)
+            time.sleep(0.001)
             now = time.perf_counter()
             elapsed_ms = (now - t0) * 1000.0
-            dt = max(1e-4, now - t_prev)
             p_cur = self.get_rect_position()
-            vel = (p_cur - p_prev) / dt
-            p_prev = p_cur
-            t_prev = now
-
             rel_vec = p_cur - p_start
             p_par = float(np.dot(rel_vec, d_hat))
             e_perp = float(np.dot(rel_vec, n_hat))
             if 8.0 <= p_par <= 0.96 * L:
                 perp_devs.append(abs(e_perp))
-
-            pred_par = float(np.dot((p_cur + tau_brake_s * vel) - p_start, d_hat))
-            if pred_par >= 0.85 * L or elapsed_ms >= max_boost_ms:
+            if t_onset is None and p_par >= 2.0:
+                t_onset = now
+            if p_par >= pos_cut or (t_onset is not None and (now - t_onset) * 1000.0 >= max_dt_active_ms) or elapsed_ms >= max_pre_onset_ms:
                 break
-
-        # Active Braking Lock Command & true zero-velocity settle (prevents integrator windup!)
         self.driver.send_raw_pulses(ux_lock, uy_lock)
-        ballistic_ms = (time.perf_counter() - t0) * 1000.0 + 48.0
-        self.wait_until_settled(min_wait_s=0.095, max_wait_s=0.175, vel_tol_cnt=1.0)
+        t_brake = time.perf_counter()
+        t_s1_last = self.wait_until_settled(min_wait_s=0.068, max_wait_s=0.130, vel_tol_cnt=0.8, t_ref=t0, poll_s=0.005, still_need=3)
+        ballistic_ms = max(0.0, (t_s1_last - t0) * 1000.0) if t_s1_last >= t0 else (t_brake - t0) * 1000.0
+        p_s1 = self.get_rect_position()
+        err_s1 = float(np.hypot(p_target[0] - p_s1[0], p_target[1] - p_s1[1]))
 
         # Phase 2: DSS-Play + Deadband-Feedforward K_meas (P1-B') or legacy Differential K_trim
         cur_u_kin = u_kin_tgt.copy()
-        p_prev_trim = self.get_rect_position()
+        p_prev_trim = p_s1
 
         if use_p1bp:
             K_trim = self.manifold.K_meas

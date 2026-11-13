@@ -67,7 +67,7 @@ class WS63ServoDriver:
 
     SAFE_MIN_US = 1150
     SAFE_MAX_US = 1850
-    MAX_DUAL_Y_MISMATCH_US = 35  # Hard safety limit to prevent Y1/Y2 fighting
+    MAX_DUAL_Y_MISMATCH_US = 25  # Hard safety limit per AGENTS.md (|Delta u_yaw| <= 25 us)
 
     def __init__(
         self,
@@ -77,10 +77,17 @@ class WS63ServoDriver:
         backlash_y: Tuple[float, float] = (15.0, 15.0),
         deadband_x: Tuple[float, float] = (5.0, 5.0),
         deadband_y: Tuple[float, float] = (5.0, 5.0),
+        probe_sub_us: bool = True,
     ):
         self.port = port or self.auto_detect_port()
         self.baudrate = baudrate
-        self.ser = serial.Serial(self.port, self.baudrate, timeout=0.5)
+        self.ser = serial.Serial(self.port, self.baudrate, timeout=0.05)
+
+        self.b_cmd_supported: bool = False
+        self.sub_us_supported: bool = self._probe_sub_us_capability() if probe_sub_us else False
+        if self.sub_us_supported:
+            cap_str = "H-protocol + B-CMD" if self.b_cmd_supported else "H-protocol"
+            print(f"[DRIVER] WS63 SUBUS_V2 firmware detected: 0.1 us resolution ({cap_str}) active.")
 
         self.play_x = AsymmetricPlayOperator(b_pos=backlash_x[0], b_neg=backlash_x[1])
         self.play_y = AsymmetricPlayOperator(b_pos=backlash_y[0], b_neg=backlash_y[1])
@@ -95,6 +102,35 @@ class WS63ServoDriver:
         self.play_x.reset(self.cur_s1)
         self.play_y.reset(self.cur_s2)
 
+    def _probe_sub_us_capability(self) -> bool:
+        """Query WS63 firmware with 'V\\n' for SUBUS_V2 0.1us and B_CMD support (<=50ms)."""
+        try:
+            buf = bytearray()
+            if self.ser.in_waiting:
+                buf.extend(self.ser.read(self.ser.in_waiting))
+                if b"B_CMD" in buf:
+                    self.b_cmd_supported = True
+                    if b"SUBUS_V2" in buf:
+                        return True
+            self.ser.write(b"V\n")
+            t0 = time.perf_counter()
+            sub_us_seen = b"SUBUS_V2" in buf
+            while (time.perf_counter() - t0) < 0.050:
+                n = self.ser.in_waiting
+                if n:
+                    buf.extend(self.ser.read(n))
+                    if b"B_CMD" in buf:
+                        self.b_cmd_supported = True
+                    if b"SUBUS_V2" in buf:
+                        sub_us_seen = True
+                    if sub_us_seen and (self.b_cmd_supported or (b"\n" in buf[buf.find(b"SUBUS_V2"):])):
+                        return True
+                time.sleep(0.002)
+            return sub_us_seen
+        except Exception:
+            pass
+        return False
+
     @staticmethod
     def auto_detect_port(default_port: str = "COM4") -> str:
         """Automatically locate CH340 (VID 1A86) serial port if COM number shifts."""
@@ -107,7 +143,7 @@ class WS63ServoDriver:
 
     def _clamp_and_guard(
         self, s1: float, s2: float, s3: Optional[float] = None, s4: float = 1500.0
-    ) -> Tuple[int, int, int, int]:
+    ) -> Tuple[float, float, float, float]:
         if s3 is None:
             s3 = 3000.0 - s2
 
@@ -118,21 +154,54 @@ class WS63ServoDriver:
                 self.MAX_DUAL_Y_MISMATCH_US if y_sum_err > 0 else -self.MAX_DUAL_Y_MISMATCH_US
             )
 
-        u1 = int(round(max(self.SAFE_MIN_US, min(self.SAFE_MAX_US, s1))))
-        u2 = int(round(max(self.SAFE_MIN_US, min(self.SAFE_MAX_US, s2))))
-        u3 = int(round(max(self.SAFE_MIN_US, min(self.SAFE_MAX_US, s3))))
-        u4 = int(round(max(self.SAFE_MIN_US, min(self.SAFE_MAX_US, s4))))
-        return u1, u2, u3, u4
+        c1 = max(float(self.SAFE_MIN_US), min(float(self.SAFE_MAX_US), float(s1)))
+        c2 = max(float(self.SAFE_MIN_US), min(float(self.SAFE_MAX_US), float(s2)))
+        c3 = max(float(self.SAFE_MIN_US), min(float(self.SAFE_MAX_US), float(s3)))
+        c4 = max(float(self.SAFE_MIN_US), min(float(self.SAFE_MAX_US), float(s4)))
+        if self.sub_us_supported:
+            return round(c1, 1), round(c2, 1), round(c3, 1), round(c4, 1)
+        return float(int(round(c1))), float(int(round(c2))), float(int(round(c3))), float(int(round(c4)))
 
     def send_raw_pulses(
         self, s1: float, s2: float, s3: Optional[float] = None, s4: float = 1500.0
-    ) -> Tuple[int, int, int, int]:
-        """Directly send clamped pulse widths (in microseconds) to WS63."""
+    ) -> Tuple[float, float, float, float]:
+        """Directly send clamped pulse widths (0.1us on SUBUS_V2, 1us fallback) to WS63."""
         u1, u2, u3, u4 = self._clamp_and_guard(s1, s2, s3, s4)
-        cmd = f"P {u1} {u2} {u3} {u4}\n"
+        if self.sub_us_supported:
+            cmd = f"H {int(round(u1 * 10))} {int(round(u2 * 10))} {int(round(u3 * 10))} {int(round(u4 * 10))}\n"
+        else:
+            cmd = f"P {int(round(u1))} {int(round(u2))} {int(round(u3))} {int(round(u4))}\n"
         self.ser.write(cmd.encode("ascii"))
         self.cur_s1, self.cur_s2, self.cur_s3, self.cur_s4 = float(u1), float(u2), float(u3), float(u4)
         return u1, u2, u3, u4
+
+    def send_ballistic_pulse(
+        self,
+        s1_bst: float,
+        s2_bst: float,
+        s1_eq: float,
+        s2_eq: float,
+        bst_us: int,
+    ) -> Tuple[Tuple[float, float, float, float], Tuple[float, float, float, float]]:
+        """
+        Issue WS63 hardware-timed B-command:
+        Outputs u_bst (0.1us atomic) for bst_us microseconds starting from the first emitted
+        PWM rising edge, then zero-latency switches inside MCU to u_eq.
+        Any subsequent H/P/C command aborts the countdown early.
+        """
+        b1, b2, b3, b4 = self._clamp_and_guard(s1_bst, s2_bst, None, 1500.0)
+        e1, e2, e3, e4 = self._clamp_and_guard(s1_eq, s2_eq, None, 1500.0)
+        dur = max(0, min(100000, int(round(bst_us))))
+        if self.sub_us_supported and self.b_cmd_supported:
+            cmd = (
+                f"B {int(round(b1 * 10))} {int(round(b2 * 10))} "
+                f"{int(round(e1 * 10))} {int(round(e2 * 10))} {dur}\n"
+            )
+            self.ser.write(cmd.encode("ascii"))
+            self.cur_s1, self.cur_s2, self.cur_s3, self.cur_s4 = float(e1), float(e2), float(e3), float(e4)
+        else:
+            self.send_raw_pulses(b1, b2, b3, b4)
+        return (b1, b2, b3, b4), (e1, e2, e3, e4)
 
     def set_pwm_frequency(self, freq_hz: int = 50):
         """

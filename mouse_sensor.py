@@ -33,6 +33,9 @@ WM_QUIT = 0x0012
 RID_INPUT = 0x10000003
 RIM_TYPEMOUSE = 0
 RIDEV_INPUTSINK = 0x00000100
+WS_POPUP = 0x80000000
+WS_VISIBLE = 0x10000000
+THREAD_PRIORITY_HIGHEST = 2
 LRESULT = ctypes.c_ssize_t
 WNDPROC = ctypes.WINFUNCTYPE(
     LRESULT, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM
@@ -175,6 +178,7 @@ class HighPrecisionMouseSensor:
         self._total_x = 0
         self._total_y = 0
         self._event_count = 0
+        self._last_motion_t = time.perf_counter()
 
         self._running = False
         self._thread = None
@@ -250,6 +254,11 @@ class HighPrecisionMouseSensor:
         x, y = self.get_position()
         return x * self.mm_per_count, y * self.mm_per_count
 
+    def get_last_motion_time(self) -> float:
+        """Return perf_counter timestamp of the most recent non-zero optical displacement."""
+        with self._lock:
+            return float(self._last_motion_t)
+
     def _raw_input_loop(self):
         attach_interactive_desktop()
         hinst = kernel32.GetModuleHandleW(None)
@@ -285,12 +294,14 @@ class HighPrecisionMouseSensor:
                             self.rejected_counts += abs(dx) + abs(dy)
                             dx = dy = 0
                         if dx != 0 or dy != 0:
+                            t_evt = time.perf_counter()
                             with self._lock:
                                 self._accum_x += dx
                                 self._accum_y += dy
                                 self._total_x += dx
                                 self._total_y += dy
                                 self._event_count += 1
+                                self._last_motion_t = t_evt
                 return 0
             return user32.DefWindowProcW(hwnd, msg, wp, lp)
 
@@ -302,9 +313,19 @@ class HighPrecisionMouseSensor:
         wc.lpszClassName = cls_name
         user32.RegisterClassExW(ctypes.byref(wc))
 
+        try:
+            kernel32.SetThreadPriority(kernel32.GetCurrentThread(), THREAD_PRIORITY_HIGHEST)
+        except Exception:
+            pass
+        # Windows 11 throttles WM_INPUT to 125 Hz (8 ms) for invisible background windows.
+        # A 1x1 WS_POPUP | WS_VISIBLE window avoids background Raw Input coalescing and restores 1000 Hz.
         self._hwnd = user32.CreateWindowExW(
-            0, cls_name, "3RRR_RawInput", 0, 0, 0, 0, 0, None, None, hinst, None
+            0, cls_name, "3RRR_RawInput", WS_POPUP | WS_VISIBLE, 0, 0, 1, 1, None, None, hinst, None
         )
+        try:
+            user32.SetForegroundWindow(self._hwnd)
+        except Exception:
+            pass
         rid = _RAWINPUTDEVICE(0x01, 0x02, RIDEV_INPUTSINK, self._hwnd)
         ok = user32.RegisterRawInputDevices(
             ctypes.byref(rid), 1, ctypes.sizeof(_RAWINPUTDEVICE)
