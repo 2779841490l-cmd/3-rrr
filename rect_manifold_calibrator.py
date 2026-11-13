@@ -60,11 +60,11 @@ class RectangularManifoldController:
         self.u0_star_y = 1466.0
 
         # Kinematic Jacobian matrices (Physical Prior & Local Differential Micro-Trim)
-        self.K_lin = np.array([[0.515, -0.275], [-0.070, -0.295]], dtype=float)
-        self.K_trim = np.array([[0.58, -0.115], [-0.038, -0.285]], dtype=float)
-        # 定案4 (2026-11-13, experiments/real_jacobian_2x2.csv) 实测全 2x2 逆雅可比与通道死区
-        self.K_meas = np.array([[0.46520, -0.22578], [-0.06323, -0.22590]], dtype=float)
-        self.deadband_ff_us = np.array([6.78, 5.90], dtype=float)
+        # Updated for shortened Y crank arm R_y (experiments/real_jacobian_2x2_short_arm.csv)
+        self.K_lin = np.array([[0.42704, -0.52575], [-0.08052, -0.62760]], dtype=float)
+        self.K_trim = np.array([[0.42704, -0.52575], [-0.08052, -0.62760]], dtype=float)
+        self.K_meas = np.array([[0.42704, -0.52575], [-0.08052, -0.62760]], dtype=float)
+        self.deadband_ff_us = np.array([9.22, 4.00], dtype=float)
 
         # 2. Physics-Informed Neural Ballistic Manifold Network (PI-NBM-Net)
         self.pi_net = NumpyPINBMInference(W=self.W, H=self.H)
@@ -78,10 +78,10 @@ class RectangularManifoldController:
         self.residual_uy = np.zeros((self.grid_size, self.grid_size), dtype=float)
 
         # 4. Joint-space asymmetric backlash half-widths (us)
-        self.hyst_x_pos = 14.0
-        self.hyst_x_neg = 16.0
-        self.hyst_y_pos = 3.5
-        self.hyst_y_neg = 3.5
+        self.hyst_x_pos = 10.51
+        self.hyst_x_neg = 7.93
+        self.hyst_y_pos = 3.04
+        self.hyst_y_neg = 4.96
 
         self.sigma_x = 1.0
         self.sigma_y = 1.0
@@ -657,79 +657,119 @@ class HardwareRectangleTrainer:
         major_ax = 0 if abs(float(chord_vec[0])) >= abs(float(chord_vec[1])) else 1
         minor_ax = 1 - major_ax
         minor_lim = 3.0 if abs(float(chord_vec[minor_ax])) < 0.5 * abs(float(chord_vec[major_ax])) else 2.2
-        if e1_norm <= 2.7 or (abs(float(err0[major_ax])) <= 1.5 and abs(float(err0[minor_ax])) <= minor_lim):
+        if e1_norm <= 2.8 or (abs(float(err0[major_ax])) <= 1.5 and abs(float(err0[minor_ax])) <= minor_lim):
             return p_final, t_s2_last, 0
 
         base_t = time.perf_counter() if t0_ref is None else float(t0_ref)
-        for _step_idx in range(2):
-            if (time.perf_counter() - base_t) > 0.124:
+        for _step_idx in range(1):
+            if (time.perf_counter() - base_t) > 0.120:
                 break
             err_vec = p_target - p_final
             err_now = float(np.hypot(err_vec[0], err_vec[1]))
             if err_now <= max(1.2, float(tol_counts)):
                 break
 
+            # Iron Rule 1 (No-Reversal Clamp in S2): never push back an axis that already
+            # overshot past target (Cartesian sign opposite chord_vec) across ~18us backlash.
+            err_for_du = err_vec.copy()
+            rev_blocked = [False, False]
+            for ax in (0, 1):
+                if abs(float(chord_vec[ax])) >= 8.0 and (float(err_vec[ax]) * float(chord_vec[ax]) < 0.0):
+                    rev_blocked[ax] = True
+                    err_for_du[ax] = 0.0
+
+            # Max Step Cap: single Stage-2 step expected displacement strictly capped <= 3.5 counts
+            err_norm_cap = float(np.hypot(err_for_du[0], err_for_du[1]))
+            if err_norm_cap > 3.5:
+                err_for_du = err_for_du * (3.5 / err_norm_cap)
+            # Soften +Y Stage-2 target in Cartesian space BEFORE K_s2 so both axes stay coupled-orthogonal
+            if err_for_du[1] > 0.0:
+                err_for_du[1] *= 0.72
+
+            # Conservative shortened Y-arm Stage-2 Jacobian inverse (~0.85 * K_meas)
             K_s2 = np.array([
-                [0.195, -0.075 if err_vec[1] >= 0.0 else -0.220],
-                [-0.025, -0.170 if err_vec[1] >= 0.0 else -0.225],
+                [0.365, -0.450 if err_for_du[1] >= 0.0 else -0.390],
+                [-0.068, -0.540 if err_for_du[1] >= 0.0 else -0.490],
             ], dtype=float)
-            du_s2 = K_s2 @ err_vec
+            du_s2 = K_s2 @ err_for_du
+            for ax in (0, 1):
+                if rev_blocked[ax]:
+                    du_s2[ax] = 0.0
+                elif (
+                    ax == 0
+                    and abs(float(chord_vec[0])) >= 8.0
+                    and (float(err_vec[0]) * float(chord_vec[0]) > 0.0)
+                    and (float(du_s2[0]) * float(err_vec[0]) > 0.0)
+                ):
+                    # Cartesian No-Reversal Rule: genuine X undershoot (rem_x * target_dx > 0) must
+                    # always allow same-Cartesian +u1/-u1 Stage-2 trim regardless of Stage-1 du_eq[0] sign.
+                    pass
+                elif abs(float(dir_hint[ax])) > 0.0 and (float(du_s2[ax]) * float(dir_hint[ax]) < 0.0):
+                    # Strict Same-Flank Guard: forbid Stage-2 reversal across ~18us backlash
+                    rev_blocked[ax] = True
+                    du_s2[ax] = 0.0
+
+            is_pos_x_horiz = (float(chord_vec[0]) > 15.0 and abs(float(chord_vec[1])) < 10.0)
             d_kick = np.zeros(2, dtype=float)
             ramp_step = np.zeros(2, dtype=float)
             db_hold = np.zeros(2, dtype=float)
             ax_active = [False, False]
 
             for ax in (0, 1):
+                if rev_blocked[ax]:
+                    continue
                 err_ax = abs(float(err_vec[ax]))
-                if err_ax > 1.35 and abs(float(du_s2[ax])) > 0.14:
-                    is_rev = (abs(float(dir_hint[ax])) > 0.0) and (float(du_s2[ax]) * float(dir_hint[ax]) < 0.0)
+                other_err = abs(float(err_vec[1 - ax]))
+                min_err_th = 2.1 if (other_err > 4.0 * max(1.0, err_ax)) else 1.5
+                # Iron Rule 2: on (+35, 0) horizontal moves, do not launch violent Y hammers;
+                # small Y droop is handled by -J[1,0]/J[1,1] lift compensation tied to +u1 kick.
+                if is_pos_x_horiz and ax == 1:
+                    min_err_th = 3.5
+                if err_ax > min_err_th and abs(float(du_s2[ax])) > 0.30:
                     sgn_s2 = float(np.sign(du_s2[ax]))
+                    du_mag = abs(float(du_s2[ax]))
                     if ax == 0:
-                        if is_rev and err_ax > 2.0 and (float(err_vec[0]) * float(du_s2[0]) > 0.0 or abs(float(du_s2[0])) > 0.8):
-                            rev_scale = min(1.0, abs(float(u_cmd[0] - u_hold_ref[0])) / 14.0)
-                            d0 = (8.8 + 0.60 * min(err_ax, 8.0)) * (0.45 + 0.55 * rev_scale)
-                            db_hold[0] = sgn_s2 * min(11.0, 10.0 * rev_scale)
-                            ramp_step[0] = sgn_s2 * 2.8
-                            ax_active[0] = True
-                        elif not is_rev:
-                            d0 = 5.8 + 0.52 * min(err_ax, 8.0)
-                            ramp_step[0] = sgn_s2 * 2.4
-                            ax_active[0] = True
-                        else:
-                            d0 = 0.0
+                        d0 = min(2.0, 0.55 + 0.55 * du_mag)
+                        ramp_step[0] = 0.0
+                        ax_active[0] = True
                     else:
-                        if is_rev and sgn_s2 < 0.0:
-                            d0 = 3.4 + 0.22 * min(err_ax, 10.0)
-                            ramp_step[1] = sgn_s2 * 1.4
-                        elif (not is_rev) and sgn_s2 < 0.0:
-                            d0 = 10.5 + 0.48 * min(err_ax, 8.0)
-                            ramp_step[1] = sgn_s2 * 2.4
-                        elif is_rev and sgn_s2 > 0.0:
-                            d0 = 7.0 + 0.35 * min(err_ax, 8.0)
-                            ramp_step[1] = sgn_s2 * 2.0
+                        if is_pos_x_horiz:
+                            d0 = 0.8
+                            ramp_step[1] = 0.0
+                        elif sgn_s2 < 0.0:
+                            # Negative u2 (-u2 -> +Y) sits on stored Stage-1 elastic tension; use tiny nudge
+                            d0 = min(1.0, 0.25 + 0.35 * du_mag)
+                            ramp_step[1] = 0.0
                         else:
-                            d0 = 8.6 + 0.42 * min(err_ax, 8.0)
-                            ramp_step[1] = sgn_s2 * 2.2
+                            d0 = min(1.2, 0.30 + 0.40 * du_mag)
+                            ramp_step[1] = 0.0
                         ax_active[1] = True
                     d_kick[ax] = sgn_s2 * d0
 
             if not (ax_active[0] or ax_active[1]):
                 break
 
+            du_s2_eff = np.array([
+                du_s2[0] if ax_active[0] else 0.0,
+                du_s2[1] if ax_active[1] else 0.0,
+            ], dtype=float)
+
+            # Monotonic Jacobian safety guard: skip Stage-2 if masked coupled drive is predicted NOT to reduce error
+            J_meas_s2 = np.array([[2.0222, -1.6941], [-0.2595, -1.3760]], dtype=float)
+            pred_err_after = err_vec - (J_meas_s2 @ du_s2_eff)
+            if float(np.hypot(pred_err_after[0], pred_err_after[1])) >= (err_now - 0.30):
+                break
+
             trials += 1
-            u_base = u_cmd + du_s2 + db_hold
+            u_base = u_cmd + du_s2_eff + db_hold
             u_eq2 = np.clip(
-                u_cmd + 0.90 * du_s2 + db_hold,
+                u_cmd + du_s2_eff + db_hold,
                 WS63ServoDriver.SAFE_MIN_US,
                 WS63ServoDriver.SAFE_MAX_US,
             )
 
-            # Anti-Slip Clamp: if one axis is already landed (not active), apply -2.8us sub-deadband
-            # clamp opposite Stage-1 motion direction during kick so 2D friction cone opening won't slip it.
+            # Hold settled/inactive axes completely untouched (no anti_slip perturbation breaking stiction)
             anti_slip = np.zeros(2, dtype=float)
-            for ax_i in (0, 1):
-                if not ax_active[ax_i] and abs(float(dir_hint[ax_i])) > 0.0:
-                    anti_slip[ax_i] = -2.8 * float(np.sign(dir_hint[ax_i]))
 
             def _build_kick(dk_now: np.ndarray, done_flags: List[bool]) -> np.ndarray:
                 pulse = u_eq2.copy()
@@ -738,9 +778,10 @@ class HardwareRectangleTrainer:
                         pulse[ax_i] = u_base[ax_i] + dk_now[ax_i]
                     elif abs(anti_slip[ax_i]) > 0.0:
                         pulse[ax_i] = u_eq2[ax_i] + anti_slip[ax_i]
-                if not done_flags[1] and abs(dk_now[1]) > 4.0:
-                    cff = 0.24 if float(dir_hint[0]) < 0.0 else (0.12 if ax_active[0] else 0.08)
-                    pulse[0] += cff * dk_now[1]
+                # Iron Rule 2: on (+35, 0) same-flank +u1 kick, cancel parasitic -0.2595 cnt/us Y droop
+                # using -J[1,0]/J[1,1] = -(-0.2595)/(-1.3760) = -0.1886 proportional negative u2 lift.
+                if is_pos_x_horiz and (not done_flags[0]) and dk_now[0] > 0.0:
+                    pulse[1] += -0.1886 * dk_now[0]
                 return np.clip(pulse, WS63ServoDriver.SAFE_MIN_US, WS63ServoDriver.SAFE_MAX_US)
 
             t_s2_0 = time.perf_counter()
@@ -749,13 +790,13 @@ class HardwareRectangleTrainer:
             dk_cur = d_kick.copy()
             cur_out = _build_kick(dk_cur, ax_done)
             self.driver.send_raw_pulses(float(cur_out[0]), float(cur_out[1]))
-            ramp_idx = 0
-            next_ramp_ms = 5.8
+            kick_cap_ms = 12.0
+            abs_cap_s = 0.120
             while not (ax_done[0] and ax_done[1]):
                 time.sleep(0.0003)
                 now = time.perf_counter()
                 el_ms = (now - t_s2_0) * 1000.0
-                if el_ms >= 21.0 or (now - base_t) >= 0.130:
+                if el_ms >= kick_cap_ms or (now - base_t) >= abs_cap_s:
                     break
                 p_live = self.get_rect_position()
                 changed = False
@@ -764,19 +805,10 @@ class HardwareRectangleTrainer:
                         continue
                     sgn_e = 1.0 if err_vec[ax] >= 0.0 else -1.0
                     dp_ax = (p_live[ax] - p_step_start[ax]) * sgn_e
-                    e_ax = abs(float(err_vec[ax]))
-                    ax_is_rev = (abs(float(dir_hint[ax])) > 0.0) and (float(du_s2[ax]) * float(dir_hint[ax]) < 0.0)
-                    cut_ratio = 0.42 if ax_is_rev else 0.56
-                    if dp_ax >= max(1.0, cut_ratio * e_ax):
+                    e_ax = min(3.5, abs(float(err_vec[ax])))
+                    if dp_ax >= max(1.4, 0.45 * e_ax):
                         ax_done[ax] = True
                         changed = True
-                if not (ax_done[0] and ax_done[1]) and el_ms >= next_ramp_ms and ramp_idx < 2:
-                    ramp_idx += 1
-                    next_ramp_ms += 5.8
-                    for ax in (0, 1):
-                        if not ax_done[ax]:
-                            dk_cur[ax] += ramp_step[ax]
-                    changed = True
                 if changed:
                     if ax_done[0] and ax_done[1]:
                         break
@@ -785,8 +817,8 @@ class HardwareRectangleTrainer:
 
             self.driver.send_raw_pulses(float(u_eq2[0]), float(u_eq2[1]))
             t_s2_last = self.wait_until_settled(
-                min_wait_s=0.011,
-                max_wait_s=0.020,
+                min_wait_s=0.008,
+                max_wait_s=0.015,
                 vel_tol_cnt=0.8,
                 t_ref=time.perf_counter(),
                 poll_s=0.003,
@@ -795,10 +827,45 @@ class HardwareRectangleTrainer:
             p_final = self.get_rect_position()
             u_cmd = u_eq2.copy()
             for ax in (0, 1):
-                if abs(float(du_s2[ax])) > 0.2:
-                    dir_hint[ax] = float(np.sign(du_s2[ax]))
+                if abs(float(du_s2_eff[ax])) > 0.2:
+                    dir_hint[ax] = float(np.sign(du_s2_eff[ax]))
 
         return p_final, t_s2_last, trials
+
+    @staticmethod
+    def _short_ballistic_profile(chord_vec: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray, float, float, float, float]:
+        """Circular angle-interpolated Stage-1 ballistic profile for shortened Y-arm chords (L <= 70 cnt)."""
+        dx, dy = float(chord_vec[0]), float(chord_vec[1])
+        L = max(1.0, float(np.hypot(dx, dy)))
+        th = float(np.arctan2(dy, dx))
+        # Anchors: (theta_rad, L_ref, pre_du, du_bst, du_eq, cut_r, y_min_r, b_dur_us)
+        # FROZEN optimal low-std Stage-1 baselines per direction (task-9790 / task-9800 R1_fast5 / task-9816 / task-9859)
+        anchors = [
+            (-float(np.pi),                 35.0, [-22.0,  0.0], [-84.0,  -1.5], [-21.3,  -2.5], 0.35, 0.000, 47000.0),
+            (float(np.arctan2(-25, -30)),   39.05,[ -6.0, 10.5], [-26.0,  35.5], [-11.5,  14.1], 0.36, 0.200, 55000.0),
+            (-0.5 * float(np.pi),           35.0, [  8.0,  8.0], [ 61.5,  33.0], [ 20.3,  13.3], 0.43, 0.257, 56000.0),
+            (0.0,                           35.0, [ 11.0,  0.0], [ 64.0,  -8.8], [ 11.5,  -3.6], 0.35, 0.000, 58000.0),
+            (float(np.arctan2(20, 30)),     36.06,[  7.5, -9.0], [ 42.0, -21.0], [ 18.7,  -8.6], 0.38, 0.160, 52000.0),
+            (float(np.arctan2(25, 30)),     39.05,[  6.5,-10.5], [ 38.0, -24.5], [ 15.7, -10.5], 0.36, 0.160, 52000.0),
+            (0.5 * float(np.pi),            35.0, [-11.5,-11.5], [-41.0, -28.0], [-13.7, -10.8], 0.28, 0.143, 47000.0),
+            (float(np.pi),                  35.0, [-22.0,  0.0], [-84.0,  -1.5], [-21.3,  -2.5], 0.35, 0.000, 47000.0),
+        ]
+        idx = 0
+        while idx < len(anchors) - 2 and th > anchors[idx + 1][0]:
+            idx += 1
+        a0, a1 = anchors[idx], anchors[idx + 1]
+        span = max(1e-6, a1[0] - a0[0])
+        w = float(np.clip((th - a0[0]) / span, 0.0, 1.0))
+        L_ref = (1.0 - w) * a0[1] + w * a1[1]
+        amp_scale = float(np.clip(L / L_ref, 0.25, 1.35))
+        pre_scale = float(np.clip(L / 18.0, 0.0, 1.0))
+        pre = pre_scale * ((1.0 - w) * np.array(a0[2]) + w * np.array(a1[2]))
+        bst = amp_scale * ((1.0 - w) * np.array(a0[3]) + w * np.array(a1[3]))
+        eq = amp_scale * ((1.0 - w) * np.array(a0[4]) + w * np.array(a1[4]))
+        cut_r = (1.0 - w) * a0[5] + w * a1[5]
+        y_min_r = (1.0 - w) * a0[6] + w * a1[6]
+        b_us = (1.0 - w) * a0[7] + w * a1[7]
+        return pre, bst, eq, float(cut_r), float(y_min_r), float(b_us), amp_scale
 
     def move_point_to_point(
         self,
@@ -851,24 +918,36 @@ class HardwareRectangleTrainer:
 
         if two_stage:
             def _get_K_meas(dx: float, dy: float) -> np.ndarray:
-                return np.array([
-                    [0.19800, -0.14500 if dy >= 0.0 else -0.51500],
-                    [0.02500 if dx >= 0.0 else -0.06200, -0.17000 if dy >= 0.0 else -0.26600],
-                ], dtype=float)
+                # Shortened Y crank arm R_y: measured 2x2 asymmetric inverse Jacobians
+                # K_minus (dy >= 0): [[+0.43524, -0.60278], [-0.08755, -0.68790]]
+                # K_plus  (dy <  0): [[+0.41839, -0.46265], [-0.07459, -0.57708]]
+                if dy >= 0.0:
+                    return 0.85 * np.array([
+                        [0.43524, -0.60278],
+                        [-0.08755 if dx < 0.0 else -0.07459, -0.68790],
+                    ], dtype=float)
+                else:
+                    return np.array([
+                        [0.88 * 0.41839, 0.96 * -0.46265],
+                        [0.88 * (-0.08755 if dx < 0.0 else -0.07459), 0.94 * -0.57708],
+                    ], dtype=float)
 
             K_meas = _get_K_meas(float(chord_vec[0]), float(chord_vec[1]))
             du_pre_est = K_meas @ chord_vec
 
-            # Pre-Shot Directional Pre-load (~24ms sub-deadband hold before t0 at F7000)
-            # Only preload axes with intentional commanded displacement so Y-only shots do not pre-slip X.
-            pre_du = np.zeros(2, dtype=float)
-            for ax in (0, 1):
-                if abs(float(chord_vec[ax])) >= 5.0:
-                    drv = float(K_meas[ax, ax] * chord_vec[ax])
-                    sgn = float(np.sign(drv))
-                    same_flk = (drv * float(self.last_motion_dir[ax]) >= 0.0)
-                    amp_pre = (4.2 if same_flk else 12.5) if ax == 0 else (4.2 if same_flk else 5.0)
-                    pre_du[ax] = sgn * amp_pre * min(1.0, abs(float(chord_vec[ax])) / 15.0)
+            # Effective Pre-Shot Directional Pre-load (~24ms at F7000):
+            # Take up gear backlash & electrical deadband without breaking static friction.
+            if L <= 70.0:
+                pre_du, _, _, _, _, _, _ = self._short_ballistic_profile(chord_vec)
+            else:
+                pre_du = np.zeros(2, dtype=float)
+                for ax in (0, 1):
+                    drv = float(du_pre_est[ax])
+                    if abs(drv) >= 3.5:
+                        sgn = float(np.sign(drv))
+                        same_flk = (drv * float(self.last_motion_dir[ax]) >= 0.0)
+                        amp_pre = (11.0 if same_flk else 22.0) if ax == 0 else (8.5 if same_flk else 13.0)
+                        pre_du[ax] = sgn * amp_pre * min(1.0, abs(drv) / 10.0)
             if np.any(np.abs(pre_du) > 0.2):
                 u_pre = np.clip(
                     u_hold + pre_du,
@@ -881,7 +960,7 @@ class HardwareRectangleTrainer:
                 while time.perf_counter() < t_pre_end:
                     time.sleep(0.002)
                     p_chk = self.get_rect_position()
-                    if float(np.hypot(p_chk[0] - p_start[0], p_chk[1] - p_start[1])) >= 1.5:
+                    if float(np.hypot(p_chk[0] - p_start[0], p_chk[1] - p_start[1])) >= 0.9:
                         break
                 p_start = self.get_rect_position()
                 chord_vec = p_target - p_start
@@ -890,50 +969,11 @@ class HardwareRectangleTrainer:
 
             d_hat = chord_vec / L
             n_hat = np.array([-d_hat[1], d_hat[0]], dtype=float)
-            dir_key = (int(round(x_tgt - p_start[0])), int(round(y_tgt - p_start[1])))
+            dir_key = (int(round((x_tgt - p_start[0]) / 4.0)), int(round((y_tgt - p_start[1]) / 4.0)))
 
-            # Conservative Route-1 Stage-1 Target: ~0.85*L (undershoot 4~6 cnt to favor same-flank Stage 2)
-            tgt_s1 = p_start + (0.85 * chord_vec if L >= 18.0 else (chord_vec - min(4.0, 0.15 * L) * d_hat))
+            tgt_s1 = p_start + (0.88 * chord_vec if L >= 18.0 else (chord_vec - min(4.0, 0.15 * L) * d_hat))
             du_lin = K_meas @ chord_vec
-            du_lin_s1 = K_meas @ (tgt_s1 - p_start)
-
             near_origin = float(np.hypot(p_start[0], p_start[1])) <= 12.0
-            db_eq = np.zeros(2, dtype=float)
-            db_bst = np.zeros(2, dtype=float)
-            for ax in (0, 1):
-                if ax == 0:
-                    x_intent = float(K_meas[0, 0] * chord_vec[0] + 0.35 * K_meas[0, 1] * chord_vec[1])
-                    sgn = float(np.sign(x_intent)) if abs(x_intent) > 1e-6 else 0.0
-                    same_flank = (x_intent * float(self.last_motion_dir[0]) >= 0.0)
-                    if same_flank:
-                        w_dir = min(1.0, abs(K_meas[0, 0] * float(chord_vec[0])) / 5.2)
-                        w_cpl = min(1.0, abs(float(du_lin[0])) / 6.0)
-                        w_bst = max(w_dir, 0.55 * w_cpl) if abs(float(chord_vec[0])) > 5.0 else 0.35 * w_cpl
-                        w_eq = 0.0
-                        amp_bst = 46.0 if float(chord_vec[0]) >= 0.0 else 43.5
-                        amp_eq = 0.0
-                    else:
-                        w_eq = min(1.0, abs(K_meas[0, 0] * float(chord_vec[0])) / 5.5)
-                        w_bst = min(1.0, (0.75 * abs(K_meas[0, 0] * float(chord_vec[0])) + 0.35 * abs(float(du_lin[0]))) / 6.0)
-                        amp_eq = 17.5
-                        amp_bst = 60.0 if float(chord_vec[0]) >= 0.0 else 58.0
-                else:
-                    same_flank = (du_lin[1] * float(self.last_motion_dir[1]) >= 0.0)
-                    amp_eq = 0.3 if same_flank else 0.0
-                    if du_lin[1] < 0.0:
-                        amp_bst = 8.6 if same_flank else 7.8
-                    else:
-                        amp_bst = 11.4 if same_flank else 9.6
-                    y_drive = max(abs(float(K_meas[1, 1] * float(chord_vec[1]))), abs(float(du_lin[1])))
-                    w_bst = min(1.0, y_drive / (4.2 if same_flank else 1.5))
-                    w_eq = min(1.0, abs(float(du_lin[1])) / (4.5 if same_flank else 1.5))
-                    sgn = float(np.sign(du_lin[1]))
-                db_eq[ax] = w_eq * sgn * amp_eq
-                db_bst[ax] = w_bst * sgn * amp_bst
-
-            if float(chord_vec[0]) > 5.0:
-                taper_y = max(0.0, 1.0 - abs(float(chord_vec[1])) / 22.0)
-                db_bst[1] -= 7.2 * taper_y * min(1.0, float(chord_vec[0]) / 30.0)
 
             ilc_state = self.dir_ilc.get(dir_key, np.zeros((3, 2), dtype=float))
             if not near_origin or ilc_state.shape != (3, 2):
@@ -942,17 +982,16 @@ class HardwareRectangleTrainer:
             ilc_dur_us = float(ilc_state[2, 0])
 
             if L <= 70.0:
-                bst_dur_us = int(np.clip(51500.0 + ilc_dur_us, 40000.0, 59000.0))
-                du_eq = du_lin_s1 + db_eq + ilc_eq
-                du_bst = 1.42 * du_lin + db_bst + ilc_bst
-                if abs(float(chord_vec[0])) < 8.0 and float(chord_vec[1]) < -10.0:
-                    # Moderate cross-X boost on pure -Y chords so +X does not bolt before Y breaks stiction
-                    du_bst[0] *= 0.80
+                _, prof_bst, prof_eq, cut_r_s1, y_min_s1, b_dur_s1, _ = self._short_ballistic_profile(chord_vec)
+                bst_dur_us = int(np.clip(b_dur_s1 + ilc_dur_us, 35000.0, 62000.0))
+                du_eq = prof_eq + ilc_eq
+                du_bst = prof_bst + ilc_bst
             else:
                 bst_dur_us = int(min(95000.0, 54000.0 + 180.0 * (L - 60.0)))
                 u_kin_s1 = self.manifold.evaluate_kinematic_pulse(float(tgt_s1[0]), float(tgt_s1[1]))
                 du_kin_s1 = u_kin_s1 - u_kin_m_start
                 hyst_g = np.zeros(2, dtype=float)
+                db_bst = np.zeros(2, dtype=float)
                 for ax in (0, 1):
                     if abs(float(du_kin_s1[ax])) > 0.5 and (du_kin_s1[ax] * float(self.last_motion_dir[ax]) < 0.0):
                         hyst_g[ax] = float(np.sign(du_kin_s1[ax])) * (15.0 if ax == 0 else 4.0)
@@ -970,13 +1009,19 @@ class HardwareRectangleTrainer:
                 self.driver.ser.write(b"F 7000\n")
                 self.driver.send_ballistic_pulse(ux_boost, uy_boost, ux_lock, uy_lock, bst_dur_us)
 
-                # Monitor at 1000Hz during MCU hardware countdown; override early with H on pos_cut/energy_cut.
-                pos_cut_early = (0.23 * L) if L <= 70.0 else (0.58 * L)
-                energy_cut = (0.31 * L) if L <= 70.0 else (0.72 * L)
-                dt_burn_lim = 8.4 if L <= 70.0 else min(55.0, 10.0 + 0.16 * (L - 60.0))
+                # Monitor at 1000Hz during extended B safety timer; cut via H when position crosses pos_cut_early.
+                if L <= 70.0:
+                    pos_cut_early = cut_r_s1 * L
+                    energy_cut = 1.50 * L
+                    dt_burn_lim = 65.0
+                    y_min_early = y_min_s1 * abs(float(chord_vec[1]))
+                else:
+                    pos_cut_early = 0.58 * L
+                    energy_cut = 0.72 * L
+                    dt_burn_lim = min(55.0, 10.0 + 0.16 * (L - 60.0))
+                    y_min_early = 0.42 * abs(float(chord_vec[1]))
                 need_y_gate = abs(float(chord_vec[1])) >= 12.0
                 y_dir_sgn = 1.0 if float(chord_vec[1]) >= 0.0 else -1.0
-                y_min_early = 0.15 * abs(float(chord_vec[1]))
                 max_pc_wait_ms = bst_dur_us / 1000.0 + 1.0
                 hist = deque(maxlen=64)
                 perp_devs: List[float] = []
@@ -1003,7 +1048,7 @@ class HardwareRectangleTrainer:
                         break
                     if t_onset is not None:
                         dt_on = (now - t_onset) * 1000.0
-                        if y_ready and p_par >= 0.12 * L and dt_on >= 3.5:
+                        if y_ready and p_par >= 0.25 * L and dt_on >= 3.5:
                             p_prev_w = p_par
                             for th, ph in hist:
                                 if (now - th) >= 0.0035:
@@ -1014,10 +1059,7 @@ class HardwareRectangleTrainer:
                             if (p_par + 1.05 * dp_w) >= energy_cut:
                                 overrode_early = True
                                 break
-                        if y_ready and dt_on >= dt_burn_lim and p_par >= 0.13 * L:
-                            overrode_early = True
-                            break
-                        if dt_on >= (dt_burn_lim + 4.5):
+                        if y_ready and dt_on >= dt_burn_lim and p_par >= 0.35 * L:
                             overrode_early = True
                             break
                     if elapsed_ms >= max_pc_wait_ms:
@@ -1026,14 +1068,14 @@ class HardwareRectangleTrainer:
                 if overrode_early:
                     self.driver.send_raw_pulses(ux_lock, uy_lock)
                 t_brake = time.perf_counter()
-                max_s1_wait = 0.078 if L <= 70.0 else min(0.118, 0.078 + 0.00012 * (L - 70.0))
+                max_s1_wait = 0.090 if L <= 70.0 else min(0.118, 0.088 + 0.00012 * (L - 70.0))
                 t_s1_last = self.wait_until_settled(
-                    min_wait_s=0.055 if L <= 70.0 else 0.065,
+                    min_wait_s=0.062 if L <= 70.0 else 0.070,
                     max_wait_s=max_s1_wait,
-                    vel_tol_cnt=0.8,
+                    vel_tol_cnt=0.6,
                     t_ref=t0,
                     poll_s=0.0025,
-                    still_need=2,
+                    still_need=3,
                 )
                 ballistic_ms = (
                     max(0.0, (t_s1_last - t0) * 1000.0)
@@ -1047,6 +1089,22 @@ class HardwareRectangleTrainer:
 
                 # Stage 2: Same-flank closed-loop trim with No-Harm Guardrail & Anti-Slip Clamp
                 u_s1_cmd = np.array([ux_lock, uy_lock], dtype=float)
+                s1_hint = np.array(self.last_motion_dir, dtype=float)
+                for ax_h in (0, 1):
+                    # Treat axis as engaged on Stage-1 flank when same-sign (eq+bst) drive acts, or backlash crossed
+                    eq_v = float(du_eq[ax_h])
+                    bst_v = float(du_bst[ax_h])
+                    if (
+                        abs(eq_v) >= 2.0
+                        and (
+                            (eq_v * float(s1_hint[ax_h]) >= 0.0)
+                            or abs(eq_v) >= 9.0
+                            or (eq_v * bst_v > 0.0 and abs(bst_v) >= 7.0)
+                        )
+                    ):
+                        s1_hint[ax_h] = float(np.sign(eq_v))
+                    elif abs(bst_v) >= 5.0 and ((bst_v * float(s1_hint[ax_h]) >= 0.0) or abs(bst_v) >= 18.0):
+                        s1_hint[ax_h] = float(np.sign(bst_v))
                 if dual_lattice:
                     p_final, t_s2_last, dual_trials = self._stage2_p0b_step(
                         p_s1,
@@ -1054,7 +1112,7 @@ class HardwareRectangleTrainer:
                         u_s1_cmd,
                         u_hold,
                         chord_vec,
-                        s1_dir_hint=np.sign(du_eq),
+                        s1_dir_hint=s1_hint,
                         t0_ref=t0,
                         tol_counts=tol_counts,
                     )
@@ -1071,10 +1129,37 @@ class HardwareRectangleTrainer:
                 self.driver.ser.write(b"F 10000\n")
 
             if enable_ilc_update and near_origin:
-                proj_err_s1 = float(np.dot(tgt_s1 - p_s1, d_hat))
-                new_bst_us = float(np.clip(ilc_dur_us + 380.0 * proj_err_s1, -12000.0, 17000.0))
-                new_bst = np.clip(ilc_bst + 0.14 * (K_meas @ (tgt_s1 - p_s1)), -12.0, 12.0)
-                new_eq = np.clip(ilc_eq + 0.10 * (K_meas @ (p_target - p_final)), -3.0, 3.0)
+                err_fin_vec = p_target - p_final
+                err_fin = float(np.hypot(err_fin_vec[0], err_fin_vec[1]))
+                proj_err_fin = float(np.dot(err_fin_vec, d_hat))
+                ilc_ratio = 0.98 if abs(float(du_lin[0])) < 8.0 else 0.95
+                tgt_ilc_s1 = p_start + (ilc_ratio * chord_vec if L >= 18.0 else (chord_vec - min(2.0, 0.06 * L) * d_hat))
+                if proj_err_fin < -0.5:
+                    bst_err_vec = 0.55 * err_fin_vec
+                elif err_fin <= 2.2:
+                    bst_err_vec = np.zeros(2, dtype=float)
+                elif dual_trials == 0 or err_s1 <= 2.8:
+                    bst_err_vec = 0.35 * err_s1_vec
+                else:
+                    bst_err_vec = tgt_ilc_s1 - p_s1
+                # Keep integer PWM boost-frame count locked; under H_OVR, steer eq gently and keep bst mild
+                new_bst_us = 0.0
+                bst_gain = 0.05 if L <= 70.0 else 0.13
+                bst_lim = 5.0 if L <= 70.0 else 12.0
+                bst_step = np.clip(bst_gain * (K_meas @ bst_err_vec), -1.2, 1.2)
+                new_bst = np.clip(ilc_bst + bst_step, -bst_lim, bst_lim)
+                eq_src_vec = err_fin_vec if err_fin <= (err_s1 + 1.5) else (0.5 * err_s1_vec)
+                if L <= 70.0:
+                    eq_gain = 0.03 if err_fin <= 2.2 else 0.10
+                    eq_lim = 5.5
+                else:
+                    eq_gain = 0.02 if err_fin <= 2.2 else 0.05
+                    eq_lim = 3.5
+                eq_step = np.clip(eq_gain * (K_meas @ eq_src_vec), -1.0, 1.0)
+                new_eq = np.clip(ilc_eq + eq_step, -eq_lim, eq_lim)
+                if L <= 70.0 and abs(float(chord_vec[1])) < 6.0:
+                    new_bst[1] = float(np.clip(new_bst[1], -2.0, 2.0))
+                    new_eq[1] = float(np.clip(new_eq[1], -1.8, 1.8))
                 self.dir_ilc[dir_key] = np.vstack([new_bst, new_eq, np.array([new_bst_us, 0.0], dtype=float)])
 
             u_final_cmd = np.array([self.driver.cur_s1, self.driver.cur_s2], dtype=float)
