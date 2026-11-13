@@ -56,15 +56,16 @@ ORIGIN_SETTLE_S = 0.36
 SETTLE_S = 0.46            # 断电后静置
 DRIFT_S = 0.26             # 蠕变观察窗
 BRAKE_TIMEOUT_MS = 140.0   # 轮询超时保护，防止空转到天荒地老
-DRIVE_CAP_MS = 40.0        # 【安全硬上限】kick 驱动时长绝不超过 40ms（防堵转/热保护）
+DRIVE_CAP_MS = 100.0       # 【P0-B 升级】原 40ms 短于 MG996R ~35ms 起动延迟，放宽到 100ms 覆盖完整弹道窗
+DEFAULT_TAU_BRAKE_MS = 16.0  # 预测落点超前制动时间常数 tau_brake (ms)
 
 # ---------------- 判定 ---------------- 
 PASS_MEAN_LO, PASS_MEAN_HI = 2.0, 5.0
 PASS_STD_MAX = 2.0
 
-# 中心雅可比（计数/us）与逆雅可比（us/计数），取自 calib_params.json
-JAC_CENTER_CNT_PER_US = ((1.18995, -1.69540), (-0.25616, -2.42069))
-JAC_INV_CENTER_US_PER_CNT = ((0.73026, -0.51146), (-0.07728, -0.35898))
+# 实测 2x2 雅可比（计数/us）与逆雅可比（us/计数），取自 定案4 experiments/real_jacobian_2x2.csv
+JAC_CENTER_CNT_PER_US = ((1.8925, -1.8915), (-0.5298, -3.8972))
+JAC_INV_CENTER_US_PER_CNT = ((0.46520, -0.22578), (-0.06323, -0.22590))
 
 
 def _norm(vx: float, vy: float) -> Tuple[float, float]:
@@ -134,8 +135,11 @@ def _trial(
     target_cnt: float,
     hold_us: float,
     timeout_ms: float,
+    cap_ms_limit: float = DRIVE_CAP_MS,
+    tau_brake_ms: float = DEFAULT_TAU_BRAKE_MS,
+    brake_ms: float = 0.0,
 ) -> Dict[str, float]:
-    """一次「预载 -> 静基线 -> kick -> 目标触发断电 -> 静置读数」。"""
+    """一次「预载 -> 静基线 -> kick -> 预测落点触发断电 -> 静置读数」。"""
 
     def _u(delta: float) -> Tuple[float, float]:
         return u0x + delta * vec[0], u0y + delta * vec[1]
@@ -154,30 +158,48 @@ def _trial(
     t0 = time.perf_counter()
     _send(trainer, *_u(sign * kick_us))
 
-    # 3) 轮询：沿 e 的位移一旦够 target_cnt 立刻断电
-    #    安全红线：kick 驱动时长硬上限 DRIVE_CAP_MS，绝不长时间满偏置堵转
+    # 3) 轮询：用 ~5ms 滑窗速度计算预测落点 pred_proj = proj + tau_brake * vel_proj
+    #    满足 pred_proj >= target_cnt 且已真实起步 (proj >= 0.5) 时立刻触发制动
     proj_brake = 0.0
+    pred_brake = 0.0
+    vel_brake = 0.0
     n_poll = 0
     hit_cap = 0.0
-    cap_ms = min(float(timeout_ms), DRIVE_CAP_MS)
+    cap_ms = min(float(timeout_ms), float(cap_ms_limit), DRIVE_CAP_MS)
+    tau_s = max(0.0, float(tau_brake_ms)) / 1000.0
+    hist: List[Tuple[float, float]] = [(t0, 0.0)]
+
     if target_cnt > 0.0:
         while True:
-            if (time.perf_counter() - t0) * 1000.0 >= cap_ms:
+            now = time.perf_counter()
+            if (now - t0) * 1000.0 >= cap_ms:
                 break
             p = trainer.get_rect_position()
             n_poll += 1
             proj_brake = (
                 (float(p[0]) - float(p0[0])) * esx
                 + (float(p[1]) - float(p0[1])) * esy
-            )
-            if proj_brake >= target_cnt:
+            ) * sign
+            hist.append((now, proj_brake))
+            # 取 >= 5ms 前的最早有效点算滑窗速度，消除 USB 帧间 0/尖峰噪声
+            while len(hist) > 2 and (now - hist[1][0]) >= 0.005:
+                hist.pop(0)
+            dt_v = now - hist[0][0]
+            vel_brake = (proj_brake - hist[0][1]) / dt_v if dt_v >= 0.003 else 0.0
+            pred_brake = proj_brake + tau_s * max(0.0, vel_brake)
+
+            if proj_brake >= target_cnt or (proj_brake >= 0.5 and vel_brake > 15.0 and pred_brake >= target_cnt):
                 break
+            time.sleep(0.0005)
     t_brake_ms = (time.perf_counter() - t0) * 1000.0
-    if target_cnt > 0.0 and proj_brake < target_cnt:
+    if target_cnt > 0.0 and pred_brake < target_cnt and proj_brake < target_cnt:
         hit_cap = 1.0
 
-    # 4) catch 相：切到 hold（默认 0us => 回到 u0，撤掉驱动）
+    # 4) catch 相：切到 hold（默认 0us => 回到 u0，撤掉驱动；若 hold<0 且 brake_ms>0，则反刹 brake_ms 后回 u0）
     _send(trainer, *_u(sign * hold_us))
+    if hold_us != 0.0 and brake_ms > 0.0:
+        time.sleep(brake_ms / 1000.0)
+        _send(trainer, *_u(0.0))
 
     # 5) 稳态读数 + 蠕变窗
     time.sleep(SETTLE_S)
@@ -196,6 +218,8 @@ def _trial(
         "t_brake_ms": t_brake_ms,
         "n_poll": float(n_poll),
         "proj_brake": proj_brake,
+        "pred_brake": pred_brake,
+        "vel_brake": vel_brake,
         "hit_cap": hit_cap,
     }
 
@@ -214,6 +238,11 @@ def main() -> int:
     ap.add_argument("--hold-us", type=float, default=0.0, help="断电时的 hold 量 us（0=回 u0 撤驱动，负数=反向制动）")
     ap.add_argument("--runs", type=int, default=4, help="每格重复次数")
     ap.add_argument("--timeout-ms", type=float, default=BRAKE_TIMEOUT_MS, help="轮询超时保护")
+    ap.add_argument("--cap-ms", type=float, default=DRIVE_CAP_MS, help="kick 驱动硬上限 ms (<=100)")
+    ap.add_argument("--tau-brake-ms", type=float, default=DEFAULT_TAU_BRAKE_MS, help="预测落点超前时间常数 ms (0=仅实测位移触发)")
+    ap.add_argument("--brake-ms", type=float, default=0.0, help="若>0且hold_us!=0，施加hold反刹brake_ms毫秒后再回u0")
+    ap.add_argument("--asym-brake", action="store_true", help="按定案4正负斜率比(u2+4.36/u2-3.43=1.27x)对y-自动放大反刹hold")
+    ap.add_argument("--csv", type=str, default=os.path.join("experiments", "target_brake.csv"), help="输出 CSV 路径")
     args = ap.parse_args()
 
     dirs = [d.strip() for d in args.dirs.split(",") if d.strip()]
@@ -236,7 +265,7 @@ def main() -> int:
         print("=" * 108)
         print(
             f"  raw 基线 u0 = ({u0x:.2f}, {u0y:.2f}) us   预载 {PRELOAD_US:.0f}us   "
-            f"runs={args.runs}   hold={args.hold_us:+.1f}us   timeout={args.timeout_ms:.0f}ms"
+            f"runs={args.runs}   hold={args.hold_us:+.1f}us   cap={args.cap_ms:.0f}ms   tau_brake={args.tau_brake_ms:.1f}ms"
         )
         for d in dirs:
             v = _dir_vec(d)
@@ -253,12 +282,17 @@ def main() -> int:
             v = _dir_vec(d)
             e = _screen_dir(*v)
             for sign in signs:
+                # 定案4 实测 u2+ (4.36 cnt/us) vs u2- (3.43 cnt/us) 存在 1.27x 非对称性，
+                # y- 沿 u2+ 加速、沿 u2- 反刹，故开启 --asym-brake 时按实测 1.27x 补偿反刹脉宽
+                hold_eff = args.hold_us * 1.27 if (args.asym_brake and d == "y" and sign < 0 and args.hold_us < 0) else args.hold_us
                 for kick in kicks:
                     for tg in targets:
                         for r in range(args.runs):
                             res = _trial(
                                 trainer, u0x, u0y, kick, sign, v, e,
-                                tg, args.hold_us, args.timeout_ms,
+                                tg, hold_eff, args.timeout_ms,
+                                cap_ms_limit=args.cap_ms, tau_brake_ms=args.tau_brake_ms,
+                                brake_ms=args.brake_ms,
                             )
                             rows.append(
                                 {
@@ -266,13 +300,17 @@ def main() -> int:
                                     "sign": sign,
                                     "kick_us": kick,
                                     "target_cnt": tg,
-                                    "hold_us": args.hold_us,
+                                    "hold_us": round(hold_eff, 2),
+                                    "tau_brake_ms": args.tau_brake_ms,
                                     "run_id": r,
                                     "prim_cnt": res["prim"],
                                     "cross_cnt": res["cross"],
                                     "drift_cnt": res["drift"],
                                     "t_brake_ms": res["t_brake_ms"],
                                     "proj_brake_cnt": res["proj_brake"],
+                                    "pred_brake_cnt": round(res["pred_brake"], 2),
+                                    "vel_brake_cnt_s": round(res["vel_brake"], 1),
+                                    "hit_cap": int(res["hit_cap"]),
                                     "n_poll": res["n_poll"],
                                 }
                             )
@@ -303,8 +341,8 @@ def main() -> int:
                         )
 
         # ---------------- 落盘 ----------------
-        os.makedirs("experiments", exist_ok=True)
-        csv_path = os.path.join("experiments", "target_brake.csv")
+        os.makedirs(os.path.dirname(args.csv) or ".", exist_ok=True)
+        csv_path = args.csv
         with open(csv_path, "w", newline="", encoding="utf-8") as f:
             w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
             w.writeheader()
