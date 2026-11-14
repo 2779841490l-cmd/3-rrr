@@ -1,0 +1,130 @@
+{
+  "screen": {
+    "width": 1920,
+    "height": 1080,
+    "fov_x_deg": 106.26,
+    "s_game": 0.646,
+    "m_yaw": 0.022,
+    "roi_size": 256,
+    "alpha_x": 1.0,
+    "alpha_y": 1.0
+  },
+  "stage_kinematics": {
+    "u0_neutral_us": [
+      1496.0,
+      1466.0
+    ],
+    "J_stage_ref": [
+      [
+        2.0222,
+        -1.6941
+      ],
+      [
+        -0.2595,
+        -1.376
+      ]
+    ],
+    "K_stage_ref": [
+      [
+        0.42704,
+        -0.52575
+      ],
+      [
+        -0.08052,
+        -0.6276
+      ]
+    ],
+    "J_stage": [
+      [
+        1.934097,
+        -1.157089
+      ],
+      [
+        0.347167,
+        -1.87417
+      ]
+    ],
+    "K_stage": [
+      [
+        0.581476,
+        -0.358996
+      ],
+      [
+        0.107712,
+        -0.600069
+      ]
+    ],
+    "mounting_angle_deg": 18.9187,
+    "calib_elapsed_s": 1.3247,
+    "recon_error_pct": 2.659,
+    "safe_envelope_counts": 80.0,
+    "hard_limit_counts": 88.0,
+    "recenter_trigger_counts": 15.0,
+    "recenter_v_hand_min": 120.0,
+    "recenter_ramp_ms": 300.0
+  },
+  "weapons": {
+    "AK47": {
+      "rpm": 600,
+      "shot_interval_ms": 100.0,
+      "recoil_read_delay_ms": 10.0,
+      "ballistic_budget_ms": 85.0
+    },
+    "M4A1": {
+      "rpm": 666,
+      "shot_interval_ms": 90.0,
+      "recoil_read_delay_ms": 10.0,
+      "ballistic_budget_ms": 80.0
+    }
+  },
+  "controller_params_baseline": {
+    "k_lead": 0.005,
+    "lambda_0": 0.55,
+    "sigma_v": 480.0,
+    "beta": 0.02,
+    "P_switch": 35.0,
+    "tau_w": 2.4
+  },
+  "controller_params": {
+    "k_lead": 0.08386,
+    "lambda_0": 1.0,
+    "sigma_v": 196.33874,
+    "beta": 0.24859,
+    "P_switch": 9.15699,
+    "tau_w": 0.39403
+  },
+  "param_bounds": {
+    "k_lead": [
+      0.0,
+      0.14
+    ],
+    "lambda_0": [
+      0.55,
+      1.0
+    ],
+    "sigma_v": [
+      110.0,
+      480.0
+    ],
+    "beta": [
+      0.02,
+      0.4
+    ],
+    "P_switch": [
+      4.0,
+      28.0
+    ],
+    "tau_w": [
+      0.25,
+      1.8
+    ]
+  },
+  "thresholds": {
+    "v_flick_cnt_s": 280.0,
+    "v_stop_cnt_s": 80.0,
+    "micro_flick_min_cnt": 3.0,
+    "micro_flick_max_cnt": 48.0,
+    "head_radius_cnt": 10.5,
+    "chest_radius_cnt": 21.0
+  }
+}

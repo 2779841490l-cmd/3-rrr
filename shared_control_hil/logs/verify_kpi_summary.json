@@ -1,0 +1,43 @@
+{
+  "all_passed": true,
+  "gates": {
+    "Gate_S1_CounterStrafe": {
+      "passed": true,
+      "raw_mean_cnt": 3.097,
+      "trim_mean_cnt": 2.55,
+      "raw_mean_px": 0.553,
+      "head_hit_rate": 1.0
+    },
+    "Gate_S2_SprayTransfer": {
+      "passed": true,
+      "hand_only_hit_rate": 0.15,
+      "effective_hit_rate": 0.9,
+      "mean_delta_e_cnt": 20.599
+    },
+    "Gate_S3_ConflictRate": {
+      "passed": true,
+      "conflict_rate": 0.05
+    },
+    "Gate_S4_WashoutAntiSat": {
+      "passed": true,
+      "max_stage_disp_cnt": 44.0,
+      "saturation_count": 0
+    },
+    "Gate_S5_SelfCalibAndLatency": {
+      "passed": true,
+      "calib_elapsed_s": 1.325,
+      "recon_error_pct": 2.66,
+      "mounting_angle_deg": 18.92,
+      "decision_mean_ms": 0.6266,
+      "decision_p95_ms": 0.6775
+    }
+  },
+  "controller_params": {
+    "k_lead": 0.08386,
+    "lambda_0": 1.0,
+    "sigma_v": 196.33874,
+    "beta": 0.24859,
+    "P_switch": 9.15699,
+    "tau_w": 0.39403
+  }
+}
