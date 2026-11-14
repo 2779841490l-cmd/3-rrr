@@ -576,6 +576,9 @@ class AK47SprayCalibrator:
         reset_origin: bool = True,
         check_lmb: bool = False,
         visual_trim_fn: Optional[Any] = None,
+        use_ilc: Optional[bool] = None,
+        boost_scale: float = 1.0,
+        use_b_cmd: bool = False,
     ) -> Dict[str, Any]:
         """
         Stream 100 Hz 3-phase discrete ballistic-settle-trim AK-47 pull-down on real COM4 hardware.
@@ -601,7 +604,8 @@ class AK47SprayCalibrator:
         dt = 1.0 / max(20.0, float(rate_hz))
         n_eff = int(np.clip(n_shots, 2, 30))
         pts_eff = self.pull_waypoints_cnt[:n_eff]
-        u_eq_table = self._compute_equilibrium_table(trainer, n_eff, use_ilc=bool(use_feedback))
+        ilc_enabled = bool(use_feedback) if use_ilc is None else bool(use_ilc)
+        u_eq_table = self._compute_equilibrium_table(trainer, n_eff, use_ilc=ilc_enabled)
         K_fb = np.asarray(
             self.k_stage_cal if self.k_stage_cal is not None else self.calibrator.K_stage,
             dtype=float,
@@ -673,8 +677,16 @@ class AK47SprayCalibrator:
                     for ax in (0, 1):
                         if abs(delta_u[ax]) > 1.2:
                             du_boost[ax] = float(
-                                np.clip(0.24 * delta_u[ax] + math.copysign(1.8, delta_u[ax]), -14.0, 14.0)
+                                np.clip((0.24 * delta_u[ax] + math.copysign(1.8, delta_u[ax])) * float(boost_scale), -30.0, 30.0)
                             )
+                    if use_b_cmd and getattr(trainer.driver, "b_cmd_supported", False) and (abs(du_boost[0]) > 2.0 or abs(du_boost[1]) > 2.0):
+                        u_eq_b = u_eq_table[b_target]
+                        u_bst_b = u_eq_b + du_boost
+                        b1, b2 = _clamp_servo_pair(float(u_bst_b[0]), float(u_bst_b[1]), prev_u1=prev_u1, prev_u2=prev_u2, max_step_us=90.0)
+                        e1, e2 = _clamp_servo_pair(float(u_eq_b[0]), float(u_eq_b[1]), prev_u1=prev_u1, prev_u2=prev_u2, max_step_us=75.0)
+                        trainer.driver.send_ballistic_pulse(b1, b2, e1, e2, bst_us=20000)
+                        prev_u1, prev_u2 = e1, e2
+                        first_write = False
 
                 p_des = pts_eff[b_target].copy()
                 p_des_eff = np.array(
@@ -979,6 +991,71 @@ class AK47SprayCalibrator:
         finally:
             if own_trainer:
                 self.calibrator.close()
+
+    def calibrate_loaded_hand_ilc(
+        self,
+        trainer: HardwareRectangleTrainer,
+        n_shots: int = 12,
+        ilc_iters: int = 5,
+        initial_boost_scale: float = 1.35,
+    ) -> Dict[str, Any]:
+        """
+        In-game loaded-hand 5-round AK-47 ILC calibration (F6):
+        Player rests hand naturally on mouse without moving wrist; COM4 drives 5 bursts with
+        3200 DPI displacement sensor + B_CMD transient boost to compensate palm damping.
+        """
+        self.refresh_bounds_from_trainer(trainer)
+        self.load_profile()
+        K_fb = np.asarray(
+            self.k_stage_cal if self.k_stage_cal is not None else self.calibrator.K_stage,
+            dtype=float,
+        )
+        boost_sc = float(initial_boost_scale)
+        best_err = 1e9
+        best_ilc = self.ilc_du_table.copy()
+        best_boost = boost_sc
+        history = []
+
+        print("\n[F6 Loaded AK-ILC] Rest your hand naturally on the mouse (steady wrist) for 5 short bursts...")
+        for it in range(1, int(ilc_iters) + 1):
+            res = self.execute_ak_spray_closed_loop(
+                trainer,
+                n_shots=n_shots,
+                use_feedback=False,
+                rate_hz=250.0,
+                reset_origin=True,
+                use_ilc=True,
+                boost_scale=boost_sc,
+                use_b_cmd=True,
+            )
+            mean_e = float(res["mean_bullet_err_cnt"])
+            history.append({"iter": it, "mean_err_cnt": round(mean_e, 2), "boost_scale": round(boost_sc, 3)})
+            print(f"[F6 Loaded AK-ILC {it}/{ilc_iters}] mean_err={mean_e:.2f} cnt | boost_scale={boost_sc:.2f}")
+            if mean_e < best_err:
+                best_err = mean_e
+                best_ilc = self.ilc_du_table.copy()
+                best_boost = boost_sc
+
+            # ILC update across bullets under hand load
+            next_tbl = self.ilc_du_table[:n_shots].copy()
+            y_undershoot = 0.0
+            for b in range(1, n_shots):
+                ev = np.asarray(res["bullet_table"][b]["err_cnt"], dtype=float)
+                du_upd = np.clip(0.58 * (K_fb @ ev), -18.0, 18.0)
+                next_tbl[b] = np.clip(next_tbl[b] + du_upd, -145.0, 145.0)
+                y_undershoot += float(ev[1])
+            self.ilc_du_table[:n_shots] = next_tbl
+            if y_undershoot / max(1, n_shots - 1) > 15.0:
+                boost_sc = min(2.4, boost_sc + 0.18)
+
+        self.ilc_du_table = best_ilc
+        self.profile_source = "loaded_hand_ilc"
+        self.save_profile()
+        if "live_control" in self.calibrator.config:
+            self.calibrator.config["live_control"]["boost_scale"] = round(float(best_boost), 3)
+            self.calibrator.save_config()
+        trainer.move_to_rect_origin(settle_s=0.30)
+        return {"best_mean_err_cnt": best_err, "boost_scale": best_boost, "history": history}
 
 
 def main() -> int:

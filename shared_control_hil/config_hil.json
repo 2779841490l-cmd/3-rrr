@@ -50,7 +50,7 @@
     ],
     "J_stage": [
       [
-        2.023046,
+        2.022792,
         -1.6765
       ],
       [
@@ -60,17 +60,17 @@
     ],
     "K_stage": [
       [
-        0.432142,
-        -0.519867
+        0.43219,
+        -0.519924
       ],
       [
-        -0.075011,
-        -0.627328
+        -0.075019,
+        -0.627318
       ]
     ],
     "mounting_angle_deg": 0.0,
-    "calib_elapsed_s": 1.5874,
-    "recon_error_pct": 1.697,
+    "calib_elapsed_s": 1.5861,
+    "recon_error_pct": 1.699,
     "safe_envelope_counts": 80.0,
     "hard_limit_counts": 88.0,
     "live_max_x_counts": 240.0,
@@ -91,6 +91,21 @@
     "recenter_trigger_counts": 15.0,
     "recenter_v_hand_min": 120.0,
     "recenter_ramp_ms": 300.0
+  },
+  "live_control": {
+    "kp_small_head": 0.42,
+    "kp_large_error": 0.68,
+    "small_error_px": 14.0,
+    "in_box_deadband_ratio": 0.38,
+    "min_deadband_px": 2.2,
+    "cooldown_ms": 85.0,
+    "recoil_cooldown_ms": 20.0,
+    "boost_scale": 1.35,
+    "boost_dur_ms": 22.0,
+    "recenter_idle_ms": 150.0,
+    "aim_washout_tau_s": 0.2,
+    "no_reversal_window_ms": 250.0,
+    "auto_recenter_threshold_cnt": 180.0
   },
   "weapons": {
     "AK47": {
