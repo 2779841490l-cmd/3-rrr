@@ -18,6 +18,7 @@ Global Non-Blocking Hotkeys (GetAsyncKeyState):
 """
 
 import argparse
+from collections import deque
 import ctypes
 import json
 import math
@@ -156,23 +157,35 @@ def detect_live_crosshair_and_targets(
     g = roi_rgb[:, :, 1].astype(np.int16)
     b = roi_rgb[:, :, 2].astype(np.int16)
 
-    # Multi-profile crosshair mask: Cyan or Bright Green (CS2 standard high-visibility crosshairs)
-    cyan_mask = (g >= 180) & (b >= 180) & ((g - r) >= 60)
-    green_mask = (g >= 180) & (r <= 115) & (b <= 135)
+    # Constrain live crosshair search to central recoil window (|dx|<=30, dy in [-80, +18] px)
+    # so bright green/cyan Aim Botz corner walls or HUD text cannot pull c_px out of center.
+    cx0, cy0 = 0.5 * w, 0.5 * h
+    x_lo = max(0, int(math.floor(cx0 - 30.0)))
+    x_hi = min(w, int(math.ceil(cx0 + 30.0)) + 1)
+    y_lo = max(0, int(math.floor(cy0 - 80.0)))
+    y_hi = min(h, int(math.ceil(cy0 + 18.0)) + 1)
+    r_w, g_w, b_w = r[y_lo:y_hi, x_lo:x_hi], g[y_lo:y_hi, x_lo:x_hi], b[y_lo:y_hi, x_lo:x_hi]
+
+    cyan_mask = (g_w >= 175) & (b_w >= 175) & ((g_w - r_w) >= 60) & ((b_w - r_w) >= 50)
+    green_mask = (g_w >= 175) & ((g_w - r_w) >= 65) & ((g_w - b_w) >= 45)
     ch_mask = cyan_mask if int(cyan_mask.sum()) >= int(green_mask.sum()) else green_mask
 
     c_meas: Optional[np.ndarray] = None
     ch_cnt = int(ch_mask.sum())
-    if 3 <= ch_cnt <= 450:
+    if 3 <= ch_cnt <= 320:
         row_sum = ch_mask.sum(axis=1).astype(float)
         col_sum = ch_mask.sum(axis=0).astype(float)
         vr = int(np.argmax(row_sum))
         ur = int(np.argmax(col_sum))
-        vw = slice(max(0, vr - 10), min(h, vr + 11))
-        uw = slice(max(0, ur - 10), min(w, ur + 11))
+        mh, mw = ch_mask.shape
+        vw = slice(max(0, vr - 9), min(mh, vr + 10))
+        uw = slice(max(0, ur - 9), min(mw, ur + 10))
         ys, xs = np.nonzero(ch_mask[vw, uw])
         if len(xs) >= 3:
-            c_meas = np.array([float(xs.mean() + uw.start), float(ys.mean() + vw.start)], dtype=float)
+            c_meas = np.array(
+                [float(xs.mean() + x_lo + uw.start), float(ys.mean() + y_lo + vw.start)],
+                dtype=float,
+            )
 
     if c_meas is not None:
         c_px, _ = vision.crosshair_tracker.kf.step(c_meas, dt_s=dt_s)
@@ -308,6 +321,13 @@ class LiveGameSharedControlRunner:
         self._lock_dir_sign = np.zeros(2, dtype=float)
         self._last_u_kin_live: Optional[np.ndarray] = None
         self._locked_play_g = np.zeros(2, dtype=float)
+        self._prev_recoil_off_px: Optional[np.ndarray] = None
+        self._mono_target_id: Optional[int] = None
+        self._mono_e0_norm: float = 0.0
+        self._mono_cmd_t: float = 0.0
+        self._mono_tripped: bool = False
+        self._shot_snapshots: deque = deque(maxlen=16)
+        self.snapshots_path = os.path.join(LOGS_DIR, "live_shot_snapshots.jpg")
         self._reload_live_control_params()
 
         self.in_game_trainer = InGameAutoTrainer(
@@ -349,9 +369,10 @@ class LiveGameSharedControlRunner:
         self.kp_small_head = float(lc.get("kp_small_head", 0.42))
         self.kp_large_error = float(lc.get("kp_large_error", 0.68))
         self.small_error_px = float(lc.get("small_error_px", 14.0))
-        self.in_box_deadband_ratio = float(lc.get("in_box_deadband_ratio", 0.38))
+        self.in_box_deadband_ratio = float(lc.get("in_box_deadband_ratio", 0.35))
         self.min_deadband_px = float(lc.get("min_deadband_px", 2.2))
-        self.cooldown_lock_s = float(lc.get("cooldown_ms", 85.0)) / 1000.0
+        self.max_deadband_px = float(lc.get("max_deadband_px", 4.5))
+        self.cooldown_lock_s = float(lc.get("cooldown_ms", 95.0)) / 1000.0
         self.recoil_cooldown_s = float(lc.get("recoil_cooldown_ms", 20.0)) / 1000.0
         self.boost_scale = float(lc.get("boost_scale", 1.35))
         self.boost_dur_ms = float(lc.get("boost_dur_ms", 22.0))
@@ -381,7 +402,23 @@ class LiveGameSharedControlRunner:
         self._lock_dir_sign = np.zeros(2, dtype=float)
         self._last_u_kin_live = None
         self._locked_play_g = np.zeros(2, dtype=float)
+        self._prev_recoil_off_px = None
+        self._mono_target_id = None
+        self._mono_e0_norm = 0.0
+        self._mono_cmd_t = 0.0
+        self._mono_tripped = False
         self._last_engage_t = time.perf_counter()
+
+    def _compute_deadband_px(self, det: Optional[TargetDetection]) -> float:
+        """Compute bounded In-Box Deadband Freeze radius in pixels (strictly <= max_deadband_px)."""
+        if det is None:
+            return float(self.min_deadband_px)
+        if det.head_bbox_px is not None:
+            bx1, by1, bx2, by2 = det.head_bbox_px
+            min_wh = min(abs(float(bx2) - float(bx1)), abs(float(by2) - float(by1)))
+        else:
+            min_wh = 2.0 * float(det.head_radius_px)
+        return float(np.clip(self.in_box_deadband_ratio * min_wh, self.min_deadband_px, self.max_deadband_px))
 
     def _smooth_recenter_3step(self, duration_s: float = 0.12) -> None:
         """3-step non-jarring manifold return to (0, 0) mechanical neutral (~120ms)."""
@@ -775,48 +812,50 @@ class LiveGameSharedControlRunner:
 
             x_cmd, y_cmd = float(p_clamped[0]), float(p_clamped[1])
             manifold = self.trainer.manifold
-            has_kin = hasattr(manifold, "evaluate_kinematic_pulse")
-            if freeze_play_g and has_kin and (not is_recenter):
-                u_kin = np.asarray(manifold.evaluate_kinematic_pulse(x_cmd, y_cmd), dtype=float)
-                u1 = float(u_kin[0] + self._locked_play_g[0])
-                u2 = float(u_kin[1] + self._locked_play_g[1])
-                manifold.cur_rect_pos = np.array([x_cmd, y_cmd], dtype=float)
-            else:
-                u1_raw, u2_raw = manifold.evaluate_pulse(x_cmd, y_cmd, dir_hint=(dx, dy))
-                u1, u2 = float(u1_raw), float(u2_raw)
-                if has_kin:
-                    u_kin = np.asarray(manifold.evaluate_kinematic_pulse(x_cmd, y_cmd), dtype=float)
-                    self._locked_play_g = np.array([u1, u2], dtype=float) - u_kin
-                else:
-                    u_kin = np.array([u1, u2], dtype=float)
+            e1, e2, u_lin, play_g = self.calibrator.stage_pos_to_pulses(
+                manifold,
+                x_cmd,
+                y_cmd,
+                dx=dx,
+                dy=dy,
+                freeze_play_g=(freeze_play_g and (not is_recenter)),
+                locked_play_g=self._locked_play_g,
+                play_deadband_cnt=0.0 if is_recenter else 6.0,
+            )
+            if not (freeze_play_g and (not is_recenter)):
+                self._locked_play_g = play_g
 
-            e1, e2 = _clamp_servo_pair(u1, u2)
             b_scale = self.boost_scale if boost_scale is None else float(boost_scale)
             dur_ms = self.boost_dur_ms if boost_dur_ms is None else float(boost_dur_ms)
 
+            boost_pair = None
             if (
                 use_boost
                 and (not is_recenter)
                 and getattr(self.trainer.driver, "b_cmd_supported", False)
                 and self._last_u_kin_live is not None
             ):
-                du_k = u_kin - self._last_u_kin_live
-                du_b = np.clip(du_k * 0.40 * b_scale, -26.0, 26.0)
-                if abs(du_b[0]) > 1.5 or abs(du_b[1]) > 1.5:
-                    b1, b2 = _clamp_servo_pair(e1 + float(du_b[0]), e2 + float(du_b[1]))
-                    bst_us = int(round(max(10.0, min(35.0, dur_ms)) * 1000.0))
-                    self.trainer.driver.send_ballistic_pulse(b1, b2, e1, e2, bst_us)
-                else:
-                    self.trainer.driver.send_raw_pulses(e1, e2)
+                boost_pair = self.calibrator.compute_stiction_boost(
+                    u_lin - self._last_u_kin_live,
+                    e1,
+                    e2,
+                    boost_scale=b_scale,
+                    min_kick_us=10.5,
+                    max_kick_us=26.0,
+                )
+            if boost_pair is not None:
+                b1, b2 = boost_pair
+                bst_us = int(round(max(12.0, min(35.0, max(24.0, dur_ms))) * 1000.0))
+                self.trainer.driver.send_ballistic_pulse(b1, b2, e1, e2, bst_us)
             else:
                 self.trainer.driver.send_raw_pulses(e1, e2)
 
-            self._last_u_kin_live = u_kin.copy()
+            self._last_u_kin_live = u_lin.copy()
             self.p_stage_est = p_clamped.copy()
             self.ctrl.p_stage_cur = p_clamped.copy()
         return True
 
-    def _render_vision_hud(
+    def _build_hud_canvas(
         self,
         roi_rgb: np.ndarray,
         c_px: np.ndarray,
@@ -824,10 +863,9 @@ class LiveGameSharedControlRunner:
         locked_det: Optional[TargetDetection],
         arrow_tip_px: Optional[np.ndarray],
         p_stage_now: np.ndarray,
-    ) -> None:
-        """Render non-blocking topmost 256x256 real-time Vision HUD debug window."""
-        if not self.enable_gui:
-            return
+        footer_text: Optional[str] = None,
+    ) -> Optional[np.ndarray]:
+        """Build 256x256 BGR HUD overlay canvas shared by live GUI and blackbox snapshots."""
         try:
             import cv2
 
@@ -835,8 +873,8 @@ class LiveGameSharedControlRunner:
             h, w, _ = hud.shape
             cx0, cy0 = w // 2, h // 2
 
-            # White screen geometric center u0
-            cv2.circle(hud, (cx0, cy0), 3, (255, 255, 255), -1)
+            # Geometric screen center u0
+            cv2.circle(hud, (cx0, cy0), 2, (200, 200, 200), -1)
 
             # Detected recoil crosshair c(t) - Green Cross
             gx = int(np.clip(round(float(c_px[0])), 4, w - 5))
@@ -865,31 +903,21 @@ class LiveGameSharedControlRunner:
                     hx, hy = int(round(float(d.head_px[0]))), int(round(float(d.head_px[1])))
                     cv2.circle(hud, (hx, hy), 5, (0, 0, 255), 1)
 
-            # Adaptive In-Box Deadband Freeze ring r_lock around currently locked target
+            # Bounded In-Box Deadband Freeze white ring r_lock (<= max_deadband_px)
             if locked_det is not None:
                 hx_l = int(round(float(locked_det.head_px[0])))
                 hy_l = int(round(float(locked_det.head_px[1])))
-                if locked_det.head_bbox_px is not None:
-                    bx1, by1, bx2, by2 = locked_det.head_bbox_px
-                    min_wh = min(abs(bx2 - bx1), abs(by2 - by1))
-                else:
-                    min_wh = 2.0 * float(locked_det.head_radius_px)
-                r_lock_px = max(self.min_deadband_px, self.in_box_deadband_ratio * min_wh)
-                cv2.circle(hud, (hx_l, hy_l), max(2, int(round(r_lock_px))), (255, 255, 0), 1)
+                r_lock_px = self._compute_deadband_px(locked_det)
+                cv2.circle(hud, (hx_l, hy_l), max(2, int(round(r_lock_px))), (255, 255, 255), 1)
 
-            # Yellow traction vector arrow from c(t) toward active target/recoil point
+            # Yellow traction vector arrow from c(t) toward expected aim direction
             if arrow_tip_px is not None:
                 tx = int(np.clip(round(float(arrow_tip_px[0])), 2, w - 3))
                 ty = int(np.clip(round(float(arrow_tip_px[1])), 2, h - 3))
                 cv2.arrowedLine(hud, (gx, gy), (tx, ty), (0, 255, 255), 2, tipLength=0.25)
 
             src_str = self.calibrator.visual_calib_source
-            if src_str == "YOLO_HEAD_FLOW":
-                calib_tag = "YOLO"
-            elif src_str == "OPTICAL_FLOW":
-                calib_tag = "FLOW"
-            else:
-                calib_tag = "PINH"
+            calib_tag = "YOLO" if src_str == "YOLO_HEAD_FLOW" else ("FLOW" if src_str == "OPTICAL_FLOW" else "PINH")
             mode_tag = "ASSIST" if self.mode == MODE_ASSIST_ON else self.mode[:6]
             lock_tag = f"LOCK#{locked_det.target_id}" if locked_det is not None else "FREE"
             cv2.rectangle(hud, (0, 0), (w, 20), (15, 15, 15), -1)
@@ -902,7 +930,83 @@ class LiveGameSharedControlRunner:
                 (235, 235, 235),
                 1,
             )
+            if footer_text:
+                cv2.rectangle(hud, (0, h - 18), (w, h), (15, 15, 15), -1)
+                cv2.putText(hud, footer_text, (4, h - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.36, (0, 255, 255), 1)
+            return hud
+        except Exception:
+            return None
 
+    def _capture_shot_snapshot(
+        self,
+        roi_rgb: np.ndarray,
+        c_px: np.ndarray,
+        dets_px: List[TargetDetection],
+        locked_det: Optional[TargetDetection],
+        arrow_tip_px: Optional[np.ndarray],
+        p_stage_now: np.ndarray,
+        label: str,
+    ) -> None:
+        hud = self._build_hud_canvas(
+            roi_rgb=roi_rgb,
+            c_px=c_px,
+            dets_px=dets_px,
+            locked_det=locked_det,
+            arrow_tip_px=arrow_tip_px,
+            p_stage_now=p_stage_now,
+            footer_text=label,
+        )
+        if hud is not None:
+            self._shot_snapshots.append(hud)
+
+    def _save_shot_snapshots_grid(self) -> Optional[str]:
+        """Stitch up to 16 blackbox shot/calibration snapshots into logs/live_shot_snapshots.jpg."""
+        if not self._shot_snapshots:
+            return None
+        try:
+            import cv2
+
+            frames = list(self._shot_snapshots)
+            cols = 4
+            rows = int(math.ceil(len(frames) / float(cols)))
+            cell_h, cell_w = frames[0].shape[:2]
+            grid = np.zeros((rows * cell_h, cols * cell_w, 3), dtype=np.uint8)
+            for idx, fr in enumerate(frames):
+                r, c = divmod(idx, cols)
+                if fr.shape[:2] != (cell_h, cell_w):
+                    fr = cv2.resize(fr, (cell_w, cell_h))
+                grid[r * cell_h : (r + 1) * cell_h, c * cell_w : (c + 1) * cell_w] = fr
+            os.makedirs(os.path.dirname(self.snapshots_path), exist_ok=True)
+            cv2.imwrite(self.snapshots_path, grid)
+            return self.snapshots_path
+        except Exception:
+            return None
+
+    def _render_vision_hud(
+        self,
+        roi_rgb: np.ndarray,
+        c_px: np.ndarray,
+        dets_px: List[TargetDetection],
+        locked_det: Optional[TargetDetection],
+        arrow_tip_px: Optional[np.ndarray],
+        p_stage_now: np.ndarray,
+    ) -> None:
+        """Render non-blocking topmost 256x256 real-time Vision HUD debug window."""
+        if not self.enable_gui:
+            return
+        try:
+            import cv2
+
+            hud = self._build_hud_canvas(
+                roi_rgb=roi_rgb,
+                c_px=c_px,
+                dets_px=dets_px,
+                locked_det=locked_det,
+                arrow_tip_px=arrow_tip_px,
+                p_stage_now=p_stage_now,
+            )
+            if hud is None:
+                return
             if not self._hud_initialized:
                 cv2.namedWindow(HUD_WINDOW_NAME, cv2.WINDOW_NORMAL)
                 cv2.resizeWindow(HUD_WINDOW_NAME, 256, 256)
@@ -1223,6 +1327,9 @@ class LiveGameSharedControlRunner:
             f"SATURATION={fc[FAULT_SATURATION]}, HANDOVER_DELAY={fc[FAULT_HANDOVER_DELAY]}"
         )
         print(f"[Saved] Session telemetry report -> {self.report_path}")
+        snap_path = self._save_shot_snapshots_grid()
+        if snap_path:
+            print(f"[Saved] Live blackbox shot snapshots ({len(self._shot_snapshots)}) -> {snap_path}")
         print("=" * 78)
         return report
 
@@ -1419,45 +1526,62 @@ class LiveGameSharedControlRunner:
                 if self.mode == MODE_ASSIST_ON:
                     # 4 Iron Rules Live Open-Loop Manifold Mode (ZERO mouse_sensor feedback):
                     #   1. Decompose p_stage = p_aim + p_recoil; reset recoil & smooth-recenter on LMB release / idle
-                    #   2. Adaptive In-Box Deadband Freeze r_lock = max(min_deadband, ratio * min(w_h, h_h))
-                    #   3. Piecewise underdamped gain + One-Way No-Reversal Clamp + frozen play_g
-                    #   4. Atomic WS63 B_CMD boost overcoming 300-500g loaded palm friction
+                    #   2. Bounded In-Box Deadband Freeze r_lock = clip(ratio * min(w_h, h_h), min_db, max_db)
+                    #   3. Piecewise damping + No-Reversal + play_g freeze + Monotonicity Gate
+                    #   4. Atomic WS63 B_CMD boost + RGB crosshair recoil slew/sign guard
                     limits = np.array([self.live_max_x_cnt, self.live_max_y_cnt], dtype=float)
                     lmb_released = self._prev_lmb_live and (not lmb_down)
                     self._prev_lmb_live = lmb_down
 
                     if lmb_released:
                         self.p_recoil_cnt[:] = 0.0
+                        self._prev_recoil_off_px = None
                         self._lock_target_id = None
                         self._lock_dir_sign[:] = 0.0
+                        self._mono_tripped = False
                         if locked_det is None and float(np.hypot(p_stage_now[0], p_stage_now[1])) > 12.0:
                             self._smooth_recenter_3step(duration_s=0.12)
                             p_stage_now = self.p_stage_est.copy()
 
-                    # Compute live recoil offset component when firing
+                    # Compute bounded, slew-limited live follow-recoil component (RGB input!)
                     if lmb_down:
                         self._last_engage_t = t_now
-                        off_px = detect_crosshair_offset_px(roi_rgb)
-                        if off_px is None and float(np.hypot(c_px[0] - roi_center, c_px[1] - roi_center)) >= 2.5:
-                            off_px = np.array([float(c_px[0]) - roi_center, float(c_px[1]) - roi_center], dtype=float)
-                        if off_px is not None and float(np.hypot(off_px[0], off_px[1])) >= 2.5:
-                            p_rec = self.calibrator.recoil_offset_to_stage_abs(float(off_px[0]), float(off_px[1]))
-                            self.p_recoil_cnt = np.clip(p_rec, -limits, limits)
+                        off_px = detect_crosshair_offset_px(roi_rgb, is_rgb=True)
+                        if off_px is not None:
+                            off_arr = np.array([float(off_px[0]), float(off_px[1])], dtype=float)
+                            # Reject single-frame inter-frame jumps > 8.0 px
+                            if self._prev_recoil_off_px is not None:
+                                delta_off = off_arr - self._prev_recoil_off_px
+                                dnorm = float(np.hypot(delta_off[0], delta_off[1]))
+                                if dnorm > 8.0:
+                                    off_arr = self._prev_recoil_off_px + delta_off * (8.0 / dnorm)
+                            self._prev_recoil_off_px = off_arr.copy()
+                            # Only react when recoil cross actually kicked significantly (>= 3.0 px)
+                            if float(np.hypot(off_arr[0], off_arr[1])) >= 3.0:
+                                p_rec_raw = self.calibrator.recoil_offset_to_stage_abs(float(off_arr[0]), float(off_arr[1]))
+                                # Physical AK recoil envelope: pull DOWN only (y >= 0), |x| <= 90 cnt
+                                p_rec_raw[0] = float(np.clip(p_rec_raw[0], -90.0, 90.0))
+                                p_rec_raw[1] = float(np.clip(p_rec_raw[1], 0.0, self.live_max_y_cnt))
+                                # Slew-limit recoil command per tick (<= 45 cnt) to stop 580 cnt slams
+                                d_rec = p_rec_raw - self.p_recoil_cnt
+                                d_rec_norm = float(np.hypot(d_rec[0], d_rec[1]))
+                                if d_rec_norm > 45.0:
+                                    p_rec_raw = self.p_recoil_cnt + d_rec * (45.0 / d_rec_norm)
+                                self.p_recoil_cnt = np.clip(p_rec_raw, -limits, limits)
                     else:
                         self.p_recoil_cnt[:] = 0.0
+                        self._prev_recoil_off_px = None
+
+                    # Active human flick washout so X-axis does not stay pinned near saturation walls
+                    if float(np.hypot(v_hand_raw[0], v_hand_raw[1])) > 140.0 and (not lmb_down):
+                        self.p_aim_cnt = self.p_aim_cnt * math.exp(-dt_s / 0.18)
 
                     if locked_det is not None:
                         self._last_engage_t = t_now
                         e_px = locked_det.head_px - c_px
                         e_norm = float(np.hypot(e_px[0], e_px[1]))
-                        if locked_det.head_bbox_px is not None:
-                            bx1, by1, bx2, by2 = locked_det.head_bbox_px
-                            min_wh = min(abs(bx2 - bx1), abs(by2 - by1))
-                        else:
-                            min_wh = 2.0 * float(locked_det.head_radius_px)
-                        r_lock = max(self.min_deadband_px, self.in_box_deadband_ratio * min_wh)
+                        r_lock = self._compute_deadband_px(locked_det)
 
-                        # Lock initial approach direction & backlash flank per target lock / 250ms window
                         tid_cur = int(locked_det.target_id)
                         new_lock = (tid_cur != self._lock_target_id) or (
                             (t_now - self._lock_start_t) >= self.no_reversal_window_s and e_norm > (r_lock * 1.35)
@@ -1467,27 +1591,51 @@ class LiveGameSharedControlRunner:
                             self._lock_target_id = tid_cur
                             self._lock_start_t = t_now
                             self._lock_dir_sign = np.sign(dp_init)
+                            self._mono_target_id = tid_cur
+                            self._mono_e0_norm = e_norm
+                            self._mono_cmd_t = 0.0
+                            self._mono_tripped = False
 
-                        if e_norm > r_lock and locked_dist_px >= min(self.min_aim_dist_px, r_lock):
+                        # Live Monotonicity Feedback Gate: if 90-240ms after commanding aim step
+                        # with hand nearly still error GREW by > +4.5 px, trip & back off!
+                        if (
+                            self._mono_cmd_t > 0.0
+                            and self._mono_target_id == tid_cur
+                            and 0.090 <= (t_now - self._mono_cmd_t) <= 0.250
+                            and float(np.hypot(v_hand_raw[0], v_hand_raw[1])) < 80.0
+                            and e_norm > (self._mono_e0_norm + 4.5)
+                        ):
+                            self._mono_tripped = True
+                            self.p_aim_cnt = self.p_aim_cnt * 0.5
+                            self._mono_cmd_t = 0.0
+
+                        if (not self._mono_tripped) and e_norm > r_lock and locked_dist_px >= min(self.min_aim_dist_px, r_lock):
                             gain = self.kp_small_head if e_norm <= self.small_error_px else self.kp_large_error
                             dp_stage = self.calibrator.aim_error_to_stage_delta(float(e_px[0]), float(e_px[1])) * gain
-                            # One-Way No-Reversal Clamp: never cross head center in opposing direction during lock
-                            for ax in (0, 1):
-                                if self._lock_dir_sign[ax] != 0.0 and dp_stage[ax] * self._lock_dir_sign[ax] < 0.0:
-                                    dp_stage[ax] = 0.0
+                            # Cap single-step aim jump to <= 55 cnt to avoid large jumps on noisy frame
+                            dp_n = float(np.hypot(dp_stage[0], dp_stage[1]))
+                            if dp_n > 55.0:
+                                dp_stage = dp_stage * (55.0 / dp_n)
+                            # Soft radial overshoot damping without stranding cross-coupled minor axes
+                            if float(np.dot(dp_stage, self._lock_dir_sign)) < 0.0 and e_norm < 8.0:
+                                dp_stage = dp_stage * 0.72
 
                             if float(np.hypot(dp_stage[0], dp_stage[1])) >= 0.4:
-                                self.p_aim_cnt = np.clip(self.p_aim_cnt + dp_stage, -limits, limits)
+                                aim_env = np.array([min(165.0, self.live_max_x_cnt), min(165.0, self.live_max_y_cnt)])
+                                self.p_aim_cnt = np.clip(self.p_aim_cnt + dp_stage, -aim_env, aim_env)
                                 p_cmd = np.clip(self.p_aim_cnt + self.p_recoil_cnt, -limits, limits)
-                                freeze_pg = (not new_lock) or (e_norm <= self.small_error_px)
+                                freeze_pg = bool(lmb_down)
                                 cd_s = self.recoil_cooldown_s if lmb_down else self.cooldown_lock_s
-                                self._dispatch_stage_manifold_open_loop(
+                                sent = self._dispatch_stage_manifold_open_loop(
                                     p_cmd,
                                     is_recenter=False,
                                     cooldown_s=cd_s,
                                     freeze_play_g=freeze_pg,
                                     use_boost=True,
                                 )
+                                if sent and self._mono_cmd_t == 0.0:
+                                    self._mono_e0_norm = e_norm
+                                    self._mono_cmd_t = t_now
                         elif lmb_down and float(np.hypot(self.p_recoil_cnt[0], self.p_recoil_cnt[1])) >= 2.0:
                             # Head already inside deadband r_lock; still track pure recoil pull-down
                             p_cmd = np.clip(self.p_aim_cnt + self.p_recoil_cnt, -limits, limits)
@@ -1501,6 +1649,7 @@ class LiveGameSharedControlRunner:
                     elif lmb_down:
                         self._lock_target_id = None
                         self._lock_dir_sign[:] = 0.0
+                        self._mono_tripped = False
                         if float(np.hypot(self.p_recoil_cnt[0], self.p_recoil_cnt[1])) >= 2.0:
                             p_cmd = np.clip(self.p_aim_cnt + self.p_recoil_cnt, -limits, limits)
                             self._dispatch_stage_manifold_open_loop(
@@ -1522,6 +1671,7 @@ class LiveGameSharedControlRunner:
                         # No locked target & no LMB: auto-washout / 150ms idle 3-step smooth recenter
                         self._lock_target_id = None
                         self._lock_dir_sign[:] = 0.0
+                        self._mono_tripped = False
                         idle_s = t_now - self._last_engage_t
                         stage_norm = float(np.hypot(p_stage_now[0], p_stage_now[1]))
                         aim_norm = float(np.hypot(self.p_aim_cnt[0], self.p_aim_cnt[1]))
@@ -1550,11 +1700,16 @@ class LiveGameSharedControlRunner:
                 if fire_now:
                     self._last_fire_t = t_now
                     self._burst_shot_idx += 1
-                    tgt_px = det_px_by_id.get(out.active_target_id) or (dets_px[0] if dets_px else None)
+                    tgt_px = locked_det or det_px_by_id.get(out.active_target_id)
+                    if tgt_px is None and dets_px:
+                        tgt_px = min(
+                            dets_px,
+                            key=lambda d: float(np.hypot(d.head_px[0] - c_px[0], d.head_px[1] - c_px[1])),
+                        )
                     if tgt_px is not None:
                         with self._hw_lock:
                             p_shot = self.p_stage_est.copy() if self.mode == MODE_ASSIST_ON else np.zeros(2, dtype=float)
-                        self._record_and_print_shot(
+                        verdict = self._record_and_print_shot(
                             t_now=t_now - session_t0,
                             mode_now=self.mode,
                             short_state=short_state,
@@ -1564,6 +1719,15 @@ class LiveGameSharedControlRunner:
                             v_hand_cnt_s=v_hand_raw,
                             active_target_id=out.active_target_id,
                             anchor_mode=out.anchor_mode,
+                        )
+                        self._capture_shot_snapshot(
+                            roi_rgb=roi_rgb,
+                            c_px=c_px,
+                            dets_px=dets_px,
+                            locked_det=locked_det or tgt_px,
+                            arrow_tip_px=arrow_tip_px,
+                            p_stage_now=p_shot,
+                            label=f"#{verdict.shot_idx} {verdict.hitbox[:4]} ea={verdict.e_actual_cnt:.0f} eh={verdict.e_hand_cnt:.0f}",
                         )
 
                 # Push ring frame for fault-attribution lookback
@@ -1738,6 +1902,7 @@ class LiveGameSharedControlRunner:
             # Verify F7 AK_SPRAY_LOCK 12-shot closed-loop full-stroke (> 300 counts) pull-down
             assert self.toggle_f7_ak_spray() == MODE_AK_SPRAY
             self.ak_calibrator.load_profile()
+            self.trainer.driver.center(settle_s=0.2, preload=True)
             ak_res = self.ak_calibrator.execute_ak_spray_closed_loop(
                 self.trainer,
                 n_shots=12,

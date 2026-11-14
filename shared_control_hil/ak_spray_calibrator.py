@@ -131,30 +131,63 @@ def _clamp_servo_pair(
     return u1, u2
 
 
-def detect_crosshair_offset_px(roi_bgr: np.ndarray) -> Optional[Tuple[float, float]]:
+def detect_crosshair_offset_px(
+    roi_img: np.ndarray,
+    is_rgb: bool = True,
+    max_x_px: float = 22.0,
+    max_y_up_px: float = 75.0,
+    max_y_down_px: float = 5.0,
+) -> Optional[Tuple[float, float]]:
     """
     Detect bright green/cyan CS2 crosshair centroid offset relative to ROI center.
-    Used with ``cl_crosshair_recoil 1`` in CS2.
+    Strictly crops to the physical recoil crosshair envelope (|dx|<=22, dy in [-75, +5] px)
+    and clusters around peak row/col to reject Aim Botz background colors & HUD clutter.
+    Used with ``cl_crosshair_recoil 1`` in CS2 (VisionROITracker.grab_roi() returns RGB).
     """
-    h, w = roi_bgr.shape[:2]
-    cx0, cy0 = (w - 1) * 0.5, (h - 1) * 0.5
-    b = roi_bgr[:, :, 0].astype(np.float32)
-    g = roi_bgr[:, :, 1].astype(np.float32)
-    r = roi_bgr[:, :, 2].astype(np.float32)
+    h, w = roi_img.shape[:2]
+    cx0, cy0 = 0.5 * w, 0.5 * h
+    if is_rgb:
+        r = roi_img[:, :, 0].astype(np.float32)
+        g = roi_img[:, :, 1].astype(np.float32)
+        b = roi_img[:, :, 2].astype(np.float32)
+    else:
+        b = roi_img[:, :, 0].astype(np.float32)
+        g = roi_img[:, :, 1].astype(np.float32)
+        r = roi_img[:, :, 2].astype(np.float32)
 
-    green_score = g - 0.55 * r - 0.35 * b
-    mask = (g > 155.0) & (green_score > 45.0)
-    ys, xs = np.where(mask)
-    if len(xs) < 4 or len(xs) > 900:
-        # Fallback for cyan/white crisp crosshair
-        bright = (g > 215.0) & (b > 200.0) & (r < 170.0)
-        ys, xs = np.where(bright)
-        if len(xs) < 4 or len(xs) > 900:
-            return None
+    x_lo = max(0, int(math.floor(cx0 - float(max_x_px))))
+    x_hi = min(w, int(math.ceil(cx0 + float(max_x_px))) + 1)
+    y_lo = max(0, int(math.floor(cy0 - float(max_y_up_px))))
+    y_hi = min(h, int(math.ceil(cy0 + float(max_y_down_px))) + 1)
 
-    med_x = float(np.median(xs))
-    med_y = float(np.median(ys))
-    return med_x - cx0, med_y - cy0
+    r_sub = r[y_lo:y_hi, x_lo:x_hi]
+    g_sub = g[y_lo:y_hi, x_lo:x_hi]
+    b_sub = b[y_lo:y_hi, x_lo:x_hi]
+
+    # Strict high-chroma Cyan or Bright Green crosshair masks (reject grey/yellow/skin walls)
+    cyan_mask = (g_sub >= 175.0) & (b_sub >= 175.0) & ((g_sub - r_sub) >= 60.0) & ((b_sub - r_sub) >= 50.0)
+    green_mask = (g_sub >= 175.0) & ((g_sub - r_sub) >= 65.0) & ((g_sub - b_sub) >= 45.0)
+    mask = cyan_mask if int(cyan_mask.sum()) >= int(green_mask.sum()) else green_mask
+
+    cnt = int(mask.sum())
+    if cnt < 3 or cnt > 320:
+        return None
+
+    # Localize tight +-8px cluster around peak density row/col so outliers cannot pull median
+    row_sum = mask.sum(axis=1).astype(float)
+    col_sum = mask.sum(axis=0).astype(float)
+    vr = int(np.argmax(row_sum))
+    ur = int(np.argmax(col_sum))
+    sh, sw = mask.shape
+    vw = slice(max(0, vr - 8), min(sh, vr + 9))
+    uw = slice(max(0, ur - 8), min(sw, ur + 9))
+    ys, xs = np.nonzero(mask[vw, uw])
+    if len(xs) < 3:
+        return None
+
+    cx_det = float(np.median(xs)) + float(x_lo + uw.start)
+    cy_det = float(np.median(ys)) + float(y_lo + vw.start)
+    return cx_det - cx0, cy_det - cy0
 
 
 class AK47SprayCalibrator:

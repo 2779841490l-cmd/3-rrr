@@ -179,9 +179,10 @@ class InGameAutoTrainer:
             "kp_small_head": float(lc.get("kp_small_head", 0.42)),
             "kp_large_error": float(lc.get("kp_large_error", 0.68)),
             "small_error_px": float(lc.get("small_error_px", 14.0)),
-            "in_box_deadband_ratio": float(lc.get("in_box_deadband_ratio", 0.38)),
+            "in_box_deadband_ratio": float(lc.get("in_box_deadband_ratio", 0.35)),
             "min_deadband_px": float(lc.get("min_deadband_px", 2.2)),
-            "cooldown_ms": float(lc.get("cooldown_ms", 85.0)),
+            "max_deadband_px": float(lc.get("max_deadband_px", 4.5)),
+            "cooldown_ms": float(lc.get("cooldown_ms", 95.0)),
             "recoil_cooldown_ms": float(lc.get("recoil_cooldown_ms", 20.0)),
             "boost_scale": float(lc.get("boost_scale", 1.35)),
             "boost_dur_ms": float(lc.get("boost_dur_ms", 22.0)),
@@ -301,27 +302,36 @@ class InGameAutoTrainer:
         manifold = self.trainer.manifold
         driver = self.trainer.driver
         x_cmd, y_cmd = float(p_clamped[0]), float(p_clamped[1])
+        prev_pos = getattr(manifold, "cur_rect_pos", np.zeros(2, dtype=np.float64))
+        dx = x_cmd - float(prev_pos[0])
+        dy = y_cmd - float(prev_pos[1])
 
-        if freeze_play_g and hasattr(manifold, "evaluate_kinematic_pulse"):
-            u_kin = np.asarray(manifold.evaluate_kinematic_pulse(x_cmd, y_cmd), dtype=np.float64)
-            u_cmd = u_kin + self._locked_play_g
-        else:
-            u_cmd = np.asarray(manifold.evaluate_pulse(x_cmd, y_cmd, dir_hint=(0.0, 0.0)), dtype=np.float64)
-            if hasattr(manifold, "evaluate_kinematic_pulse"):
-                u_kin = np.asarray(manifold.evaluate_kinematic_pulse(x_cmd, y_cmd), dtype=np.float64)
-                self._locked_play_g = u_cmd - u_kin
-            else:
-                u_kin = u_cmd
+        ux_t, uy_t, u_kin, play_g = self.calibrator.stage_pos_to_pulses(
+            manifold,
+            x_cmd,
+            y_cmd,
+            dx=dx,
+            dy=dy,
+            freeze_play_g=freeze_play_g,
+            locked_play_g=self._locked_play_g,
+            play_deadband_cnt=6.0,
+        )
+        if not freeze_play_g:
+            self._locked_play_g = play_g
 
-        ux_t = _clamp_pulse(u_cmd[0])
-        uy_t = _clamp_pulse(u_cmd[1])
-
+        boost_pair = None
         if use_boost and hasattr(driver, "send_ballistic_pulse") and self._last_u_kin is not None:
-            du = u_kin - self._last_u_kin
-            du_b = np.clip(du * 0.40 * float(boost_scale), -26.0, 26.0)
-            b1 = _clamp_pulse(u_cmd[0] + du_b[0])
-            b2 = _clamp_pulse(u_cmd[1] + du_b[1])
-            bst_us = int(round(max(10.0, min(35.0, float(boost_dur_ms))) * 1000.0))
+            boost_pair = self.calibrator.compute_stiction_boost(
+                u_kin - self._last_u_kin,
+                ux_t,
+                uy_t,
+                boost_scale=float(boost_scale),
+                min_kick_us=10.5,
+                max_kick_us=26.0,
+            )
+        if boost_pair is not None:
+            b1, b2 = boost_pair
+            bst_us = int(round(max(12.0, min(35.0, max(24.0, float(boost_dur_ms)))) * 1000.0))
             driver.send_ballistic_pulse(b1, b2, ux_t, uy_t, bst_us)
         else:
             driver.send_raw_pulses(ux_t, uy_t, round(3000.0 - uy_t, 1))
@@ -413,11 +423,28 @@ class InGameAutoTrainer:
                 "M": M.tolist(),
             }
 
-        J_screen_to_stage = -np.linalg.inv(M)
+        # FastSelfCalibrator convention:
+        #   - aim_error_to_stage_delta(e_px)  := -(J_screen_to_stage @ e_px)
+        #   - recoil_offset_to_stage_abs(c)   := +(J_screen_to_stage @ c)
+        # Physical sensitivity M = d(error_px) / dp_stage => M @ dp = -e_px => dp = -inv(M) @ e_px.
+        # Therefore J_screen_to_stage MUST be +np.linalg.inv(M) (negative diagonal)!
+        J_screen_to_stage = np.linalg.inv(M)
         # Estimate mounting angle from -M (dp > 0 moves error < 0 when aligned)
         A_pos = -M
         angle_rad = math.atan2(0.5 * (A_pos[1, 0] - A_pos[0, 1]), 0.5 * (A_pos[0, 0] + A_pos[1, 1]))
         angle_deg = math.degrees(angle_rad)
+
+        # Polarity self-check: advancing stage by dp = -(J_screen_to_stage @ e_test) MUST decrease error
+        dp_test_x = -(J_screen_to_stage @ np.array([10.0, 0.0], dtype=np.float64))
+        dp_test_y = -(J_screen_to_stage @ np.array([0.0, 10.0], dtype=np.float64))
+        if float((M @ dp_test_x)[0]) >= 0.0 or float((M @ dp_test_y)[1]) >= 0.0:
+            self._recenter(0.12)
+            return {
+                "ok": False,
+                "reason": "jacobian_polarity_selfcheck_failed",
+                "M_stage_to_err": M.tolist(),
+                "J_screen_to_stage": J_screen_to_stage.tolist(),
+            }
 
         if self.calibrator is not None:
             self.calibrator.J_screen_to_stage = J_screen_to_stage.copy()
@@ -446,8 +473,8 @@ class InGameAutoTrainer:
         if self.calibrator is not None and hasattr(self.calibrator, "aim_error_to_stage_delta"):
             return np.asarray(self.calibrator.aim_error_to_stage_delta(float(e_px[0]), float(e_px[1])), dtype=np.float64)
         if self.calibrator is not None and hasattr(self.calibrator, "J_screen_to_stage"):
-            return np.asarray(self.calibrator.J_screen_to_stage, dtype=np.float64) @ np.asarray(e_px, dtype=np.float64)
-        return np.asarray(e_px, dtype=np.float64) * 1.1
+            return -(np.asarray(self.calibrator.J_screen_to_stage, dtype=np.float64) @ np.asarray(e_px, dtype=np.float64))
+        return np.asarray(e_px, dtype=np.float64) * 3.8
 
     def run_in_game_damping_autotune(
         self,
@@ -525,6 +552,9 @@ class InGameAutoTrainer:
             prev_proj = float(np.dot(e0, u0))
             settling_ms = 0.0
             steps_exec = 0
+            mono_abort = False
+            sensor_ref = getattr(self.trainer, "sensor", None) if self.trainer is not None else None
+            p_mouse_start = np.array(sensor_ref.get_position(), dtype=np.float64) if sensor_ref is not None else None
 
             for step in range(max_steps_per_trial):
                 obs = obs0 if step == 0 else self._sample_head_obs(n_frames=1, require_head_box=False)
@@ -534,6 +564,12 @@ class InGameAutoTrainer:
                 e_hist.append(e_cur.copy())
                 e_norm = float(np.linalg.norm(e_cur))
 
+                # Monotonicity Feedback Gate: abort immediately if step drove error > +3.0 px worse
+                if step >= 1 and e_norm > (e0_norm + 3.0):
+                    mono_abort = True
+                    settling_ms = (self._clock() - t_trial_start) * 1000.0
+                    break
+
                 proj = float(np.dot(e_cur, u0))
                 if proj < 0.0:
                     overshoot_px = max(overshoot_px, -proj)
@@ -542,9 +578,12 @@ class InGameAutoTrainer:
                 prev_proj = proj
 
                 w_h, h_h = float(obs["size_px"][0]), float(obs["size_px"][1])
-                r_lock = max(
-                    params["min_deadband_px"],
-                    params["in_box_deadband_ratio"] * min(w_h, h_h),
+                r_lock = float(
+                    np.clip(
+                        params["in_box_deadband_ratio"] * min(w_h, h_h),
+                        params["min_deadband_px"],
+                        params["max_deadband_px"],
+                    )
                 )
 
                 if e_norm <= r_lock or e_norm <= err_tol_px:
@@ -558,11 +597,10 @@ class InGameAutoTrainer:
                 )
                 dp_raw = self._error_to_stage_delta(e_cur) * gain
 
-                # One-Way No-Reversal Clamp
+                # Soft radial overshoot damping (allows cross-coupled minor axes to still settle)
                 dp = dp_raw.copy()
-                for ax in (0, 1):
-                    if s_init[ax] != 0.0 and dp[ax] * s_init[ax] < 0.0:
-                        dp[ax] = 0.0
+                if float(np.dot(dp, s_init)) < 0.0 and e_norm < 8.0:
+                    dp = dp * 0.72
 
                 if float(np.linalg.norm(dp)) < 0.3:
                     settling_ms = (self._clock() - t_trial_start) * 1000.0
@@ -570,8 +608,7 @@ class InGameAutoTrainer:
 
                 p_cmd = p_cmd + dp
                 cooldown_s = params["cooldown_ms"] / 1000.0
-                # Freeze play_g after first entry or when inside small_error_px zone!
-                freeze_pg = (e_norm <= params["small_error_px"]) or (step > 0)
+                freeze_pg = False
                 self._dispatch(
                     p_cmd,
                     cooldown_s=cooldown_s,
@@ -591,7 +628,21 @@ class InGameAutoTrainer:
             if settling_ms <= 0.0:
                 settling_ms = (self._clock() - t_trial_start) * 1000.0
 
-            trial_ok = (overshoot_px <= 1.2) and (sign_flips == 0) and (final_err_px <= err_tol_px)
+            # Dual-sensor palm load diagnostic: compare bottom mouse_sensor travel vs commanded delta
+            palm_stalled = False
+            if p_mouse_start is not None and sensor_ref is not None:
+                p_mouse_end = np.array(sensor_ref.get_position(), dtype=np.float64)
+                dp_mouse_norm = float(np.linalg.norm(p_mouse_end - p_mouse_start))
+                dp_cmd_norm = float(np.linalg.norm(p_cmd - off))
+                if dp_cmd_norm > 12.0 and dp_mouse_norm < 0.40 * dp_cmd_norm and final_err_px > err_tol_px:
+                    palm_stalled = True
+
+            trial_ok = (
+                (not mono_abort)
+                and (overshoot_px <= 1.2)
+                and (sign_flips == 0)
+                and (final_err_px <= err_tol_px)
+            )
             streak = (streak + 1) if trial_ok else 0
 
             tm = AutoTuneTrialMetrics(
@@ -610,6 +661,25 @@ class InGameAutoTrainer:
             if on_trial_done is not None:
                 on_trial_done(tm)
 
+            if mono_abort:
+                self._recenter(0.14)
+                params["kp_small_head"] = max(0.22, params["kp_small_head"] * 0.78)
+                params["kp_large_error"] = max(0.36, params["kp_large_error"] * 0.80)
+                params["cooldown_ms"] = min(145.0, params["cooldown_ms"] + 15.0)
+                # Abort F5 early if two consecutive monotonicity violations occur
+                if len(trials) >= 2 and (trials[-1].final_err_px > trials[-1].initial_err_px + 3.0) and (
+                    trials[-2].final_err_px > trials[-2].initial_err_px + 3.0
+                ):
+                    self.save_live_control_params(params)
+                    return {
+                        "ok": False,
+                        "reason": "monotonicity_polarity_abort",
+                        "converged": False,
+                        "trials": [asdict(t) for t in trials],
+                        "final_params": params,
+                    }
+                continue
+
             # Adaptive damping/gain update rule
             if not trial_ok:
                 if overshoot_px > 1.2 or sign_flips > 0:
@@ -617,9 +687,10 @@ class InGameAutoTrainer:
                     params["kp_large_error"] = max(0.38, params["kp_large_error"] * 0.88)
                     params["in_box_deadband_ratio"] = min(0.50, params["in_box_deadband_ratio"] + 0.03)
                     params["cooldown_ms"] = min(145.0, params["cooldown_ms"] + 15.0)
-                elif final_err_px > err_tol_px:
+                elif palm_stalled or final_err_px > err_tol_px:
                     # Undershoot / friction stall under palm load
-                    params["boost_scale"] = min(1.90, params["boost_scale"] + 0.12)
+                    step_b = 0.16 if palm_stalled else 0.12
+                    params["boost_scale"] = min(1.90, params["boost_scale"] + step_b)
                     params["kp_small_head"] = min(0.75, params["kp_small_head"] * 1.10)
 
             if streak >= converge_streak:
@@ -748,51 +819,36 @@ class _SimVisionAndHardware:
         return det, None
 
 
-class _SimCalibrator:
-    def __init__(self) -> None:
-        # Deliberately wrong initial angle & scale
-        self.J_screen_to_stage = np.array([[-1.0, 0.0], [0.0, -1.0]], dtype=np.float64)
-        self.visual_calib_source = "PINHOLE_FALLBACK"
-        self.mounting_angle_deg = 0.0
-
-    def aim_error_to_stage_delta(self, ex: float, ey: float) -> np.ndarray:
-        return self.J_screen_to_stage @ np.array([ex, ey], dtype=np.float64)
-
-    def save_config(self) -> None:
-        pass
-
-
 def run_synthetic_simulation_test() -> int:
-    """Prove Stage 1 YOLO Jacobian recovery + Stage 2 5-streak convergence from bad initial gains."""
+    """Prove Stage 1 YOLO Jacobian recovery + Stage 2 convergence using the REAL FastSelfCalibrator."""
     import tempfile
+    from shared_control_hil.fast_self_calib import FastSelfCalibrator
 
     clock = _SimClock()
     sim = _SimVisionAndHardware(clock, angle_deg=11.5, px_per_cnt=0.72)
-    calib = _SimCalibrator()
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
         cfg_path = tmp / "sim_config.json"
         rep_path = tmp / "sim_report.json"
-        # Intentionally aggressive, under-damped & under-boosted initial params
-        cfg_path.write_text(
-            json.dumps(
-                {
-                    "live_control": {
-                        "kp_small_head": 0.92,
-                        "kp_large_error": 1.15,
-                        "small_error_px": 14.0,
-                        "in_box_deadband_ratio": 0.16,
-                        "min_deadband_px": 1.5,
-                        "cooldown_ms": 50.0,
-                        "boost_scale": 1.00,
-                        "boost_dur_ms": 22.0,
-                    }
-                }
-            ),
-            encoding="utf-8",
-        )
+        base_cfg = json.loads(DEFAULT_CONFIG_PATH.read_text(encoding="utf-8"))
+        # Intentionally aggressive, under-damped & under-boosted initial params + zeroed mounting angle
+        base_cfg["stage_kinematics"]["J_screen_to_stage"] = [[-1.0, 0.0], [0.0, -1.0]]
+        base_cfg["stage_kinematics"]["visual_calib_source"] = "PINHOLE_FALLBACK"
+        base_cfg["live_control"] = {
+            "kp_small_head": 0.92,
+            "kp_large_error": 1.15,
+            "small_error_px": 14.0,
+            "in_box_deadband_ratio": 0.16,
+            "min_deadband_px": 1.5,
+            "max_deadband_px": 4.5,
+            "cooldown_ms": 50.0,
+            "boost_scale": 1.00,
+            "boost_dur_ms": 22.0,
+        }
+        cfg_path.write_text(json.dumps(base_cfg, indent=2), encoding="utf-8")
 
+        calib = FastSelfCalibrator(config_path=str(cfg_path))
         trainer = InGameAutoTrainer(
             config_path=cfg_path,
             report_path=rep_path,

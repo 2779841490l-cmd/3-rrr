@@ -17,7 +17,7 @@ import math
 import os
 import sys
 import time
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 import numpy as np
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -94,6 +94,17 @@ class FastSelfCalibrator:
         self.config["stage_kinematics"]["mounting_angle_deg"] = round(float(self.mounting_angle_deg), 4)
         self.config["stage_kinematics"]["J_screen_to_stage"] = np.round(self.J_screen_to_stage, 6).tolist()
         self.config["stage_kinematics"]["visual_calib_source"] = self.visual_calib_source
+        # Merge latest on-disk `live_control` / `personal_profile` so F8 never overwrites F5-tuned params
+        if os.path.isfile(self.config_path):
+            try:
+                with open(self.config_path, "r", encoding="utf-8") as f:
+                    disk_cfg = json.load(f)
+                if isinstance(disk_cfg.get("live_control"), dict):
+                    self.config["live_control"] = disk_cfg["live_control"]
+                if isinstance(disk_cfg.get("personal_profile"), dict):
+                    self.config["personal_profile"] = disk_cfg["personal_profile"]
+            except Exception:
+                pass
         with open(self.config_path, "w", encoding="utf-8") as f:
             json.dump(self.config, f, indent=2, ensure_ascii=False)
 
@@ -171,6 +182,79 @@ class FastSelfCalibrator:
         return self.J_screen_to_stage @ np.array([float(cx_off_px), float(cy_off_px)], dtype=float)
 
     @staticmethod
+    def clamp_servo_pair(s1: float, s2: float, lo: float = 1150.0, hi: float = 1850.0) -> Tuple[float, float]:
+        """Clamp servo pulses within [1150, 1850] us while preserving Dual-Y (s3 = 3000 - s2)."""
+        u1 = float(np.clip(float(s1), lo, hi))
+        u2 = float(np.clip(float(s2), lo, hi))
+        if 3000.0 - u2 < lo:
+            u2 = 3000.0 - lo
+        elif 3000.0 - u2 > hi:
+            u2 = 3000.0 - hi
+        return u1, u2
+
+    def stage_pos_to_pulses(
+        self,
+        manifold: Any,
+        x_cmd: float,
+        y_cmd: float,
+        dx: float = 0.0,
+        dy: float = 0.0,
+        freeze_play_g: bool = False,
+        locked_play_g: Optional[np.ndarray] = None,
+        play_deadband_cnt: float = 6.0,
+    ) -> Tuple[float, float, np.ndarray, np.ndarray]:
+        """
+        Map desired rectangular stage position (x_cmd, y_cmd) -> (u1, u2, u_lin, play_g).
+        Uses calibrated affine kinematics (u0 + K_stage @ [x, y]) plus anti-chatter
+        play operator (suppressing backlash flips when |delta| < play_deadband_cnt).
+        Avoids local non-monotonic artifacts in neural residual maps near [-80, 0] counts.
+        """
+        u_lin = self.u0_neutral + (self.K_stage @ np.array([float(x_cmd), float(y_cmd)], dtype=float))
+        if freeze_play_g and locked_play_g is not None:
+            play_g = np.asarray(locked_play_g, dtype=float).copy()
+            u_cmd = u_lin + play_g
+        elif manifold is not None and getattr(manifold, "pi_net", None) is not None:
+            hx = float(dx) if abs(float(dx)) >= float(play_deadband_cnt) else 0.0
+            hy = float(dy) if abs(float(dy)) >= float(play_deadband_cnt) else 0.0
+            u_cmd = np.asarray(
+                manifold.pi_net.step_play_operator(u_lin, eps_us=1.8, dxy=(hx, hy)),
+                dtype=float,
+            )
+            play_g = u_cmd - u_lin
+        else:
+            play_g = np.zeros(2, dtype=float)
+            u_cmd = u_lin.copy()
+
+        if manifold is not None and hasattr(manifold, "cur_rect_pos"):
+            manifold.cur_rect_pos = np.array([float(x_cmd), float(y_cmd)], dtype=float)
+        e1, e2 = self.clamp_servo_pair(float(u_cmd[0]), float(u_cmd[1]))
+        return e1, e2, u_lin, play_g
+
+    @classmethod
+    def compute_stiction_boost(
+        cls,
+        du_k: np.ndarray,
+        e1: float,
+        e2: float,
+        boost_scale: float = 1.35,
+        min_kick_us: float = 10.5,
+        max_kick_us: float = 26.0,
+    ) -> Optional[Tuple[float, float]]:
+        """
+        Compute WS63 B_CMD transient stiction-breaker pulse pair (b1, b2) around (e1, e2).
+        Returns None when incremental kinematic change is below 0.25 us on both axes.
+        """
+        du_b = np.zeros(2, dtype=float)
+        for ax in (0, 1):
+            d_ax = float(du_k[ax])
+            if abs(d_ax) >= 0.25:
+                mag = max(float(min_kick_us), abs(d_ax) * 0.50 * float(boost_scale))
+                du_b[ax] = float(np.clip(math.copysign(mag, d_ax), -float(max_kick_us), float(max_kick_us)))
+        if abs(du_b[0]) <= 0.0 and abs(du_b[1]) <= 0.0:
+            return None
+        return cls.clamp_servo_pair(float(e1 + du_b[0]), float(e2 + du_b[1]))
+
+    @staticmethod
     def _compute_phase_shift_px(img0_rgb: np.ndarray, img1_rgb: np.ndarray) -> Tuple[Tuple[float, float], float]:
         """Compute background optical flow shift (du_px, dv_px) from img0 to img1 using Hann-windowed phaseCorrelate."""
         import cv2
@@ -215,7 +299,9 @@ class FastSelfCalibrator:
         t0 = time.perf_counter()
 
         def _drive_man(xm: float, ym: float, hint: Tuple[float, float], wait_s: float) -> None:
-            u1, u2 = manifold.evaluate_pulse(float(xm), float(ym), dir_hint=hint)
+            u1, u2, _, _ = self.stage_pos_to_pulses(
+                manifold, float(xm), float(ym), dx=float(hint[0]), dy=float(hint[1]), play_deadband_cnt=0.0
+            )
             driver.send_raw_pulses(u1, u2)
             time.sleep(wait_s)
 

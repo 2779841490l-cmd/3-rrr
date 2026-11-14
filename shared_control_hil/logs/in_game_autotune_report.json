@@ -1,0 +1,488 @@
+{
+  "ok": true,
+  "converged": false,
+  "converge_streak": 0,
+  "target_streak": 5,
+  "elapsed_s": 8.73,
+  "final_params": {
+    "kp_small_head": 0.75,
+    "kp_large_error": 0.68,
+    "small_error_px": 14.0,
+    "in_box_deadband_ratio": 0.38,
+    "min_deadband_px": 2.2,
+    "cooldown_ms": 85.0,
+    "recoil_cooldown_ms": 20.0,
+    "boost_scale": 1.9,
+    "boost_dur_ms": 22.0,
+    "recenter_idle_ms": 150.0,
+    "aim_washout_tau_s": 0.2,
+    "no_reversal_window_ms": 250.0,
+    "auto_recenter_threshold_cnt": 180.0
+  },
+  "trials": [
+    {
+      "trial_idx": 1,
+      "offset_cnt": [
+        42.0,
+        0.0
+      ],
+      "initial_err_px": 33.385,
+      "final_err_px": 21.378,
+      "overshoot_px": 0.0,
+      "sign_flips": 0,
+      "settling_ms": 27.85,
+      "steps_executed": 1,
+      "converged": false,
+      "params_snapshot": {
+        "kp_small_head": 0.42,
+        "kp_large_error": 0.68,
+        "small_error_px": 14.0,
+        "in_box_deadband_ratio": 0.38,
+        "min_deadband_px": 2.2,
+        "cooldown_ms": 85.0,
+        "recoil_cooldown_ms": 20.0,
+        "boost_scale": 1.35,
+        "boost_dur_ms": 22.0,
+        "recenter_idle_ms": 150.0,
+        "aim_washout_tau_s": 0.2,
+        "no_reversal_window_ms": 250.0,
+        "auto_recenter_threshold_cnt": 180.0
+      }
+    },
+    {
+      "trial_idx": 2,
+      "offset_cnt": [
+        -42.0,
+        0.0
+      ],
+      "initial_err_px": 37.551,
+      "final_err_px": 69.979,
+      "overshoot_px": 0.0,
+      "sign_flips": 0,
+      "settling_ms": 420.79,
+      "steps_executed": 8,
+      "converged": false,
+      "params_snapshot": {
+        "kp_small_head": 0.462,
+        "kp_large_error": 0.68,
+        "small_error_px": 14.0,
+        "in_box_deadband_ratio": 0.38,
+        "min_deadband_px": 2.2,
+        "cooldown_ms": 85.0,
+        "recoil_cooldown_ms": 20.0,
+        "boost_scale": 1.47,
+        "boost_dur_ms": 22.0,
+        "recenter_idle_ms": 150.0,
+        "aim_washout_tau_s": 0.2,
+        "no_reversal_window_ms": 250.0,
+        "auto_recenter_threshold_cnt": 180.0
+      }
+    },
+    {
+      "trial_idx": 3,
+      "offset_cnt": [
+        0.0,
+        42.0
+      ],
+      "initial_err_px": 33.306,
+      "final_err_px": 58.93,
+      "overshoot_px": 0.0,
+      "sign_flips": 0,
+      "settling_ms": 344.96,
+      "steps_executed": 8,
+      "converged": false,
+      "params_snapshot": {
+        "kp_small_head": 0.5082,
+        "kp_large_error": 0.68,
+        "small_error_px": 14.0,
+        "in_box_deadband_ratio": 0.38,
+        "min_deadband_px": 2.2,
+        "cooldown_ms": 85.0,
+        "recoil_cooldown_ms": 20.0,
+        "boost_scale": 1.59,
+        "boost_dur_ms": 22.0,
+        "recenter_idle_ms": 150.0,
+        "aim_washout_tau_s": 0.2,
+        "no_reversal_window_ms": 250.0,
+        "auto_recenter_threshold_cnt": 180.0
+      }
+    },
+    {
+      "trial_idx": 4,
+      "offset_cnt": [
+        0.0,
+        -42.0
+      ],
+      "initial_err_px": 39.679,
+      "final_err_px": 71.37,
+      "overshoot_px": 0.0,
+      "sign_flips": 0,
+      "settling_ms": 367.65,
+      "steps_executed": 8,
+      "converged": false,
+      "params_snapshot": {
+        "kp_small_head": 0.559,
+        "kp_large_error": 0.68,
+        "small_error_px": 14.0,
+        "in_box_deadband_ratio": 0.38,
+        "min_deadband_px": 2.2,
+        "cooldown_ms": 85.0,
+        "recoil_cooldown_ms": 20.0,
+        "boost_scale": 1.71,
+        "boost_dur_ms": 22.0,
+        "recenter_idle_ms": 150.0,
+        "aim_washout_tau_s": 0.2,
+        "no_reversal_window_ms": 250.0,
+        "auto_recenter_threshold_cnt": 180.0
+      }
+    },
+    {
+      "trial_idx": 5,
+      "offset_cnt": [
+        30.24,
+        30.24
+      ],
+      "initial_err_px": 43.357,
+      "final_err_px": 92.189,
+      "overshoot_px": 0.0,
+      "sign_flips": 0,
+      "settling_ms": 390.15,
+      "steps_executed": 8,
+      "converged": false,
+      "params_snapshot": {
+        "kp_small_head": 0.6149,
+        "kp_large_error": 0.68,
+        "small_error_px": 14.0,
+        "in_box_deadband_ratio": 0.38,
+        "min_deadband_px": 2.2,
+        "cooldown_ms": 85.0,
+        "recoil_cooldown_ms": 20.0,
+        "boost_scale": 1.83,
+        "boost_dur_ms": 22.0,
+        "recenter_idle_ms": 150.0,
+        "aim_washout_tau_s": 0.2,
+        "no_reversal_window_ms": 250.0,
+        "auto_recenter_threshold_cnt": 180.0
+      }
+    },
+    {
+      "trial_idx": 6,
+      "offset_cnt": [
+        -30.24,
+        -30.24
+      ],
+      "initial_err_px": 32.099,
+      "final_err_px": 38.62,
+      "overshoot_px": 0.0,
+      "sign_flips": 0,
+      "settling_ms": 36.46,
+      "steps_executed": 1,
+      "converged": false,
+      "params_snapshot": {
+        "kp_small_head": 0.6764,
+        "kp_large_error": 0.68,
+        "small_error_px": 14.0,
+        "in_box_deadband_ratio": 0.38,
+        "min_deadband_px": 2.2,
+        "cooldown_ms": 85.0,
+        "recoil_cooldown_ms": 20.0,
+        "boost_scale": 1.9,
+        "boost_dur_ms": 22.0,
+        "recenter_idle_ms": 150.0,
+        "aim_washout_tau_s": 0.2,
+        "no_reversal_window_ms": 250.0,
+        "auto_recenter_threshold_cnt": 180.0
+      }
+    },
+    {
+      "trial_idx": 7,
+      "offset_cnt": [
+        30.24,
+        -30.24
+      ],
+      "initial_err_px": 35.713,
+      "final_err_px": 67.592,
+      "overshoot_px": 0.0,
+      "sign_flips": 0,
+      "settling_ms": 282.31,
+      "steps_executed": 8,
+      "converged": false,
+      "params_snapshot": {
+        "kp_small_head": 0.7441,
+        "kp_large_error": 0.68,
+        "small_error_px": 14.0,
+        "in_box_deadband_ratio": 0.38,
+        "min_deadband_px": 2.2,
+        "cooldown_ms": 85.0,
+        "recoil_cooldown_ms": 20.0,
+        "boost_scale": 1.9,
+        "boost_dur_ms": 22.0,
+        "recenter_idle_ms": 150.0,
+        "aim_washout_tau_s": 0.2,
+        "no_reversal_window_ms": 250.0,
+        "auto_recenter_threshold_cnt": 180.0
+      }
+    },
+    {
+      "trial_idx": 8,
+      "offset_cnt": [
+        -30.24,
+        30.24
+      ],
+      "initial_err_px": 38.286,
+      "final_err_px": 67.132,
+      "overshoot_px": 0.0,
+      "sign_flips": 0,
+      "settling_ms": 375.71,
+      "steps_executed": 8,
+      "converged": false,
+      "params_snapshot": {
+        "kp_small_head": 0.75,
+        "kp_large_error": 0.68,
+        "small_error_px": 14.0,
+        "in_box_deadband_ratio": 0.38,
+        "min_deadband_px": 2.2,
+        "cooldown_ms": 85.0,
+        "recoil_cooldown_ms": 20.0,
+        "boost_scale": 1.9,
+        "boost_dur_ms": 22.0,
+        "recenter_idle_ms": 150.0,
+        "aim_washout_tau_s": 0.2,
+        "no_reversal_window_ms": 250.0,
+        "auto_recenter_threshold_cnt": 180.0
+      }
+    },
+    {
+      "trial_idx": 9,
+      "offset_cnt": [
+        42.0,
+        0.0
+      ],
+      "initial_err_px": 31.818,
+      "final_err_px": 67.677,
+      "overshoot_px": 0.0,
+      "sign_flips": 0,
+      "settling_ms": 422.39,
+      "steps_executed": 8,
+      "converged": false,
+      "params_snapshot": {
+        "kp_small_head": 0.75,
+        "kp_large_error": 0.68,
+        "small_error_px": 14.0,
+        "in_box_deadband_ratio": 0.38,
+        "min_deadband_px": 2.2,
+        "cooldown_ms": 85.0,
+        "recoil_cooldown_ms": 20.0,
+        "boost_scale": 1.9,
+        "boost_dur_ms": 22.0,
+        "recenter_idle_ms": 150.0,
+        "aim_washout_tau_s": 0.2,
+        "no_reversal_window_ms": 250.0,
+        "auto_recenter_threshold_cnt": 180.0
+      }
+    },
+    {
+      "trial_idx": 10,
+      "offset_cnt": [
+        -42.0,
+        0.0
+      ],
+      "initial_err_px": 28.27,
+      "final_err_px": 28.939,
+      "overshoot_px": 0.0,
+      "sign_flips": 0,
+      "settling_ms": 0.01,
+      "steps_executed": 0,
+      "converged": false,
+      "params_snapshot": {
+        "kp_small_head": 0.75,
+        "kp_large_error": 0.68,
+        "small_error_px": 14.0,
+        "in_box_deadband_ratio": 0.38,
+        "min_deadband_px": 2.2,
+        "cooldown_ms": 85.0,
+        "recoil_cooldown_ms": 20.0,
+        "boost_scale": 1.9,
+        "boost_dur_ms": 22.0,
+        "recenter_idle_ms": 150.0,
+        "aim_washout_tau_s": 0.2,
+        "no_reversal_window_ms": 250.0,
+        "auto_recenter_threshold_cnt": 180.0
+      }
+    },
+    {
+      "trial_idx": 11,
+      "offset_cnt": [
+        0.0,
+        42.0
+      ],
+      "initial_err_px": 28.45,
+      "final_err_px": 29.401,
+      "overshoot_px": 0.0,
+      "sign_flips": 0,
+      "settling_ms": 0.01,
+      "steps_executed": 0,
+      "converged": false,
+      "params_snapshot": {
+        "kp_small_head": 0.75,
+        "kp_large_error": 0.68,
+        "small_error_px": 14.0,
+        "in_box_deadband_ratio": 0.38,
+        "min_deadband_px": 2.2,
+        "cooldown_ms": 85.0,
+        "recoil_cooldown_ms": 20.0,
+        "boost_scale": 1.9,
+        "boost_dur_ms": 22.0,
+        "recenter_idle_ms": 150.0,
+        "aim_washout_tau_s": 0.2,
+        "no_reversal_window_ms": 250.0,
+        "auto_recenter_threshold_cnt": 180.0
+      }
+    },
+    {
+      "trial_idx": 12,
+      "offset_cnt": [
+        0.0,
+        -42.0
+      ],
+      "initial_err_px": 27.713,
+      "final_err_px": 27.149,
+      "overshoot_px": 0.0,
+      "sign_flips": 0,
+      "settling_ms": 0.01,
+      "steps_executed": 0,
+      "converged": false,
+      "params_snapshot": {
+        "kp_small_head": 0.75,
+        "kp_large_error": 0.68,
+        "small_error_px": 14.0,
+        "in_box_deadband_ratio": 0.38,
+        "min_deadband_px": 2.2,
+        "cooldown_ms": 85.0,
+        "recoil_cooldown_ms": 20.0,
+        "boost_scale": 1.9,
+        "boost_dur_ms": 22.0,
+        "recenter_idle_ms": 150.0,
+        "aim_washout_tau_s": 0.2,
+        "no_reversal_window_ms": 250.0,
+        "auto_recenter_threshold_cnt": 180.0
+      }
+    },
+    {
+      "trial_idx": 13,
+      "offset_cnt": [
+        30.24,
+        30.24
+      ],
+      "initial_err_px": 24.438,
+      "final_err_px": 20.257,
+      "overshoot_px": 0.0,
+      "sign_flips": 0,
+      "settling_ms": 0.01,
+      "steps_executed": 0,
+      "converged": false,
+      "params_snapshot": {
+        "kp_small_head": 0.75,
+        "kp_large_error": 0.68,
+        "small_error_px": 14.0,
+        "in_box_deadband_ratio": 0.38,
+        "min_deadband_px": 2.2,
+        "cooldown_ms": 85.0,
+        "recoil_cooldown_ms": 20.0,
+        "boost_scale": 1.9,
+        "boost_dur_ms": 22.0,
+        "recenter_idle_ms": 150.0,
+        "aim_washout_tau_s": 0.2,
+        "no_reversal_window_ms": 250.0,
+        "auto_recenter_threshold_cnt": 180.0
+      }
+    },
+    {
+      "trial_idx": 14,
+      "offset_cnt": [
+        -30.24,
+        -30.24
+      ],
+      "initial_err_px": 28.457,
+      "final_err_px": 29.559,
+      "overshoot_px": 0.0,
+      "sign_flips": 0,
+      "settling_ms": 0.01,
+      "steps_executed": 0,
+      "converged": false,
+      "params_snapshot": {
+        "kp_small_head": 0.75,
+        "kp_large_error": 0.68,
+        "small_error_px": 14.0,
+        "in_box_deadband_ratio": 0.38,
+        "min_deadband_px": 2.2,
+        "cooldown_ms": 85.0,
+        "recoil_cooldown_ms": 20.0,
+        "boost_scale": 1.9,
+        "boost_dur_ms": 22.0,
+        "recenter_idle_ms": 150.0,
+        "aim_washout_tau_s": 0.2,
+        "no_reversal_window_ms": 250.0,
+        "auto_recenter_threshold_cnt": 180.0
+      }
+    },
+    {
+      "trial_idx": 15,
+      "offset_cnt": [
+        30.24,
+        -30.24
+      ],
+      "initial_err_px": 30.605,
+      "final_err_px": 103.748,
+      "overshoot_px": 0.0,
+      "sign_flips": 0,
+      "settling_ms": 338.6,
+      "steps_executed": 8,
+      "converged": false,
+      "params_snapshot": {
+        "kp_small_head": 0.75,
+        "kp_large_error": 0.68,
+        "small_error_px": 14.0,
+        "in_box_deadband_ratio": 0.38,
+        "min_deadband_px": 2.2,
+        "cooldown_ms": 85.0,
+        "recoil_cooldown_ms": 20.0,
+        "boost_scale": 1.9,
+        "boost_dur_ms": 22.0,
+        "recenter_idle_ms": 150.0,
+        "aim_washout_tau_s": 0.2,
+        "no_reversal_window_ms": 250.0,
+        "auto_recenter_threshold_cnt": 180.0
+      }
+    },
+    {
+      "trial_idx": 16,
+      "offset_cnt": [
+        -30.24,
+        30.24
+      ],
+      "initial_err_px": 32.062,
+      "final_err_px": 63.745,
+      "overshoot_px": 0.0,
+      "sign_flips": 0,
+      "settling_ms": 382.97,
+      "steps_executed": 8,
+      "converged": false,
+      "params_snapshot": {
+        "kp_small_head": 0.75,
+        "kp_large_error": 0.68,
+        "small_error_px": 14.0,
+        "in_box_deadband_ratio": 0.38,
+        "min_deadband_px": 2.2,
+        "cooldown_ms": 85.0,
+        "recoil_cooldown_ms": 20.0,
+        "boost_scale": 1.9,
+        "boost_dur_ms": 22.0,
+        "recenter_idle_ms": 150.0,
+        "aim_washout_tau_s": 0.2,
+        "no_reversal_window_ms": 250.0,
+        "auto_recenter_threshold_cnt": 180.0
+      }
+    }
+  ]
+}
