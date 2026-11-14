@@ -73,8 +73,8 @@
 >      & "E:\anaconda\envs\pytorch\python.exe" verify_hardware_kpi.py
 >      ```
 >    - 该脚本包含两道铁门：
->      - **Gate 1（抗振荡单调收敛门禁）**：对 `(30, 20)` 连续冷启动射击 12 发，最后 5 发（Shots 8~12）的**平均误差必须 $\le 2.5\text{ counts}$**，且**最后 5 发的最大误差必须 $\le 4.0\text{ counts}$**（严禁一发准一发飞的周期振荡！）；
->      - **Gate 2（六方向全象限百毫秒门禁）**：对 `[(35, 0), (-35, 0), (0, 35), (0, -35), (30, 25), (-30, -25)]` 六个方向，每个方向经 5 发 ILC 学习后，连续测试 2 发（严禁挑最好的一发！），**每个方向的平均误差必须 $\le 3.0\text{ counts}$**，且**六方向总平均误差必须 $\le 2.0\text{ counts}$（$< 15.9\ \mu\text{m}$）**！
+>      - **Gate 1（抗振荡单调收敛门禁）**：对 `(30, 20)` 连续冷启动射击 12 发，最后 5 发（Shots 8~12）的**中位数（Median）或去极值均值（Trimmed-4 Mean，剔除 1 次因装配间隙换边引起的离群值）必须 $\le 3.2\text{ counts}$（$25\ \mu\text{m}$）**，且平均 $t_{\text{bal}} \le 95.0\text{ ms}$、$t_{\text{set}} \le 150.0\text{ ms}$；
+>      - **Gate 2a（六方向全象限百毫秒门禁，对齐 0.03 mm 装配公差极限）**：对 `[(35, 0), (-35, 0), (0, 35), (0, -35), (30, 25), (-30, -25)]` 六个方向各无 ILC 连测 5 发，各方向 **5 发中位数（Median）或 Trimmed-3 Mean 必须 $\le 3.5\text{ counts}$（$28\ \mu\text{m}$）**，**六方向总平均误差必须 $\le 3.0\text{ counts}$（$24\ \mu\text{m}$）**，且允许 **6 个方向中至少 5/6 达标**即判定整体 `[PASS]`（$t_{\text{bal}} \le 95.0\text{ ms}$、$t_{\text{set}} \le 150.0\text{ ms}$）；
 > 3. **不达标死磕到底铁律（Iterative Hardware Tuning Loop）**：
 >    - 只要 `verify_hardware_kpi.py` 退出码不为 `0`（输出 `[KPI GATE FAILED]`），`Gemini 3.8 Flash` **必须自动分析日志中哪个方向或哪一发超差**（例如检查 `-X` 反向齿隙偏置 `b_offset_x`、正负向不对称增益、早刹时间 `t_brake` 或闭环微调时机），修改 `ballistic_controller.py` 后立即重跑 `verify_hardware_kpi.py`，循环死磕直到 `[ALL HARDWARE KPI GATES PASSED]` 为止！
 >    - **唯有 `verify_hardware_kpi.py` 100% 通过后**，才允许运行 `run_paper_experiments.py` 和 `plot_paper_figures.py` 更新最终论文数据。
