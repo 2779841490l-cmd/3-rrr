@@ -1,0 +1,6 @@
+# Ignore large auto-distillation dataset & teacher weights; keep cs2_head_yolov8n.pt & reports
+__pycache__/
+*.pyc
+dataset_cs2/
+runs_yolo/
+weights/yolov8*.pt

@@ -1,18 +1,18 @@
 {
-  "all_passed": true,
+  "all_passed": false,
   "gates": {
     "Gate_S1_CounterStrafe": {
-      "passed": true,
-      "raw_mean_cnt": 1.952,
-      "trim_mean_cnt": 1.743,
-      "raw_mean_px": 0.3487,
+      "passed": false,
+      "raw_mean_cnt": 3.45,
+      "trim_mean_cnt": 2.42,
+      "raw_mean_px": 0.8585,
       "head_hit_rate": 1.0
     },
     "Gate_S2_SprayTransfer": {
       "passed": true,
       "hand_only_hit_rate": 0.15,
-      "effective_hit_rate": 1.0,
-      "mean_delta_e_cnt": 24.172
+      "effective_hit_rate": 0.95,
+      "mean_delta_e_cnt": 23.866
     },
     "Gate_S3_ConflictRate": {
       "passed": true,
@@ -20,16 +20,16 @@
     },
     "Gate_S4_WashoutAntiSat": {
       "passed": true,
-      "max_stage_disp_cnt": 52.0,
+      "max_stage_disp_cnt": 47.0,
       "saturation_count": 0
     },
     "Gate_S5_SelfCalibAndLatency": {
-      "passed": true,
-      "calib_elapsed_s": 1.326,
-      "recon_error_pct": 2.41,
-      "mounting_angle_deg": 12.05,
-      "decision_mean_ms": 0.6179,
-      "decision_p95_ms": 0.687
+      "passed": false,
+      "calib_elapsed_s": 1.587,
+      "recon_error_pct": 1.7,
+      "mounting_angle_deg": 0.0,
+      "decision_mean_ms": 1.5141,
+      "decision_p95_ms": 2.386
     }
   },
   "controller_params": {

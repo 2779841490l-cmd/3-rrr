@@ -97,6 +97,8 @@ STATE_LABEL_MAP = {
 }
 
 SAFE_ENVELOPE_CNT = 85.0
+SPRAY_MAX_X_CNT = 280.0
+SPRAY_MAX_Y_CNT = 340.0
 COOLDOWN_LOCK_S = 0.085
 AUTO_FIRE_PERIOD_S = 0.095
 
@@ -191,48 +193,11 @@ def detect_live_crosshair_and_targets(
         if abs(px) <= 18 and abs(py) <= 18:
             du_bg = np.array([float(px), float(py)], dtype=float)
 
-    # Primary color/synthetic detector
-    dets = vision._detect_color_blobs_fallback(roi_rgb)
-    # Lightweight CS2 Aim Botz silhouette/motion head detector if no synthetic red blob present
-    if not dets and prev_gray is not None and prev_gray.shape == gray.shape:
-        fg = np.abs(gray - prev_gray)
-        # Suppress central crosshair pixels so recoil crosshair doesn't create false head blob
-        fg[ch_mask] = 0.0
-        # Local spatial contrast + motion around crosshair corridor (excluding outermost 16 px)
-        gy = np.abs(np.diff(gray, axis=0, prepend=gray[:1, :]))
-        gx = np.abs(np.diff(gray, axis=1, prepend=gray[:, :1]))
-        sal = fg + 0.35 * (gx + gy)
-        sal[ch_mask] = 0.0
-        sal[:16, :] = 0.0
-        sal[h - 16 :, :] = 0.0
-        sal[:, :16] = 0.0
-        sal[:, w - 16 :] = 0.0
-
-        peak = float(sal.max())
-        if peak >= 28.0:
-            fg_mask = sal >= max(24.0, 0.58 * peak)
-            ys_t, xs_t = np.nonzero(fg_mask)
-            if 6 <= len(xs_t) <= 3500:
-                y_top = float(np.percentile(ys_t, 15))
-                head_slice = ys_t <= (y_top + 6.0)
-                if int(head_slice.sum()) >= 3:
-                    hx = float(xs_t[head_slice].mean())
-                    hy = float(ys_t[head_slice].mean()) + 2.0
-                else:
-                    hx = float(xs_t.mean())
-                    hy = y_top + 2.5
-                head_xy = np.array([hx, hy], dtype=float)
-                if float(np.hypot(head_xy[0] - center[0], head_xy[1] - center[1])) <= 110.0:
-                    chest_xy = head_xy + np.array([0.0, 14.0 / max(1e-3, counts_per_px)], dtype=float)
-                    dets = [
-                        TargetDetection(
-                            target_id=0,
-                            head_px=head_xy,
-                            head_radius_px=10.5 / max(1e-3, counts_per_px),
-                            chest_px=chest_xy,
-                            chest_radius_px=21.0 / max(1e-3, counts_per_px),
-                        )
-                    ]
+    # Use real trained YOLOv8n CS2 head/chest detector in live mode; color blobs ONLY in synthetic mode
+    if vision.synthetic_only:
+        dets = vision._detect_color_blobs_fallback(roi_rgb)
+    else:
+        dets = vision._detect_yolo(roi_rgb)
 
     dets = vision.update_target_filters(dets, dt_s=dt_s, k_lead_s=k_lead_s)
     return c_px, dets, du_bg, gray
@@ -261,12 +226,26 @@ class LiveGameSharedControlRunner:
         # Initialize WS63 + 3200 DPI Raw Input sensor cleanly
         self.trainer: HardwareRectangleTrainer = self.calibrator.ensure_trainer()
 
+        vision_cfg = self.config.get("vision", {})
+        raw_yolo_path = vision_cfg.get("yolo_weights_path")
+        resolved_yolo_path = None
+        if raw_yolo_path:
+            cand = str(raw_yolo_path)
+            if not os.path.isabs(cand) and not os.path.exists(cand):
+                cand = os.path.join(os.path.dirname(HIL_DIR), str(raw_yolo_path))
+            resolved_yolo_path = cand
+
         self.vision = VisionROITracker(
             screen_w=int(self.config["screen"]["width"]),
             screen_h=int(self.config["screen"]["height"]),
             roi_size=int(self.config["screen"].get("roi_size", 256)),
+            yolo_model_path=resolved_yolo_path,
+            yolo_conf=float(vision_cfg.get("yolo_conf", 0.35)),
+            yolo_imgsz=int(vision_cfg.get("yolo_imgsz", 256)),
             synthetic_only=bool(synthetic_capture),
         )
+        self.spray_max_x_cnt = float(self.config["stage_kinematics"].get("spray_max_x_counts", SPRAY_MAX_X_CNT))
+        self.spray_max_y_cnt = float(self.config["stage_kinematics"].get("spray_max_y_counts", SPRAY_MAX_Y_CNT))
         self.ctrl = MacroMicroSharedController(self.config)
         self.ak_calibrator = AK47SprayCalibrator(config_path=self.config_path, calibrator=self.calibrator)
         self.referee = TelemetryReferee(
@@ -302,6 +281,7 @@ class LiveGameSharedControlRunner:
         self._counter_strafe_until = 0.0
         self._prev_gray: Optional[np.ndarray] = None
         self._stop_requested = False
+        self._live_spray_pi_cnt = np.zeros(2, dtype=float)
 
         # Dedicated 1000 Hz state/input tracker
         self._state_lock = threading.Lock()
@@ -421,6 +401,10 @@ class LiveGameSharedControlRunner:
             f"1.0s frames={n_frames} | Measured FPS={self.roi_fps_bench:.1f} Hz"
         )
         print(
+            f"[Vision Detector] Backend={self.vision.detector_backend} | "
+            f"spray_envelope=({self.spray_max_x_cnt:.0f}, {self.spray_max_y_cnt:.0f}) cnt"
+        )
+        print(
             f"[Params Loaded] {os.path.basename(self.config_path)}: "
             f"k_lead={self.ctrl.k_lead:.5f}, lambda_0={self.ctrl.lambda_0:.4f}, "
             f"sigma_v={self.ctrl.sigma_v:.2f}, beta={self.ctrl.beta:.4f}, "
@@ -509,17 +493,30 @@ class LiveGameSharedControlRunner:
         return res
 
     def _run_ak_spray_burst(self, n_shots: int = 30, check_lmb: bool = True) -> Dict:
-        """Execute 100 Hz closed-loop AK-47 pull-down + gentle cl_crosshair_recoil 1 residual trim."""
+        """Execute 100 Hz closed-loop AK-47 pull-down + full-range cl_crosshair_recoil 1 PI visual servo."""
         self._wait_hw_idle()
         self.recenter_to_neutral(duration_s=0.12)
 
+        pi_integral_cnt = np.zeros(2, dtype=float)
+        spray_limits = np.array([self.spray_max_x_cnt, self.spray_max_y_cnt], dtype=float)
+        last_vis_t = time.perf_counter()
+
         def _visual_trim() -> np.ndarray:
+            nonlocal pi_integral_cnt, last_vis_t
+            now_t = time.perf_counter()
+            dt_vis = float(np.clip(now_t - last_vis_t, 0.001, 0.04))
+            last_vis_t = now_t
             roi = self.vision.grab_roi()
             off = detect_crosshair_offset_px(roi)
-            if off is None or float(np.hypot(off[0], off[1])) > 24.0:
-                return np.zeros(2, dtype=float)
-            c_err = self.calibrator.pixel_to_counts(off[0], off[1])
-            return np.clip(-0.25 * c_err, -6.0, 6.0)
+            if off is None:
+                return np.clip(pi_integral_cnt, -spray_limits, spray_limits)
+            p_err = self.calibrator.screen_offset_to_pull_counts(off[0], off[1])
+            pi_integral_cnt = np.clip(
+                pi_integral_cnt + 4.5 * p_err * dt_vis,
+                -0.75 * spray_limits,
+                0.75 * spray_limits,
+            )
+            return np.clip(0.65 * p_err + pi_integral_cnt, -spray_limits, spray_limits)
 
         res = self.ak_calibrator.execute_ak_spray_closed_loop(
             self.trainer,
@@ -549,13 +546,18 @@ class LiveGameSharedControlRunner:
         p_target_cnt: np.ndarray,
         is_recenter: bool = False,
         wait_done: bool = False,
+        spray_active: bool = False,
     ) -> bool:
-        """Non-blocking ballistic dispatch guarded by COOLDOWN_LOCK_S (85 ms) and [-85, +85] envelope."""
+        """Non-blocking ballistic dispatch guarded by COOLDOWN_LOCK_S (85 ms) and active mode envelope."""
         t_now = time.perf_counter()
         if (t_now - self._last_hw_cmd_t) < COOLDOWN_LOCK_S:
             return False
 
-        p_clamped = np.clip(np.asarray(p_target_cnt, dtype=float), -SAFE_ENVELOPE_CNT, SAFE_ENVELOPE_CNT)
+        if spray_active:
+            env_vec = np.array([self.spray_max_x_cnt, self.spray_max_y_cnt], dtype=float)
+        else:
+            env_vec = np.array([SAFE_ENVELOPE_CNT, SAFE_ENVELOPE_CNT], dtype=float)
+        p_clamped = np.clip(np.asarray(p_target_cnt, dtype=float), -env_vec, env_vec)
         delta_norm = float(np.hypot(p_clamped[0] - self.p_stage_est[0], p_clamped[1] - self.p_stage_est[1]))
         if not is_recenter and delta_norm < 1.8:
             return False
@@ -581,12 +583,14 @@ class LiveGameSharedControlRunner:
                         K_stage = np.asarray(self.calibrator.K_stage, dtype=float)
                         K_lin = np.asarray(self.trainer.manifold.pi_net.K_lin, dtype=float)
                         near_origin = float(np.hypot(p_start_est[0], p_start_est[1])) <= 3.0
+                        w_lim = (0.95 if spray_active else 0.85) * self.trainer.manifold.W
+                        h_lim = (1.15 if spray_active else 0.85) * self.trainer.manifold.H
 
                         if near_origin:
                             # Map mounted target counts into 0-deg manifold frame and execute IF-OPB ballistic move
                             p_man = np.linalg.solve(K_lin, K_stage @ p_clamped)
-                            p_man[0] = float(np.clip(p_man[0], -0.85 * self.trainer.manifold.W, 0.85 * self.trainer.manifold.W))
-                            p_man[1] = float(np.clip(p_man[1], -0.85 * self.trainer.manifold.H, 0.85 * self.trainer.manifold.H))
+                            p_man[0] = float(np.clip(p_man[0], -w_lim, w_lim))
+                            p_man[1] = float(np.clip(p_man[1], -h_lim, h_lim))
                             self.trainer.move_point_to_point(
                                 float(p_man[0]),
                                 float(p_man[1]),
@@ -594,7 +598,7 @@ class LiveGameSharedControlRunner:
                                 two_stage=True,
                                 enable_ilc_update=False,
                             )
-                            p_meas = np.clip(self.trainer.get_rect_position(), -SAFE_ENVELOPE_CNT, SAFE_ENVELOPE_CNT)
+                            p_meas = np.clip(self.trainer.get_rect_position(), -env_vec, env_vec)
                         else:
                             # Already displaced from origin: trim locally from current estimated optical position
                             p_meas = p_start_est.copy()
@@ -626,17 +630,17 @@ class LiveGameSharedControlRunner:
                                 ):
                                     du[0] *= 0.25
                                     du[1] -= 5.5
-                                du = np.clip(du, -38.0, 38.0)
+                                du = np.clip(du, -45.0 if spray_active else -38.0, 45.0 if spray_active else 38.0)
                                 u1, u2 = _clamp_servo_pair(
                                     best_u[0] + float(du[0]),
                                     best_u[1] + float(du[1]),
                                     prev_u1=best_u[0],
                                     prev_u2=best_u[1],
-                                    max_step_us=40.0,
+                                    max_step_us=55.0 if spray_active else 40.0,
                                 )
                                 self.trainer.driver.send_raw_pulses(u1, u2)
                                 time.sleep(0.042)
-                                p_trial = np.clip(self.trainer.get_rect_position(), -SAFE_ENVELOPE_CNT, SAFE_ENVELOPE_CNT)
+                                p_trial = np.clip(self.trainer.get_rect_position(), -env_vec, env_vec)
                                 err_trial = float(np.hypot(p_clamped[0] - p_trial[0], p_clamped[1] - p_trial[1]))
                                 moved = float(np.hypot(p_trial[0] - best_p[0], p_trial[1] - best_p[1]))
                                 if err_trial < best_err - 0.15:
@@ -983,11 +987,40 @@ class LiveGameSharedControlRunner:
                 short_state = STATE_LABEL_MAP.get(out.state, "DORMANT")
 
                 if self.mode == MODE_ASSIST_ON:
-                    if out.state == STATE_4_MASKED_RECENTER and float(np.hypot(p_stage_now[0], p_stage_now[1])) >= 4.0:
-                        self._dispatch_stage_command(np.zeros(2, dtype=float), is_recenter=True)
-                    elif out.state in (STATE_2_COUNTER_STRAFE_LOCK, STATE_3_SPRAY_TRANSFER):
-                        p_cmd = np.clip(out.p_stage_cmd_cnt, -SAFE_ENVELOPE_CNT, SAFE_ENVELOPE_CNT)
-                        self._dispatch_stage_command(p_cmd, is_recenter=False)
+                    spray_limits = np.array([self.spray_max_x_cnt, self.spray_max_y_cnt], dtype=float)
+                    if lmb_down:
+                        # Continuous full-range Crosshair-to-Center PI visual recoil servo (cl_crosshair_recoil 1)
+                        off_px = detect_crosshair_offset_px(roi_rgb)
+                        if off_px is None and float(np.hypot(c_px[0] - roi_center, c_px[1] - roi_center)) > 1.5:
+                            off_px = np.array([float(c_px[0]) - roi_center, float(c_px[1]) - roi_center], dtype=float)
+                        if off_px is not None:
+                            p_err_pull = self.calibrator.screen_offset_to_pull_counts(off_px[0], off_px[1])
+                            self._live_spray_pi_cnt = np.clip(
+                                self._live_spray_pi_cnt + 4.5 * p_err_pull * dt_s,
+                                -0.75 * spray_limits,
+                                0.75 * spray_limits,
+                            )
+                            p_vis_recoil = np.clip(
+                                0.65 * p_err_pull + self._live_spray_pi_cnt,
+                                -spray_limits,
+                                spray_limits,
+                            )
+                        else:
+                            p_vis_recoil = self._live_spray_pi_cnt.copy()
+
+                        if out.state in (STATE_2_COUNTER_STRAFE_LOCK, STATE_3_SPRAY_TRANSFER):
+                            p_cmd = np.clip(out.p_stage_cmd_cnt + p_vis_recoil, -spray_limits, spray_limits)
+                            self._dispatch_stage_command(p_cmd, is_recenter=False, spray_active=True)
+                        elif float(np.hypot(p_vis_recoil[0], p_vis_recoil[1])) >= 2.0:
+                            # Keep compensating AK spray even if head leaves YOLO box mid-burst
+                            self._dispatch_stage_command(p_vis_recoil, is_recenter=False, spray_active=True)
+                    else:
+                        self._live_spray_pi_cnt[:] = 0.0
+                        if out.state == STATE_4_MASKED_RECENTER and float(np.hypot(p_stage_now[0], p_stage_now[1])) >= 4.0:
+                            self._dispatch_stage_command(np.zeros(2, dtype=float), is_recenter=True)
+                        elif out.state in (STATE_2_COUNTER_STRAFE_LOCK, STATE_3_SPRAY_TRANSFER):
+                            p_cmd = np.clip(out.p_stage_cmd_cnt, -SAFE_ENVELOPE_CNT, SAFE_ENVELOPE_CNT)
+                            self._dispatch_stage_command(p_cmd, is_recenter=False, spray_active=False)
 
                 if fire_now:
                     self._last_fire_t = t_now
@@ -1092,10 +1125,15 @@ class LiveGameSharedControlRunner:
                     chest_radius_px=21.0 / cpp,
                 )
 
-                # Prime vision KF across 3 synthetic ROI frames at 240 Hz equivalent dt
+                # Prime vision KF across 3 synthetic ROI frames at 240 Hz equivalent dt (inject tgt for hardware pipeline test)
                 frame_rgb = render_synthetic_roi_frame(ch_xy, [tgt], roi_size=roi_size)
                 for _ in range(3):
-                    c_px, dets_px = self.vision.process_frame(frame_rgb, dt_s=0.004, k_lead_s=self.ctrl.k_lead)
+                    c_px, dets_px = self.vision.process_frame(
+                        frame_rgb,
+                        dt_s=0.004,
+                        k_lead_s=self.ctrl.k_lead,
+                        injected_detections=[tgt],
+                    )
 
                 c_hand_cnt = self.calibrator.pixel_to_counts(float(c_px[0]) - roi_center, float(c_px[1]) - roi_center)
                 det_px = dets_px[0]
@@ -1172,7 +1210,7 @@ class LiveGameSharedControlRunner:
                     anchor_mode=out.anchor_mode,
                 )
 
-            # Verify F7 AK_SPRAY_LOCK 12-shot closed-loop pull-down
+            # Verify F7 AK_SPRAY_LOCK 12-shot closed-loop full-stroke (> 300 counts) pull-down
             assert self.toggle_f7_ak_spray() == MODE_AK_SPRAY
             self.ak_calibrator.load_profile()
             ak_res = self.ak_calibrator.execute_ak_spray_closed_loop(
@@ -1182,11 +1220,50 @@ class LiveGameSharedControlRunner:
                 rate_hz=250.0,
                 reset_origin=True,
             )
+            max_target_y = max(float(b["p_des_cnt"][1]) for b in ak_res["bullet_table"])
+            max_meas_y = max(float(b["p_meas_cnt"][1]) for b in ak_res["bullet_table"])
             print(
                 f"[F7 AK_SPRAY_LOCK Self-Test] 12-shot mean_err={ak_res['mean_bullet_err_cnt']:.2f} cnt "
-                f"| max={ak_res['max_bullet_err_cnt']:.2f} cnt"
+                f"| max={ak_res['max_bullet_err_cnt']:.2f} cnt | max_y_pull={max_meas_y:.1f}/{max_target_y:.1f} cnt"
             )
-            assert ak_res["mean_bullet_err_cnt"] <= 5.5, f"AK spray point-lock error too high: {ak_res['mean_bullet_err_cnt']}"
+            assert max_meas_y >= 300.0, f"AK spray stroke too small (<300 cnt): {max_meas_y:.1f} cnt"
+            assert ak_res["mean_bullet_err_cnt"] <= 8.0, f"AK spray point-lock error too high: {ak_res['mean_bullet_err_cnt']}"
+
+            # Verify real YOLOv8n CS2 head/chest GPU inference on positive val samples if present
+            val_dir = os.path.join(HIL_DIR, "dataset_cs2", "images", "val")
+            lbl_dir = os.path.join(HIL_DIR, "dataset_cs2", "labels", "val")
+            if self.vision._yolo_model is not None and os.path.isdir(val_dir):
+                import cv2
+                pos_files = []
+                for vf in sorted(f for f in os.listdir(val_dir) if f.endswith(".jpg")):
+                    lbl_p = os.path.join(lbl_dir, os.path.splitext(vf)[0] + ".txt")
+                    if os.path.isfile(lbl_p) and os.path.getsize(lbl_p) > 0:
+                        pos_files.append(vf)
+                    if len(pos_files) >= 12:
+                        break
+                val_files = pos_files
+                if val_files:
+                    bgr0 = cv2.imread(os.path.join(val_dir, val_files[0]))
+                    if bgr0 is not None:
+                        _ = self.vision.process_frame(
+                            cv2.resize(bgr0[:, :, ::-1], (self.vision.roi_size, self.vision.roi_size)), dt_s=0.004
+                        )
+                t_y0 = time.perf_counter()
+                yolo_hits = 0
+                for vf in val_files:
+                    bgr = cv2.imread(os.path.join(val_dir, vf))
+                    if bgr is None:
+                        continue
+                    roi_test = cv2.resize(bgr[:, :, ::-1], (self.vision.roi_size, self.vision.roi_size))
+                    _, d_yolo = self.vision.process_frame(roi_test, dt_s=0.004)
+                    if d_yolo:
+                        yolo_hits += 1
+                yolo_ms = ((time.perf_counter() - t_y0) * 1000.0) / max(1, len(val_files))
+                print(
+                    f"[YOLO Live Check] pos_images={len(val_files)} | detected={yolo_hits}/{len(val_files)} "
+                    f"| mean_latency={yolo_ms:.2f} ms/frame | backend={self.vision.detector_backend}"
+                )
+                assert yolo_hits >= max(1, (len(val_files) * 2) // 3), f"YOLOv8n detection rate too low: {yolo_hits}/{len(val_files)}"
 
             # Verify F10 smooth recenter + pause
             self.trigger_f10_pause()

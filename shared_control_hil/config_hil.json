@@ -7,7 +7,16 @@
     "m_yaw": 0.022,
     "roi_size": 256,
     "alpha_x": 1.0,
-    "alpha_y": 1.0
+    "alpha_y": 1.0,
+    "sensor_to_screen_polarity": [
+      1,
+      1
+    ]
+  },
+  "vision": {
+    "yolo_weights_path": "shared_control_hil/weights/cs2_head_yolov8n.pt",
+    "yolo_conf": 0.35,
+    "yolo_imgsz": 256
   },
   "stage_kinematics": {
     "u0_neutral_us": [
@@ -36,7 +45,7 @@
     ],
     "J_stage": [
       [
-        2.023452,
+        2.022428,
         -1.6765
       ],
       [
@@ -46,19 +55,21 @@
     ],
     "K_stage": [
       [
-        0.432067,
-        -0.519776
+        0.432258,
+        -0.520006
       ],
       [
-        -0.074998,
-        -0.627344
+        -0.075031,
+        -0.627304
       ]
     ],
     "mounting_angle_deg": 0.0,
-    "calib_elapsed_s": 1.4869,
-    "recon_error_pct": 1.693,
+    "calib_elapsed_s": 1.5867,
+    "recon_error_pct": 1.702,
     "safe_envelope_counts": 80.0,
     "hard_limit_counts": 88.0,
+    "spray_max_x_counts": 280.0,
+    "spray_max_y_counts": 340.0,
     "recenter_trigger_counts": 15.0,
     "recenter_v_hand_min": 120.0,
     "recenter_ramp_ms": 300.0

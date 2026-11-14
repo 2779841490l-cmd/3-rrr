@@ -58,41 +58,42 @@ DEFAULT_REPORT_PATH = os.path.join(_THIS_DIR, "logs", "ak_spray_calibration_repo
 VK_LBUTTON = 0x01
 VK_ESCAPE = 0x1B
 
-# Canonical CS2 AK-47 30-shot 600 RPM (0.1 s/shot) cumulative view-angle kick (deg).
+# Canonical CS2 AK-47 30-shot 600 RPM (0.1 s/shot) cumulative view-angle kick (deg),
+# 1:1 full scale for cl_crosshair_recoil 1 (at 3200 DPI * s_game=0.9: 1 deg = 50.505 counts).
 # Sign convention:
 #   yaw_deg > 0   => gun kicked RIGHT on screen  => mouse pull_x = -yaw_deg / deg_per_cnt (< 0, left)
 #   pitch_deg > 0 => gun kicked UP on screen     => mouse pull_y = +pitch_deg / deg_per_cnt (> 0, down)
 AK47_VIEW_KICK_DEG: List[Tuple[float, float]] = [
-    (0.00, 0.00),   # 01 (t=0.0s)
-    (-0.04, 0.40),  # 02 (t=0.1s)
-    (0.03, 0.88),   # 03 (t=0.2s)
-    (0.08, 1.44),   # 04 (t=0.3s)
-    (-0.10, 2.02),  # 05 (t=0.4s)
-    (-0.24, 2.60),  # 06 (t=0.5s)
-    (0.06, 3.12),   # 07 (t=0.6s)
-    (0.32, 3.55),   # 08 (t=0.7s)
-    (0.56, 3.86),   # 09 (t=0.8s)
-    (0.68, 4.06),   # 10 (t=0.9s)
-    (0.34, 4.18),   # 11 (t=1.0s)
-    (-0.22, 4.24),  # 12 (t=1.1s)
-    (-0.98, 4.28),  # 13 (t=1.2s)
-    (-1.68, 4.30),  # 14 (t=1.3s)
-    (-2.24, 4.32),  # 15 (t=1.4s)
-    (-2.55, 4.30),  # 16 (t=1.5s)
-    (-2.15, 4.26),  # 17 (t=1.6s)
-    (-1.25, 4.24),  # 18 (t=1.7s)
-    (-0.18, 4.28),  # 19 (t=1.8s)
-    (0.95, 4.34),   # 20 (t=1.9s)
-    (1.92, 4.38),   # 21 (t=2.0s)
-    (2.58, 4.36),   # 22 (t=2.1s)
-    (2.86, 4.32),   # 23 (t=2.2s)
-    (2.65, 4.28),   # 24 (t=2.3s)
-    (1.90, 4.25),   # 25 (t=2.4s)
-    (0.88, 4.28),   # 26 (t=2.5s)
-    (-0.32, 4.34),  # 27 (t=2.6s)
-    (-1.42, 4.38),  # 28 (t=2.7s)
-    (-2.10, 4.40),  # 29 (t=2.8s)
-    (-1.65, 4.38),  # 30 (t=2.9s)
+    (0.00, 0.00),   # 01 (t=0.0s ->   0.0,   0.0 cnt)
+    (-0.06, 0.62),  # 02 (t=0.1s ->  +3.0, +31.3 cnt)
+    (0.05, 1.40),   # 03 (t=0.2s ->  -2.5, +70.7 cnt)
+    (0.13, 2.28),   # 04 (t=0.3s ->  -6.6,+115.2 cnt)
+    (-0.16, 3.20),  # 05 (t=0.4s ->  +8.1,+161.6 cnt)
+    (-0.38, 4.10),  # 06 (t=0.5s -> +19.2,+207.1 cnt)
+    (0.10, 4.92),   # 07 (t=0.6s ->  -5.1,+248.5 cnt)
+    (0.50, 5.60),   # 08 (t=0.7s -> -25.3,+282.8 cnt)
+    (0.88, 6.10),   # 09 (t=0.8s -> -44.4,+308.1 cnt)
+    (1.08, 6.42),   # 10 (t=0.9s -> -54.5,+324.2 cnt)
+    (0.54, 6.60),   # 11 (t=1.0s -> -27.3,+333.3 cnt)
+    (-0.35, 6.72),  # 12 (t=1.1s -> +17.7,+339.4 cnt)
+    (-1.55, 6.76),  # 13 (t=1.2s)
+    (-2.65, 6.78),  # 14 (t=1.3s)
+    (-3.54, 6.80),  # 15 (t=1.4s)
+    (-4.03, 6.78),  # 16 (t=1.5s)
+    (-3.40, 6.74),  # 17 (t=1.6s)
+    (-1.98, 6.72),  # 18 (t=1.7s)
+    (-0.28, 6.76),  # 19 (t=1.8s)
+    (1.50, 6.82),   # 20 (t=1.9s)
+    (3.03, 6.86),   # 21 (t=2.0s)
+    (4.08, 6.84),   # 22 (t=2.1s)
+    (4.52, 6.80),   # 23 (t=2.2s)
+    (4.19, 6.76),   # 24 (t=2.3s)
+    (3.00, 6.72),   # 25 (t=2.4s)
+    (1.39, 6.76),   # 26 (t=2.5s)
+    (-0.51, 6.82),  # 27 (t=2.6s)
+    (-2.24, 6.86),  # 28 (t=2.7s)
+    (-3.32, 6.88),  # 29 (t=2.8s)
+    (-2.61, 6.84),  # 30 (t=2.9s)
 ]
 
 
@@ -174,8 +175,9 @@ class AK47SprayCalibrator:
         self.s_game = float(self.calibrator.s_game)
         self.m_yaw = float(self.calibrator.m_yaw)
         self.shot_interval_s = 0.1  # 600 RPM
-        self.safe_x_cnt = 220.0
-        self.safe_y_cnt = 240.0
+        kin = self.calibrator.config.get("stage_kinematics", {})
+        self.safe_x_cnt = float(kin.get("spray_max_x_counts", 280.0))
+        self.safe_y_cnt = float(kin.get("spray_max_y_counts", 340.0))
 
         self.pull_waypoints_cnt = self.build_default_pull_profile(
             s_game=self.s_game,
@@ -197,8 +199,8 @@ class AK47SprayCalibrator:
         self,
         s_game: Optional[float] = None,
         m_yaw: Optional[float] = None,
-        max_x: float = 220.0,
-        max_y: float = 240.0,
+        max_x: float = 280.0,
+        max_y: float = 340.0,
     ) -> np.ndarray:
         """
         Convert canonical 30-shot CS2 AK-47 view kick (deg) to 3200 DPI pull-down
@@ -217,9 +219,10 @@ class AK47SprayCalibrator:
         return pts
 
     def refresh_bounds_from_trainer(self, trainer: HardwareRectangleTrainer) -> Tuple[float, float]:
-        """Clamp bounds to min([220, 240], 0.85 * calibrated manifold rectangle)."""
-        w_safe = min(220.0, 0.85 * float(trainer.manifold.W))
-        h_safe = min(240.0, 0.85 * float(trainer.manifold.H))
+        """Use full 3-RRR physical spray bounds [-280, +280] x [-340, +340] counts."""
+        kin = self.calibrator.config.get("stage_kinematics", {})
+        w_safe = min(float(kin.get("spray_max_x_counts", 280.0)), float(trainer.manifold.W))
+        h_safe = float(kin.get("spray_max_y_counts", 340.0))
         self.safe_x_cnt = w_safe
         self.safe_y_cnt = h_safe
         self.pull_waypoints_cnt[:, 0] = np.clip(self.pull_waypoints_cnt[:, 0], -w_safe, w_safe)
@@ -261,7 +264,8 @@ class AK47SprayCalibrator:
             data = json.load(f)
 
         pts = np.asarray(data.get("pull_waypoints_cnt", []), dtype=float)
-        if pts.shape == (30, 2):
+        src = str(data.get("source", self.profile_source))
+        if pts.shape == (30, 2) and not (src == "canonical_cs2_scaled" and float(np.max(pts[:, 1])) < 290.0):
             saved_sg = float(data.get("s_game", self.s_game))
             if abs(saved_sg - self.s_game) > 1e-4 and saved_sg > 1e-4:
                 scale = saved_sg / self.s_game
@@ -270,9 +274,9 @@ class AK47SprayCalibrator:
                 pts[:, 1] = np.clip(pts[:, 1], -self.safe_y_cnt, self.safe_y_cnt)
             self.pull_waypoints_cnt = pts
 
-        ilc = np.asarray(data.get("ilc_du_table_us", []), dtype=float)
-        if ilc.shape == (30, 2):
-            self.ilc_du_table = ilc
+            ilc = np.asarray(data.get("ilc_du_table_us", []), dtype=float)
+            if ilc.shape == (30, 2):
+                self.ilc_du_table = ilc
 
         k_cal = np.asarray(data.get("k_stage_cal", []), dtype=float)
         if k_cal.shape == (2, 2) and np.all(np.isfinite(k_cal)):
@@ -377,9 +381,8 @@ class AK47SprayCalibrator:
         times_arr = np.asarray(raw_t, dtype=float)
         cnt_pts = np.zeros((len(raw_px), 2), dtype=float)
         for i, (dx_px, dy_px) in enumerate(raw_px):
-            # If crosshair moved UP (dy_px - oy < 0), stage must pull DOWN (+cnt_y)
-            c_vec = self.calibrator.pixel_to_counts(dx_px - ox, dy_px - oy)
-            cnt_pts[i] = -c_vec
+            # Polarity-locked conversion: crosshair UP (dy_px - oy < 0) => stage pull DOWN (+cnt_y)
+            cnt_pts[i] = self.calibrator.screen_offset_to_pull_counts(dx_px - ox, dy_px - oy)
 
         updated = self.pull_waypoints_cnt.copy()
         for b in range(n_eff):
@@ -511,9 +514,7 @@ class AK47SprayCalibrator:
         prev_du_kin = np.zeros(2, dtype=float)
         play_x = 0.0
         for b in range(1, n_eff):
-            p_man = R_inv @ pts[b]
-            y_eff = float(p_man[1]) if p_man[1] <= 75.0 else (75.0 + 0.76 * (float(p_man[1]) - 75.0))
-            p_eff = np.array([float(p_man[0]), y_eff], dtype=float)
+            p_eff = R_inv @ pts[b]
             du_kin = K_stage @ (R_fwd @ p_eff)
             d_kin = du_kin - prev_du_kin
             prev_du_kin = du_kin.copy()
@@ -554,9 +555,7 @@ class AK47SprayCalibrator:
             dtype=float,
         )
         R_inv = _rotation_matrix_2d(-float(self.calibrator.mounting_angle_deg))
-        p_man = R_inv @ p_des
-        y_eff = float(p_man[1]) if p_man[1] <= 75.0 else (75.0 + 0.76 * (float(p_man[1]) - 75.0))
-        p_eff = np.array([float(p_man[0]), y_eff], dtype=float)
+        p_eff = R_inv @ p_des
         du_kin = K_stage @ (_rotation_matrix_2d(float(self.calibrator.mounting_angle_deg)) @ p_eff)
 
         b_pp_x = hx_pos + hx_neg
@@ -587,8 +586,8 @@ class AK47SprayCalibrator:
         self.refresh_bounds_from_trainer(trainer)
         if reset_origin:
             u0_pre = np.asarray(self.calibrator.u0_neutral, dtype=float)
-            trainer.driver.move_smooth_raw(float(u0_pre[0] - 95.0), float(u0_pre[1] - 105.0), duration_s=0.18, rate_hz=50.0)
-            trainer.driver.move_smooth_raw(float(u0_pre[0] - 35.0), float(u0_pre[1] - 35.0), duration_s=0.18, rate_hz=50.0)
+            trainer.driver.move_smooth_raw(float(u0_pre[0] - 150.0), float(u0_pre[1] - 195.0), duration_s=0.20, rate_hz=50.0)
+            trainer.driver.move_smooth_raw(float(u0_pre[0] - 45.0), float(u0_pre[1] - 45.0), duration_s=0.18, rate_hz=50.0)
             trainer.move_to_rect_origin(settle_s=0.45)
         self._play_g = np.zeros(2, dtype=float)
         self._prev_du_kin = np.zeros(2, dtype=float)
@@ -645,13 +644,19 @@ class AK47SprayCalibrator:
                 try:
                     raw_trim = np.asarray(visual_trim_fn(), dtype=float)
                     if raw_trim.shape == (2,) and np.all(np.isfinite(raw_trim)):
-                        c_trim = np.clip(raw_trim, -12.0, 12.0)
+                        c_trim = np.array(
+                            [
+                                float(np.clip(raw_trim[0], -self.safe_x_cnt, self.safe_x_cnt)),
+                                float(np.clip(raw_trim[1], -self.safe_y_cnt, self.safe_y_cnt)),
+                            ],
+                            dtype=float,
+                        )
                 except Exception:
                     pass
 
             if t_rel < 0.008:
                 p_des = pts_eff[0].copy()
-                u_cmd = u_eq_table[0].copy()
+                u_cmd = u_eq_table[0] + (K_fb @ c_trim)
                 du_fb = np.zeros(2, dtype=float)
             else:
                 b_target = int(min(n_eff - 1, max(1, int(math.floor(t_rel / self.shot_interval_s)) + 1)))
@@ -668,41 +673,49 @@ class AK47SprayCalibrator:
                     for ax in (0, 1):
                         if abs(delta_u[ax]) > 1.2:
                             du_boost[ax] = float(
-                                np.clip(0.22 * delta_u[ax] + math.copysign(1.6, delta_u[ax]), -11.0, 11.0)
+                                np.clip(0.24 * delta_u[ax] + math.copysign(1.8, delta_u[ax]), -14.0, 14.0)
                             )
 
                 p_des = pts_eff[b_target].copy()
+                p_des_eff = np.array(
+                    [
+                        float(np.clip(p_des[0] + c_trim[0], -self.safe_x_cnt, self.safe_x_cnt)),
+                        float(np.clip(p_des[1] + c_trim[1], -self.safe_y_cnt, self.safe_y_cnt)),
+                    ],
+                    dtype=float,
+                )
+                u_vis = K_fb @ c_trim
                 if tau < 0.020:
-                    u_ff = u_eq_table[b_target] + du_boost
+                    u_ff = u_eq_table[b_target] + du_boost + u_vis
                     du_fb = np.zeros(2, dtype=float)
-                elif tau < 0.060:
-                    u_ff = u_eq_table[b_target]
+                elif tau < 0.058:
+                    u_ff = u_eq_table[b_target] + u_vis
                     du_fb = np.zeros(2, dtype=float)
                 else:
-                    u_ff = u_eq_table[b_target]
+                    u_ff = u_eq_table[b_target] + u_vis
                     if use_feedback:
-                        if tau >= 0.060 and (not trim1_done):
+                        if tau >= 0.058 and (not trim1_done):
                             trim1_done = True
-                            e_trim = (p_des - p_meas) + c_trim
+                            e_trim = p_des_eff - p_meas
                             if np.hypot(e_trim[0], e_trim[1]) > 1.4:
                                 du_raw = K_fb @ e_trim
-                                du_fb_hold = np.clip(0.38 * du_raw + 0.45 * np.tanh(du_raw / 2.5), -14.0, 14.0)
+                                du_fb_hold = np.clip(0.42 * du_raw + 0.50 * np.tanh(du_raw / 2.5), -28.0, 28.0)
                         if tau >= 0.076 and (not trim2_done):
                             trim2_done = True
-                            e_trim = (p_des - p_meas) + c_trim
+                            e_trim = p_des_eff - p_meas
                             if np.hypot(e_trim[0], e_trim[1]) > 1.4:
                                 du_raw = K_fb @ e_trim
-                                du_fb_hold = np.clip(du_fb_hold + 0.45 * du_raw + 0.45 * np.tanh(du_raw / 2.5), -22.0, 22.0)
+                                du_fb_hold = np.clip(du_fb_hold + 0.48 * du_raw + 0.50 * np.tanh(du_raw / 2.5), -42.0, 42.0)
                     du_fb = du_fb_hold.copy()
                 u_cmd = u_ff + du_fb
 
-            e_p = (p_des - p_meas) + c_trim
+            e_p = (p_des + c_trim) - p_meas
             u1, u2 = _clamp_servo_pair(
                 float(u_cmd[0]),
                 float(u_cmd[1]),
                 prev_u1=prev_u1,
                 prev_u2=prev_u2,
-                max_step_us=65.0,
+                max_step_us=75.0,
             )
             if first_write or abs(u1 - prev_u1) >= 0.05 or abs(u2 - prev_u2) >= 0.05:
                 trainer.driver.send_raw_pulses(u1, u2)
@@ -899,7 +912,7 @@ class AK47SprayCalibrator:
                             gamma_b[b, ax] = max(0.28, gamma_b[b, ax] * 0.60)
                         prev_du_err[b, ax] = du_err[ax]
                     du_raw = gamma_b[b] * du_err + np.where(u_fb_b * du_err > 0.0, 0.30 * u_fb_b, 0.0)
-                    next_table[b] = np.clip(base_table[b] + np.clip(du_raw, -7.5, 7.5), -75.0, 75.0)
+                    next_table[b] = np.clip(base_table[b] + np.clip(du_raw, -12.0, 12.0), -110.0, 110.0)
 
                 smoothed = next_table.copy()
                 for b in (2, 3, 7, 8):

@@ -47,6 +47,14 @@ class FastSelfCalibrator:
             [float(screen.get("alpha_x", 1.0)), float(screen.get("alpha_y", 1.0))],
             dtype=float,
         )
+        pol = screen.get("sensor_to_screen_polarity", [1, 1])
+        self.sensor_to_screen_polarity = np.array(
+            [1.0 if float(pol[0]) >= 0.0 else -1.0, 1.0 if float(pol[1]) >= 0.0 else -1.0],
+            dtype=float,
+        )
+        self.screen_w = self.width
+        self.screen_h = self.height
+        self.roi_size = int(screen.get("roi_size", 256))
 
         # Equivalent pinhole focal length in pixels: f_x = (W/2) / tan(FOV_x / 2)
         self.f_x = (0.5 * self.width) / math.tan(math.radians(0.5 * self.fov_x_deg))
@@ -70,6 +78,10 @@ class FastSelfCalibrator:
     def save_config(self) -> None:
         self.config["screen"]["alpha_x"] = round(float(self.alpha_scale[0]), 6)
         self.config["screen"]["alpha_y"] = round(float(self.alpha_scale[1]), 6)
+        self.config["screen"]["sensor_to_screen_polarity"] = [
+            int(1 if self.sensor_to_screen_polarity[0] >= 0.0 else -1),
+            int(1 if self.sensor_to_screen_polarity[1] >= 0.0 else -1),
+        ]
         self.config["stage_kinematics"]["J_stage"] = np.round(self.J_stage, 6).tolist()
         self.config["stage_kinematics"]["K_stage"] = np.round(self.K_stage, 6).tolist()
         self.config["stage_kinematics"]["mounting_angle_deg"] = round(float(self.mounting_angle_deg), 4)
@@ -114,6 +126,22 @@ class FastSelfCalibrator:
         du_px = self.f_x * math.tan(np.clip(ang_x_rad, -1.2, 1.2))
         dv_px = self.f_x * math.tan(np.clip(ang_y_rad, -1.2, 1.2))
         return np.array([du_px, dv_px], dtype=float)
+
+    def aim_error_to_sensor_counts(self, du_px: float, dv_px: float) -> np.ndarray:
+        """
+        Screen-Space Polarity Lock for aiming:
+        Given target-to-crosshair offset (du_px, dv_px) = (head_x - ch_x, head_y - ch_y),
+        return sensor count command aligned with physical mouse-to-screen polarity.
+        """
+        return self.sensor_to_screen_polarity * self.pixel_to_counts(du_px, dv_px)
+
+    def screen_offset_to_pull_counts(self, du_px: float, dv_px: float) -> np.ndarray:
+        """
+        Screen-Space Polarity Lock for cl_crosshair_recoil 1 visual servoing:
+        Given crosshair offset c(t) - u0 = (du_px, dv_px) from screen center (dv_px < 0 = gun kicked UP),
+        return corrective mouse pull displacement in 3200 DPI counts (dy > 0 = move mouse DOWN).
+        """
+        return -self.sensor_to_screen_polarity * self.pixel_to_counts(du_px, dv_px)
 
     def rls_update_scale(self, delta_c_px: np.ndarray, delta_p_stage_cnt: np.ndarray) -> np.ndarray:
         """
@@ -186,6 +214,9 @@ class FastSelfCalibrator:
 
         t_start = time.perf_counter()
 
+        # Wake up optical mouse sensor if idle during long compute/game pauses, then anchor
+        driver.send_raw_pulses(float(ux0 + 18.0), float(uy0 + 18.0))
+        time.sleep(0.10)
         # 0. Negative-to-positive preload anchor
         driver.send_raw_pulses(float(u0_kin[0] - 30.0), float(u0_kin[1] - 30.0))
         time.sleep(0.14)

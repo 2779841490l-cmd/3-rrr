@@ -20,6 +20,13 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 
 
+DEFAULT_YOLO_WEIGHTS = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "weights",
+    "cs2_head_yolov8n.pt",
+)
+
+
 @dataclass
 class TargetDetection:
     target_id: int
@@ -112,8 +119,13 @@ class DynamicCrosshairTracker:
         recoil_prior_px: Optional[np.ndarray] = None,
     ) -> Tuple[np.ndarray, bool]:
         """Locate recoil crosshair c(t) inside roi_rgb (HxWx3 uint8). Returns (pos_xy, detected_flag)."""
-        diff = np.abs(roi_rgb.astype(np.int16) - self.target_rgb)
-        mask = (diff[:, :, 0] <= self.rgb_tol) & (diff[:, :, 1] <= self.rgb_tol) & (diff[:, :, 2] <= self.rgb_tol)
+        rgb_i16 = roi_rgb.astype(np.int16)
+        diff = np.abs(rgb_i16 - self.target_rgb)
+        mask_target = (diff[:, :, 0] <= self.rgb_tol) & (diff[:, :, 1] <= self.rgb_tol) & (diff[:, :, 2] <= self.rgb_tol)
+        # Also match crisp classic green / cyan CS2 crosshairs under varying background lighting
+        r_ch, g_ch, b_ch = rgb_i16[:, :, 0], rgb_i16[:, :, 1], rgb_i16[:, :, 2]
+        mask_cs2 = (g_ch > 185) & (r_ch < 130) & ((g_ch - r_ch) > 50)
+        mask = mask_target | mask_cs2
         pixel_count = int(mask.sum())
 
         z_meas: Optional[np.ndarray] = None
@@ -218,17 +230,26 @@ class VisionROITracker:
         screen_h: int = 1080,
         roi_size: int = 256,
         onnx_model_path: Optional[str] = None,
+        yolo_model_path: Optional[str] = None,
+        yolo_conf: float = 0.35,
+        yolo_imgsz: int = 256,
         synthetic_only: bool = False,
     ):
         self.screen_w = int(screen_w)
         self.screen_h = int(screen_h)
         self.roi_size = int(roi_size)
         self.synthetic_only = bool(synthetic_only)
+        self.yolo_conf = float(yolo_conf)
+        self.yolo_imgsz = int(yolo_imgsz)
         self.backend_name = "synthetic"
+        self.detector_backend = "synthetic_blobs" if self.synthetic_only else "none"
         self._dxcam = None
         self._mss = None
         self._gdi = None
         self._ort_session = None
+        self._yolo_model = None
+        self._yolo_device = "cpu"
+        self._next_track_id = 0
 
         self.crosshair_tracker = DynamicCrosshairTracker(roi_size=roi_size)
         self.target_kfs: Dict[int, ConstantVelocityKF] = {}
@@ -237,6 +258,9 @@ class VisionROITracker:
 
         if not self.synthetic_only:
             self._init_capture_backend()
+            resolved_yolo = yolo_model_path if yolo_model_path is not None else DEFAULT_YOLO_WEIGHTS
+            if resolved_yolo and os.path.exists(resolved_yolo):
+                self._init_yolo(resolved_yolo)
         if onnx_model_path and os.path.exists(onnx_model_path):
             self._init_onnx(onnx_model_path)
 
@@ -276,6 +300,144 @@ class VisionROITracker:
             self._ort_session = ort.InferenceSession(model_path, providers=providers)
         except Exception:
             self._ort_session = None
+
+    def _init_yolo(self, model_path: str) -> None:
+        """Load trained YOLOv8n CS2 head/chest detector on CUDA GPU (RTX 4060) if available."""
+        try:
+            import torch
+            from ultralytics import YOLO
+
+            self._yolo_device = 0 if torch.cuda.is_available() else "cpu"
+            self._yolo_model = YOLO(model_path)
+            # Warmup once with dummy ROI so first live frame has no CUDA init stall
+            dummy = np.zeros((self.roi_size, self.roi_size, 3), dtype=np.uint8)
+            self._yolo_model.predict(
+                dummy,
+                imgsz=self.yolo_imgsz,
+                conf=self.yolo_conf,
+                device=self._yolo_device,
+                verbose=False,
+            )
+            self.detector_backend = f"yolov8n_cuda" if self._yolo_device != "cpu" else "yolov8n_cpu"
+        except Exception:
+            self._yolo_model = None
+            self.detector_backend = "none"
+
+    def _assign_track_id(self, pos_xy: np.ndarray, used_ids: set) -> int:
+        best_id = -1
+        best_d = 38.0
+        for tid, kf in self.target_kfs.items():
+            if tid in used_ids:
+                continue
+            d = float(np.linalg.norm(kf.x[:2] - pos_xy))
+            if d < best_d:
+                best_d = d
+                best_id = tid
+        if best_id >= 0:
+            return best_id
+        tid = self._next_track_id
+        self._next_track_id += 1
+        return tid
+
+    def _detect_yolo(self, roi_rgb: np.ndarray) -> List[TargetDetection]:
+        """Run trained YOLOv8n (0: head, 1: chest) on a 256x256 RGB ROI frame."""
+        if self._yolo_model is None:
+            return []
+        # Ultralytics expects BGR ndarray when passing numpy arrays
+        roi_bgr = roi_rgb[:, :, ::-1]
+        results = self._yolo_model.predict(
+            roi_bgr,
+            imgsz=self.yolo_imgsz,
+            conf=self.yolo_conf,
+            device=self._yolo_device,
+            verbose=False,
+        )
+        if not results or results[0].boxes is None or len(results[0].boxes) == 0:
+            return []
+
+        boxes = results[0].boxes
+        xyxy = boxes.xyxy.detach().cpu().numpy()
+        confs = boxes.conf.detach().cpu().numpy()
+        clss = boxes.cls.detach().cpu().numpy().astype(int)
+
+        heads = []
+        chests = []
+        for b, conf, cls_id in zip(xyxy, confs, clss):
+            x1, y1, x2, y2 = [float(v) for v in b]
+            w = max(2.0, x2 - x1)
+            h = max(2.0, y2 - y1)
+            cx = 0.5 * (x1 + x2)
+            cy = 0.5 * (y1 + y2)
+            if cls_id == 0:
+                heads.append((cx, cy, w, h, float(conf)))
+            elif cls_id == 1:
+                chests.append((cx, cy, w, h, float(conf)))
+
+        detections: List[TargetDetection] = []
+        used_ids = set()
+        used_chests = set()
+
+        # Pair each detected head with its best matching chest box underneath
+        heads.sort(key=lambda item: item[4], reverse=True)
+        for hx, hy, hw, hh, hconf in heads:
+            h_radius = max(4.0, 0.5 * min(hw, hh))
+            head_xy = np.array([hx, hy], dtype=float)
+
+            best_ci = -1
+            best_score = 1e9
+            for ci, (cx, cy, cw, ch, _) in enumerate(chests):
+                if ci in used_chests:
+                    continue
+                if abs(cx - hx) <= max(24.0, 1.2 * cw) and -4.0 <= (cy - hy) <= max(70.0, 2.5 * ch):
+                    score = abs(cx - hx) + 0.5 * abs(cy - (hy + 2.0 * h_radius))
+                    if score < best_score:
+                        best_score = score
+                        best_ci = ci
+
+            if best_ci >= 0:
+                used_chests.add(best_ci)
+                cx, cy, cw, ch, _ = chests[best_ci]
+                chest_xy = np.array([cx, cy], dtype=float)
+                c_radius = max(8.0, 0.5 * min(cw, ch))
+            else:
+                chest_xy = head_xy + np.array([0.0, max(12.0, 2.2 * h_radius)], dtype=float)
+                c_radius = max(10.0, 1.8 * h_radius)
+
+            tid = self._assign_track_id(head_xy, used_ids)
+            used_ids.add(tid)
+            detections.append(
+                TargetDetection(
+                    target_id=tid,
+                    head_px=head_xy,
+                    head_radius_px=h_radius,
+                    chest_px=chest_xy,
+                    chest_radius_px=c_radius,
+                    confidence=hconf,
+                )
+            )
+
+        # Fallback if only torso/chest is visible (infer head position above chest)
+        if not detections and chests:
+            chests.sort(key=lambda item: item[4], reverse=True)
+            for cx, cy, cw, ch, cconf in chests:
+                c_radius = max(8.0, 0.5 * min(cw, ch))
+                chest_xy = np.array([cx, cy], dtype=float)
+                head_xy = np.array([cx, max(2.0, cy - 0.55 * ch)], dtype=float)
+                h_radius = max(4.0, 0.35 * min(cw, ch))
+                tid = self._assign_track_id(head_xy, used_ids)
+                used_ids.add(tid)
+                detections.append(
+                    TargetDetection(
+                        target_id=tid,
+                        head_px=head_xy,
+                        head_radius_px=h_radius,
+                        chest_px=chest_xy,
+                        chest_radius_px=c_radius,
+                        confidence=0.8 * cconf,
+                    )
+                )
+
+        return detections
 
     def grab_roi(self) -> np.ndarray:
         """Capture 256x256 center ROI RGB image (H, W, 3) uint8."""
@@ -360,7 +522,12 @@ class VisionROITracker:
         if injected_detections is not None:
             dets = injected_detections
         elif roi_rgb is not None:
-            dets = self._detect_color_blobs_fallback(roi_rgb)
+            if self._yolo_model is not None and not self.synthetic_only:
+                dets = self._detect_yolo(roi_rgb)
+            elif self.synthetic_only:
+                dets = self._detect_color_blobs_fallback(roi_rgb)
+            else:
+                dets = []
         else:
             dets = []
 

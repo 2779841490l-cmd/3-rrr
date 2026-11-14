@@ -1,0 +1,21 @@
+{
+  "dataset": {
+    "data_yaml": "C:\\Users\\27798\\Desktop\\3-rrr\\shared_control_hil\\dataset_cs2\\data.yaml",
+    "pos": 684,
+    "neg": 68,
+    "train_imgs": 621,
+    "val_imgs": 131,
+    "train_heads": 588,
+    "train_chests": 547,
+    "val_heads": 140,
+    "val_chests": 133
+  },
+  "eval": {
+    "map50_all": 0.800000866855894,
+    "map50_head": 0.7842909635492212,
+    "map50_chest": 0.8157107701625668,
+    "map50_95": 0.4746573512456836,
+    "infer_ms": 10.391549000050873
+  },
+  "weights": "C:\\Users\\27798\\Desktop\\3-rrr\\shared_control_hil\\weights\\cs2_head_yolov8n.pt"
+}
