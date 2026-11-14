@@ -36,27 +36,27 @@
     ],
     "J_stage": [
       [
-        1.968824,
-        -1.378656
+        1.961563,
+        -1.31045
       ],
       [
-        0.134406,
-        -1.731821
+        0.197101,
+        -1.770835
       ]
     ],
     "K_stage": [
       [
-        0.537107,
-        -0.427576
+        0.55075,
+        -0.407565
       ],
       [
-        0.041685,
-        -0.610611
+        0.061301,
+        -0.610069
       ]
     ],
-    "mounting_angle_deg": 12.0477,
-    "calib_elapsed_s": 1.3264,
-    "recon_error_pct": 2.41,
+    "mounting_angle_deg": 14.0833,
+    "calib_elapsed_s": 1.3258,
+    "recon_error_pct": 2.327,
     "safe_envelope_counts": 80.0,
     "hard_limit_counts": 88.0,
     "recenter_trigger_counts": 15.0,
