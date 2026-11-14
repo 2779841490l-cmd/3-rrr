@@ -3,7 +3,7 @@
     "width": 1920,
     "height": 1080,
     "fov_x_deg": 106.26,
-    "s_game": 0.646,
+    "s_game": 0.9,
     "m_yaw": 0.022,
     "roi_size": 256,
     "alpha_x": 1.0,
@@ -36,27 +36,27 @@
     ],
     "J_stage": [
       [
-        1.961563,
-        -1.31045
+        2.023452,
+        -1.6765
       ],
       [
-        0.197101,
-        -1.770835
+        -0.2419,
+        -1.3936
       ]
     ],
     "K_stage": [
       [
-        0.55075,
-        -0.407565
+        0.432067,
+        -0.519776
       ],
       [
-        0.061301,
-        -0.610069
+        -0.074998,
+        -0.627344
       ]
     ],
-    "mounting_angle_deg": 14.0833,
-    "calib_elapsed_s": 1.3258,
-    "recon_error_pct": 2.327,
+    "mounting_angle_deg": 0.0,
+    "calib_elapsed_s": 1.4869,
+    "recon_error_pct": 1.693,
     "safe_envelope_counts": 80.0,
     "hard_limit_counts": 88.0,
     "recenter_trigger_counts": 15.0,

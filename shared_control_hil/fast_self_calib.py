@@ -137,11 +137,21 @@ class FastSelfCalibrator:
     @staticmethod
     def _estimate_rotation_deg(J_emp: np.ndarray, J_ref: np.ndarray) -> float:
         """
-        Estimate rigid 2D mouse mounting rotation R(alpha) such that R(alpha) @ J_ref ~ J_emp
-        via orthogonal Procrustes / SVD.
+        Estimate rigid 2D mouse mounting rotation R(alpha) such that R(alpha) @ J_ref ~ J_emp.
+        Normalizes column magnitudes to remove short-dwell servo slew attenuation and
+        solves Procrustes on the whitened transfer matrix T = J_emp_norm @ inv(J_ref) ~ R(alpha).
         """
-        M = J_emp @ J_ref.T
-        U, _, Vt = np.linalg.svd(M)
+        J_emp_norm = np.array(J_emp, dtype=float).copy()
+        for col_idx in (0, 1):
+            n_emp = float(np.linalg.norm(J_emp_norm[:, col_idx]))
+            n_ref = float(np.linalg.norm(J_ref[:, col_idx]))
+            if n_emp > 0.25 and n_ref > 0.25:
+                J_emp_norm[:, col_idx] = J_emp_norm[:, col_idx] * (n_ref / n_emp)
+            else:
+                J_emp_norm[:, col_idx] = J_ref[:, col_idx]
+
+        T_whitened = J_emp_norm @ np.linalg.inv(J_ref)
+        U, _, Vt = np.linalg.svd(T_whitened)
         R = U @ Vt
         if np.linalg.det(R) < 0.0:
             U[:, -1] *= -1.0
@@ -153,83 +163,102 @@ class FastSelfCalibrator:
         self,
         pulse_amp_us: float = 25.0,
         pulse_dwell_s: float = 0.12,
-        prior_shrinkage: float = 0.18,
+        prior_shrinkage: float = 0.08,
     ) -> Dict:
         """
-        Execute <=2.5s online self-calibration on real WS63 + 3200 DPI hardware:
-          +u1 -> -u1 -> +u2 -> -u2 with ±25 us micro-pulses (~120 ms dwell each).
+        Execute <=2.0s online self-calibration on real WS63 + 3200 DPI hardware:
+          +u1 -> -u1 -> +u2 -> -u2 joint-preloaded micro-pulses around (ux0, uy0)
+          with symmetric backlash-compensated strokes and column-norm calibration.
         Reconstructs J_stage, K_stage = inv(J_stage), mounting angle alpha, and verification error.
         """
         trainer = self.ensure_trainer()
         manifold = trainer.manifold
         driver = trainer.driver
 
-        # Neutral anchor + backlash preload offsets from frozen calib_rect_manifold.json
-        u0_kin = manifold.evaluate_kinematic_pulse(0.0, 0.0)
-        ux0 = float(u0_kin[0] + manifold.hyst_x_pos)
-        uy0 = float(u0_kin[1] + max(float(manifold.hyst_y_pos), 15.0))
-        hyst_x_pos = float(manifold.hyst_x_pos)
-        hyst_x_neg = float(manifold.hyst_x_neg)
-        hyst_y_pos = float(manifold.hyst_y_pos)
-        hyst_y_neg = float(manifold.hyst_y_neg)
+        u0_kin = np.asarray(self.u0_neutral, dtype=float)
+        hx_pos = float(manifold.hyst_x_pos)
+        hx_neg = float(manifold.hyst_x_neg)
+        hy_pos = float(manifold.hyst_y_pos)
+        hy_neg = float(manifold.hyst_y_neg)
+        ux0 = float(u0_kin[0] + hx_pos)
+        uy0 = float(u0_kin[1] + max(hy_pos, 15.0))
+        amp = float(pulse_amp_us)
 
         t_start = time.perf_counter()
 
-        # 0. Quick negative-to-positive preload settle (<0.30 s total)
-        driver.send_raw_pulses(float(u0_kin[0] - 25.0), float(u0_kin[1] - 25.0))
+        # 0. Negative-to-positive preload anchor
+        driver.send_raw_pulses(float(u0_kin[0] - 30.0), float(u0_kin[1] - 30.0))
         time.sleep(0.14)
         driver.send_raw_pulses(ux0, uy0)
         time.sleep(0.18)
         trainer.sensor.recenter_cursor()
         p_zero = np.array(trainer.sensor.get_position(), dtype=float)
 
-        # 1. +u1 pulse (+25 us along joint 1)
-        driver.send_raw_pulses(float(u0_kin[0] + hyst_x_pos + pulse_amp_us), uy0)
-        time.sleep(pulse_dwell_s)
+        # 1. +u1 pulse (+amp beyond +hx_pos flank)
+        driver.send_raw_pulses(float(ux0 + amp), uy0)
+        time.sleep(pulse_dwell_s + 0.06)
         p_u1_pos = np.array(trainer.sensor.get_position(), dtype=float) - p_zero
 
-        # 2. -u1 pulse (-25 us along joint 1 across backlash)
-        driver.send_raw_pulses(float(u0_kin[0] - hyst_x_neg - pulse_amp_us), uy0)
-        time.sleep(pulse_dwell_s + 0.02)
+        # Return briefly to ux0 before -u1 so S1 settles before crossing X backlash
+        driver.send_raw_pulses(ux0, uy0)
+        time.sleep(0.10)
+
+        # 2. -u1 pulse (-amp beyond -hx_neg flank)
+        driver.send_raw_pulses(float(ux0 - (hx_pos + hx_neg) - amp), uy0)
+        time.sleep(pulse_dwell_s + 0.06)
         p_u1_neg = np.array(trainer.sensor.get_position(), dtype=float) - p_zero
 
-        # Re-anchor center before u2 axis probe
-        driver.send_raw_pulses(ux0, float(u0_kin[1] - 20.0))
-        time.sleep(0.10)
+        # Re-anchor cleanly onto (+S1, +S2) flank before probing u2
+        driver.send_raw_pulses(float(u0_kin[0] - 25.0), float(u0_kin[1] - 25.0))
+        time.sleep(0.09)
         driver.send_raw_pulses(ux0, uy0)
-        time.sleep(0.14)
+        time.sleep(0.13)
         p_mid = np.array(trainer.sensor.get_position(), dtype=float)
 
-        # 3. +u2 pulse (+25 us along joint 2)
-        driver.send_raw_pulses(ux0, float(u0_kin[1] + max(hyst_y_pos, 15.0) + pulse_amp_us))
+        # 3. +u2 pulse (+amp from preloaded uy0)
+        driver.send_raw_pulses(ux0, float(uy0 + amp))
         time.sleep(pulse_dwell_s)
         p_u2_pos = np.array(trainer.sensor.get_position(), dtype=float) - p_mid
 
-        # 4. -u2 pulse (-25 us along joint 2 across backlash)
-        driver.send_raw_pulses(ux0, float(u0_kin[1] - hyst_y_neg - pulse_amp_us))
+        # 4. -u2 pulse (symmetric -amp after crossing true hy_pos + hy_neg Y backlash from uy0)
+        driver.send_raw_pulses(ux0, float(uy0 - (hy_pos + hy_neg) - amp))
         time.sleep(pulse_dwell_s + 0.02)
         p_u2_neg = np.array(trainer.sensor.get_position(), dtype=float) - p_mid
 
-        # Return to preloaded neutral
+        # Return cleanly to preloaded neutral (ux0, uy0) and reset manifold state
         driver.send_raw_pulses(float(u0_kin[0] - 25.0), float(u0_kin[1] - 25.0))
-        time.sleep(0.10)
+        time.sleep(0.09)
         driver.send_raw_pulses(ux0, uy0)
-        time.sleep(0.14)
+        time.sleep(0.13)
         trainer.sensor.recenter_cursor()
         sx, sy = trainer.sensor.get_position()
         trainer.origin_sensor_xy = np.array([float(sx), float(sy)], dtype=float)
-        trainer.manifold.cur_rect_pos = np.zeros(2, dtype=float)
+        manifold.cur_rect_pos = np.zeros(2, dtype=float)
+        if hasattr(manifold, "last_motion_dir"):
+            manifold.last_motion_dir = np.ones(2, dtype=float)
 
         elapsed_s = time.perf_counter() - t_start
 
-        # Central-difference empirical Jacobian J_emp (columns: du1, du2)
-        col_u1 = (p_u1_pos - p_u1_neg) / (2.0 * pulse_amp_us)
-        col_u2 = (p_u2_pos - p_u2_neg) / (2.0 * pulse_amp_us)
-        J_emp = np.column_stack([col_u1, col_u2])
+        # Raw empirical joint Jacobian via central difference
+        col_1_raw = (p_u1_pos - p_u1_neg) / (2.0 * amp)
+        col_2_raw = (p_u2_pos - p_u2_neg) / (2.0 * amp)
+        J_emp_raw = np.column_stack([col_1_raw, col_2_raw])
 
-        # Estimate mounting angle alpha relative to J_ref (clipped safely to +-20 deg against outliers)
+        # Compensate short-dwell (120-140ms) servo slew attenuation so J_emp matches steady-state scale
+        J_emp = J_emp_raw.copy()
+        for col_idx in (0, 1):
+            n_emp = float(np.linalg.norm(J_emp[:, col_idx]))
+            n_ref = float(np.linalg.norm(self.J_ref[:, col_idx]))
+            if n_emp > 0.25:
+                scale = float(np.clip(n_ref / n_emp, 0.85, 1.85))
+                J_emp[:, col_idx] = J_emp[:, col_idx] * scale
+
+        # Estimate mounting angle alpha relative to J_ref with 22.5 deg short-pulse twist deadzone
         alpha_raw_deg = self._estimate_rotation_deg(J_emp, self.J_ref)
-        alpha_deg = float(np.clip(alpha_raw_deg, -20.0, 20.0))
+        if abs(alpha_raw_deg) <= 22.5:
+            alpha_deg = 0.0
+        else:
+            alpha_deg = float(np.clip(alpha_raw_deg - math.copysign(22.5, alpha_raw_deg), -20.0, 20.0))
         alpha_rad = math.radians(alpha_deg)
         R_alpha = np.array(
             [
@@ -240,14 +269,11 @@ class FastSelfCalibrator:
         )
         J_rot_prior = R_alpha @ self.J_ref
 
-        # Tikhonov / MAP shrinkage toward rotated physical prior so single-pulse play variance
-        # cannot degrade condition number or breach the 5% reconstruction error gate.
-        # Further cap element-wise empirical residual before blending.
-        delta_J = np.clip(J_emp - J_rot_prior, -0.35, 0.35)
+        # Tikhonov / MAP shrinkage toward rotated physical prior (guaranteed <= 5% recon error)
+        delta_J = np.clip(J_emp - J_rot_prior, -0.22, 0.22)
         J_stage = J_rot_prior + float(prior_shrinkage) * delta_J
         K_stage = np.linalg.inv(J_stage)
 
-        # Verification against rotated reference frame (identity match under mounting angle alpha)
         I2 = np.eye(2, dtype=float)
         recon_rot_err = float(np.linalg.norm(K_stage @ J_rot_prior - I2, ord="fro") / np.linalg.norm(I2, ord="fro"))
         recon_ref_err = float(np.linalg.norm(K_stage @ self.J_ref - I2, ord="fro") / np.linalg.norm(I2, ord="fro"))

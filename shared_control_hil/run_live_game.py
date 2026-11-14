@@ -9,10 +9,12 @@ Ties together the validated shared_control_hil modules for live CS2 gameplay
   - Module 4 (telemetry_referee.py): Real-time shot verdict, InitErr/FinalErr & 4-fault attribution
 
 Global Non-Blocking Hotkeys (GetAsyncKeyState):
+  - F6  : Collect 10-shot CS2 AK-47 cl_crosshair_recoil 1 burst -> ak47_recoil_profile.json
+  - F7  : Toggle AK_SPRAY_LOCK mode (LMB holds -> 100 Hz closed-loop AK pull-down, release -> recenter)
   - F8  : 1.3s COM4 online self-calibration (updates mounting angle alpha & 2x2 Jacobian)
   - F9  : Toggle mode PAUSED -> ASSIST_ON <-> SHADOW_REFEREE_ONLY (blind A/B evaluation)
   - F10 : Smoothly return 3-RRR stage to neutral (1496.0, 1466.0) us and PAUSE capture
-  - END : Safe exit -> smooth neutral return, close COM4/capture, print & save session report
+  - END : Safe exit (or Ctrl+C in terminal) -> smooth neutral return, close COM4/capture & save report
 """
 
 import argparse
@@ -33,6 +35,11 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 from rect_manifold_calibrator import HardwareRectangleTrainer
+from shared_control_hil.ak_spray_calibrator import (
+    AK47SprayCalibrator,
+    _clamp_servo_pair,
+    detect_crosshair_offset_px,
+)
 from shared_control_hil.fast_self_calib import DEFAULT_CONFIG_PATH, FastSelfCalibrator
 from shared_control_hil.shared_controller import (
     STATE_1_FLICK_DORMANT,
@@ -71,6 +78,8 @@ VK_Q = 0x51
 VK_R = 0x52
 VK_S = 0x53
 VK_W = 0x57
+VK_F6 = 0x75
+VK_F7 = 0x76
 VK_F8 = 0x77
 VK_F9 = 0x78
 VK_F10 = 0x79
@@ -78,6 +87,7 @@ VK_F10 = 0x79
 MODE_PAUSED = "PAUSED"
 MODE_ASSIST_ON = "ASSIST_ON"
 MODE_SHADOW = "SHADOW_REFEREE_ONLY"
+MODE_AK_SPRAY = "AK_SPRAY_LOCK"
 
 STATE_LABEL_MAP = {
     STATE_1_FLICK_DORMANT: "DORMANT",
@@ -258,6 +268,7 @@ class LiveGameSharedControlRunner:
             synthetic_only=bool(synthetic_capture),
         )
         self.ctrl = MacroMicroSharedController(self.config)
+        self.ak_calibrator = AK47SprayCalibrator(config_path=self.config_path, calibrator=self.calibrator)
         self.referee = TelemetryReferee(
             counts_per_px=self.ctrl.counts_per_px,
             head_radius_cnt=float(self.config["thresholds"].get("head_radius_cnt", 10.5)),
@@ -301,7 +312,7 @@ class LiveGameSharedControlRunner:
         self._tracker_running = False
         self._tracker_thread: Optional[threading.Thread] = None
 
-    def _wait_hw_idle(self, timeout_s: float = 0.35) -> None:
+    def _wait_hw_idle(self, timeout_s: float = 0.75) -> None:
         t0 = time.perf_counter()
         th = None
         with self._hw_lock:
@@ -417,10 +428,12 @@ class LiveGameSharedControlRunner:
         )
         print("-" * 78)
         print("Hotkeys (Non-Blocking Win32 GetAsyncKeyState):")
+        print("  [F6 ]  Collect 10-shot AK-47 cl_crosshair_recoil 1 burst -> ak47_recoil_profile.json")
+        print("  [F7 ]  Toggle AK_SPRAY_LOCK (hold LMB: 100 Hz closed-loop pull-down, release: recenter)")
         print("  [F8 ]  1.3s COM4 Online Self-Calibration (updates mounting angle & Jacobian)")
         print("  [F9 ]  Toggle Mode: PAUSED -> ASSIST_ON <-> SHADOW_REFEREE_ONLY")
         print("  [F10]  Emergency Recenter to (1496, 1466) us & PAUSE")
-        print("  [END]  Safe Exit -> Recenter, Release COM4 & Save live_session_report.json")
+        print("  [END]  Safe Exit (or Ctrl+C in terminal) -> Recenter, Release COM4 & Save report")
         print("-" * 78)
         self.mode = MODE_PAUSED
         print(f"[STATE] Entered {self.mode}. Alt-tab into CS2 and press F8 (calib) or F9 (activate).")
@@ -449,8 +462,8 @@ class LiveGameSharedControlRunner:
         return res
 
     def toggle_f9_mode(self) -> str:
-        """Toggle PAUSED -> ASSIST_ON <-> SHADOW_REFEREE_ONLY."""
-        if self.mode == MODE_PAUSED:
+        """Toggle PAUSED/AK_SPRAY_LOCK -> ASSIST_ON <-> SHADOW_REFEREE_ONLY."""
+        if self.mode in (MODE_PAUSED, MODE_AK_SPRAY):
             self.recenter_to_neutral(duration_s=0.18)
             self.ctrl.reset_episode()
             self.vision.reset_filters()
@@ -465,6 +478,64 @@ class LiveGameSharedControlRunner:
             self.mode = MODE_ASSIST_ON
         print(f"\n[F9] Switched Mode -> {self.mode}")
         return self.mode
+
+    def toggle_f7_ak_spray(self) -> str:
+        """Toggle AK_SPRAY_LOCK <-> PAUSED for 100 Hz closed-loop AK-47 point-lock recoil control."""
+        self._wait_hw_idle()
+        self.recenter_to_neutral(duration_s=0.18)
+        self.ctrl.reset_episode()
+        self.vision.reset_filters()
+        self._prev_gray = None
+        if self.mode != MODE_AK_SPRAY:
+            self.ak_calibrator.load_profile()
+            self.mode = MODE_AK_SPRAY
+            print(
+                "\n[F7] Switched Mode -> AK_SPRAY_LOCK "
+                f"(source={self.ak_calibrator.profile_source}, s_game={self.ak_calibrator.s_game:.3f}). "
+                "Hold LMB in CS2 for 100 Hz closed-loop point-lock; release LMB to smoothly recenter."
+            )
+        else:
+            self.mode = MODE_PAUSED
+            print("\n[F7] Exited AK_SPRAY_LOCK -> PAUSED.")
+        return self.mode
+
+    def trigger_f6_collect_crosshair(self) -> Dict:
+        """Pause assist, recenter neutral, and collect 10-shot CS2 cl_crosshair_recoil 1 burst."""
+        self._wait_hw_idle()
+        self.mode = MODE_PAUSED
+        self.recenter_to_neutral(duration_s=0.18)
+        res = self.ak_calibrator.collect_crosshair_burst(n_shots=10, save_profile=True)
+        self.ctrl.reset_episode()
+        return res
+
+    def _run_ak_spray_burst(self, n_shots: int = 30, check_lmb: bool = True) -> Dict:
+        """Execute 100 Hz closed-loop AK-47 pull-down + gentle cl_crosshair_recoil 1 residual trim."""
+        self._wait_hw_idle()
+        self.recenter_to_neutral(duration_s=0.12)
+
+        def _visual_trim() -> np.ndarray:
+            roi = self.vision.grab_roi()
+            off = detect_crosshair_offset_px(roi)
+            if off is None or float(np.hypot(off[0], off[1])) > 24.0:
+                return np.zeros(2, dtype=float)
+            c_err = self.calibrator.pixel_to_counts(off[0], off[1])
+            return np.clip(-0.25 * c_err, -6.0, 6.0)
+
+        res = self.ak_calibrator.execute_ak_spray_closed_loop(
+            self.trainer,
+            n_shots=n_shots,
+            use_feedback=True,
+            rate_hz=250.0,
+            reset_origin=False,
+            check_lmb=check_lmb,
+            visual_trim_fn=_visual_trim,
+        )
+        self.recenter_to_neutral(duration_s=0.18)
+        print(
+            f"[AK_SPRAY_LOCK Burst] dur={res['duration_s']:.2f}s | ticks={res['ticks']} | "
+            f"mean_err={res['mean_bullet_err_cnt']:.2f} cnt | max={res['max_bullet_err_cnt']:.2f} cnt"
+        )
+        return res
 
     def trigger_f10_pause(self) -> None:
         """Emergency smooth recenter to (1496, 1466) us and pause ROI capture."""
@@ -507,14 +578,81 @@ class LiveGameSharedControlRunner:
                         self.trainer.driver.move_smooth_raw(u0x, u0y, duration_s=0.18, rate_hz=50.0)
                         p_new = np.zeros(2, dtype=float)
                     else:
-                        self.trainer.move_point_to_point(
-                            float(p_clamped[0]),
-                            float(p_clamped[1]),
-                            tol_counts=1.8,
-                            two_stage=True,
-                            enable_ilc_update=False,
-                        )
-                        p_new = np.clip(self.trainer.get_rect_position(), -SAFE_ENVELOPE_CNT, SAFE_ENVELOPE_CNT)
+                        K_stage = np.asarray(self.calibrator.K_stage, dtype=float)
+                        K_lin = np.asarray(self.trainer.manifold.pi_net.K_lin, dtype=float)
+                        near_origin = float(np.hypot(p_start_est[0], p_start_est[1])) <= 3.0
+
+                        if near_origin:
+                            # Map mounted target counts into 0-deg manifold frame and execute IF-OPB ballistic move
+                            p_man = np.linalg.solve(K_lin, K_stage @ p_clamped)
+                            p_man[0] = float(np.clip(p_man[0], -0.85 * self.trainer.manifold.W, 0.85 * self.trainer.manifold.W))
+                            p_man[1] = float(np.clip(p_man[1], -0.85 * self.trainer.manifold.H, 0.85 * self.trainer.manifold.H))
+                            self.trainer.move_point_to_point(
+                                float(p_man[0]),
+                                float(p_man[1]),
+                                tol_counts=1.8,
+                                two_stage=True,
+                                enable_ilc_update=False,
+                            )
+                            p_meas = np.clip(self.trainer.get_rect_position(), -SAFE_ENVELOPE_CNT, SAFE_ENVELOPE_CNT)
+                        else:
+                            # Already displaced from origin: trim locally from current estimated optical position
+                            p_meas = p_start_est.copy()
+
+                        best_p = p_meas.copy()
+                        best_u = (float(self.trainer.driver.cur_s1), float(self.trainer.driver.cur_s2))
+                        best_err = float(np.hypot(p_clamped[0] - best_p[0], p_clamped[1] - best_p[1]))
+
+                        if best_err > 2.2:
+                            if getattr(self.trainer.driver, "ser", None) is not None:
+                                try:
+                                    self.trainer.driver.ser.write(b"F 10000\n")
+                                except Exception:
+                                    pass
+
+                            # Fast closed-loop 3200 DPI sensor micro-trim (up to 3 steps)
+                            gain = 0.82
+                            for _trim_i in range(3):
+                                if best_err <= 2.2:
+                                    break
+                                e_cnt = p_clamped - best_p
+                                du = gain * (K_stage @ e_cnt)
+                                if (
+                                    _trim_i == 0
+                                    and near_origin
+                                    and p_clamped[0] < -10.0
+                                    and e_cnt[1] > 6.0
+                                    and abs(e_cnt[0]) <= 5.0
+                                ):
+                                    du[0] *= 0.25
+                                    du[1] -= 5.5
+                                du = np.clip(du, -38.0, 38.0)
+                                u1, u2 = _clamp_servo_pair(
+                                    best_u[0] + float(du[0]),
+                                    best_u[1] + float(du[1]),
+                                    prev_u1=best_u[0],
+                                    prev_u2=best_u[1],
+                                    max_step_us=40.0,
+                                )
+                                self.trainer.driver.send_raw_pulses(u1, u2)
+                                time.sleep(0.042)
+                                p_trial = np.clip(self.trainer.get_rect_position(), -SAFE_ENVELOPE_CNT, SAFE_ENVELOPE_CNT)
+                                err_trial = float(np.hypot(p_clamped[0] - p_trial[0], p_clamped[1] - p_trial[1]))
+                                moved = float(np.hypot(p_trial[0] - best_p[0], p_trial[1] - best_p[1]))
+                                if err_trial < best_err - 0.15:
+                                    best_p = p_trial.copy()
+                                    best_u = (u1, u2)
+                                    best_err = err_trial
+                                    if moved < 0.35 * max(1.0, err_trial):
+                                        gain = min(1.25, gain + 0.25)
+                                elif err_trial > best_err + 1.0:
+                                    self.trainer.driver.send_raw_pulses(best_u[0], best_u[1])
+                                    time.sleep(0.020)
+                                    break
+                                else:
+                                    gain = min(1.30, gain + 0.30)
+
+                        p_new = best_p
                     with self._hw_lock:
                         self.p_stage_est = p_new.copy()
                         self.ctrl.p_stage_cur = p_new.copy()
@@ -531,7 +669,7 @@ class LiveGameSharedControlRunner:
             th.start()
 
         if wait_done:
-            th.join(timeout=0.35)
+            th.join(timeout=0.75)
         return True
 
     def _record_and_print_shot(
@@ -738,6 +876,14 @@ class LiveGameSharedControlRunner:
                 if self.keys.pressed_once(VK_F10):
                     self.trigger_f10_pause()
                     continue
+                if self.keys.pressed_once(VK_F6):
+                    self.trigger_f6_collect_crosshair()
+                    last_step_t = time.perf_counter()
+                    continue
+                if self.keys.pressed_once(VK_F7):
+                    self.toggle_f7_ak_spray()
+                    last_step_t = time.perf_counter()
+                    continue
                 if self.keys.pressed_once(VK_F8):
                     self.trigger_f8_calibration()
                     last_step_t = time.perf_counter()
@@ -745,6 +891,14 @@ class LiveGameSharedControlRunner:
                 if self.keys.pressed_once(VK_F9):
                     self.toggle_f9_mode()
                     last_step_t = time.perf_counter()
+                    continue
+
+                if self.mode == MODE_AK_SPRAY:
+                    if bool(self.keys.is_down(VK_LBUTTON)):
+                        self._run_ak_spray_burst(n_shots=30, check_lmb=True)
+                        last_step_t = time.perf_counter()
+                    else:
+                        time.sleep(0.005)
                     continue
 
                 if self.mode == MODE_PAUSED:
@@ -1017,6 +1171,22 @@ class LiveGameSharedControlRunner:
                     active_target_id=out.active_target_id,
                     anchor_mode=out.anchor_mode,
                 )
+
+            # Verify F7 AK_SPRAY_LOCK 12-shot closed-loop pull-down
+            assert self.toggle_f7_ak_spray() == MODE_AK_SPRAY
+            self.ak_calibrator.load_profile()
+            ak_res = self.ak_calibrator.execute_ak_spray_closed_loop(
+                self.trainer,
+                n_shots=12,
+                use_feedback=True,
+                rate_hz=250.0,
+                reset_origin=True,
+            )
+            print(
+                f"[F7 AK_SPRAY_LOCK Self-Test] 12-shot mean_err={ak_res['mean_bullet_err_cnt']:.2f} cnt "
+                f"| max={ak_res['max_bullet_err_cnt']:.2f} cnt"
+            )
+            assert ak_res["mean_bullet_err_cnt"] <= 5.5, f"AK spray point-lock error too high: {ak_res['mean_bullet_err_cnt']}"
 
             # Verify F10 smooth recenter + pause
             self.trigger_f10_pause()
