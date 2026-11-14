@@ -87,7 +87,7 @@ def plot_fig1_deadzone_3regime() -> str:
 
     ax1.axhline(0, color="#333333", lw=0.7)
     ax1.axvline(0, color="#333333", lw=0.7)
-    ax1.text(0, 58, "I. Quiet Zone\n(0–20 μs)\nKC5188 DB: 4–10 μs", ha="center", va="center",
+    ax1.text(0, 58, "I. Deadband Plateau\n(0–20 μs)\nComparator DB: 4–10 μs", ha="center", va="center",
              fontsize=7.4, bbox=dict(boxstyle="round,pad=0.25", fc="white", ec="#7f8c8d", alpha=0.92))
     ax1.text(38, -82, "II. Stribeck\nStick-Slip\n(20–55 μs)", ha="center", va="bottom",
              fontsize=7.4, bbox=dict(boxstyle="round,pad=0.25", fc="white", ec="#e67e22", alpha=0.92))
@@ -121,7 +121,7 @@ def plot_fig1_deadzone_3regime() -> str:
     ax2.set_ylim(-2, 52)
     ax2.set_xlabel("Quasi-Static Offset Δu₁ (μs)")
     ax2.set_ylabel("Net Displacement Δx (counts)")
-    ax2.set_title("(b) Quasi-Static Staircase Stick-Slip Plateaus (step_scan.csv)")
+    ax2.set_title("(b) Quasi-Static Staircase Stick-Slip Plateaus")
     ax2.grid(True)
     ax2.legend(loc="upper left", framealpha=0.92)
 
@@ -191,7 +191,7 @@ def plot_fig2_short_arm_jacobian() -> str:
     ax2.errorbar([p[0] for p in s_u1], [p[1] for p in s_u1], yerr=[p[2] for p in s_u1],
                  fmt="-o", color="#1f77b4", lw=1.9, capsize=3, label="Short Arm u1 (2.039 cnt/μs, d=9.22 μs)")
 
-    ax2.annotate("−49.6% Gain Compression\n1 μs: 4.33 → 2.18 cnt\n0.1 μs (SUBUS_V2): 0.22 cnt (1.73 μm)",
+    ax2.annotate("−49.6% Gain Compression\n1.0 μs PWM: 4.33 → 2.18 cnt\n0.1 μs PWM: 0.22 cnt (1.73 μm)",
                  xy=(25, 45.2), xytext=(12.2, 62),
                  arrowprops=dict(arrowstyle="->", color="#2c3e50", lw=1.3),
                  fontsize=7.8, bbox=dict(boxstyle="round,pad=0.3", fc="#fdfefe", ec="#2c3e50", alpha=0.95))
@@ -229,10 +229,10 @@ def plot_fig3_ablation_evolution() -> str:
     t_sets = [float(r["t_set_ms"]) for r in stages]
     t_bals = [float(r["t_bal_ms"]) for r in stages]
     labels = [
-        "① 1 μs Old FW\n(SW Timer)",
-        "② 0.1 μs SUBUS_V2\n(H-Proto Only)",
-        "③ + B_CMD Timer\n& 10–12 μs Preload",
-        "④ + Stage-1 H_OVR\n& S2 Axial Isolation",
+        "① 1.0 μs Timer\n(Software PWM)",
+        "② 0.1 μs TCXO\n(Single-Phase)",
+        "③ + Atomic Packet\n& 10–12 μs Preload",
+        "④ + In-Flight Cutoff\n& Stage-2 Isolation",
     ]
     colors = ["#95a5a6", "#e67e22", "#3498db", "#27ae60"]
 
@@ -286,7 +286,11 @@ def plot_fig3_ablation_evolution() -> str:
     full_035_trim3 = float(np.mean(g2_035[:3]))
     full_035_raw5 = float(np.mean(g2_035))
 
-    cats = ["Stage-1 H_OVR Only\n(w/o Stage-2 Trim)", "w/o Sandwich Preload\n(pre_du = 0)", "Full System\n(Frozen 45ea2aa)"]
+    cats = [
+        "Stage-1 Cutoff Only\n(w/o Stage-2 Trim)",
+        "w/o Sandwich Preload\n(Δu_pre = 0)",
+        "Proposed Full System\n(Co-Designed)",
+    ]
     xc = np.arange(len(cats))
     w = 0.34
 
@@ -304,18 +308,20 @@ def plot_fig3_ablation_evolution() -> str:
     ax2.scatter(xc + w / 2, vals_035_raw, color="white", edgecolors="#0e6251", marker="D", s=34, zorder=5, linewidths=1.3)
 
     for bar, v_t, v_r in zip(b1, vals_3020_trim, vals_3020_raw):
-        ax2.text(bar.get_x() + bar.get_width() / 2, max(v_t, v_r) + 0.35,
+        y_lbl = max(v_t, v_r) + (1.20 if max(v_t, v_r) < 3.0 else 0.35)
+        ax2.text(bar.get_x() + bar.get_width() / 2, y_lbl,
                  f"{v_t:.2f}\n({v_r:.2f})", ha="center", va="bottom", fontsize=7.5, color="#1b4f72", fontweight="bold")
     for bar, v_t, v_r in zip(b2, vals_035_trim, vals_035_raw):
-        ax2.text(bar.get_x() + bar.get_width() / 2, max(v_t, v_r) + 0.35,
+        y_lbl = max(v_t, v_r) + (1.20 if max(v_t, v_r) < 3.0 else 0.35)
+        ax2.text(bar.get_x() + bar.get_width() / 2, y_lbl,
                  f"{v_t:.2f}\n({v_r:.2f})", ha="center", va="bottom", fontsize=7.5, color="#0e6251", fontweight="bold")
 
-    ax2.axhline(3.2, color="#e74c3c", ls="--", lw=1.1, label="KPI Gate Limit (3.2–3.5 cnt)")
+    ax2.axhline(3.2, color="#e74c3c", ls="--", lw=1.1, label="Tolerance Threshold (3.2–3.5 cnt)")
     ax2.set_xticks(xc)
     ax2.set_xticklabels(cats, fontsize=8.1)
     ax2.set_ylim(0, 14.2)
     ax2.set_ylabel("Residual Positioning Error (counts)")
-    ax2.set_title("(b) Controlled Single-Factor Ablation (45ea2aa Rig)")
+    ax2.set_title("(b) Controlled Single-Factor Ablation Study")
     ax2.grid(True, axis="y")
     ax2.legend(loc="upper right", fontsize=7.4, framealpha=0.92)
 
@@ -340,9 +346,9 @@ def plot_fig4_gate1_gate2a_results() -> str:
     bals = [float(r["ballistic_ms"]) for r in g1_rows]
     sets = [float(r["settled_ms"]) for r in g1_rows]
 
-    ax1.axvspan(7.5, 12.5, color="#2ecc71", alpha=0.12, label="Gate-1 Eval Window (Shots 8–12)")
+    ax1.axvspan(7.5, 12.5, color="#2ecc71", alpha=0.12, label="Protocol I Eval Window (Shots 8–12)")
     ax1.plot(shots, errs, "-o", color="#1f77b4", lw=2.1, ms=5.5, label="Final Error (counts)")
-    ax1.axhline(3.2, color="#e74c3c", ls="--", lw=1.2, label="Gate-1 Limit (3.2 cnt / 25.4 μm)")
+    ax1.axhline(3.2, color="#e74c3c", ls="--", lw=1.2, label="Protocol I Limit (3.2 cnt / 25.4 μm)")
     ax1.axhline(1.83, color="#27ae60", ls="-.", lw=1.2, label="Last-5 Trim-4 Mean = 1.83 cnt (14.5 μm)")
 
     ax1_r = ax1.twinx()
@@ -356,7 +362,7 @@ def plot_fig4_gate1_gate2a_results() -> str:
     ax1.set_ylim(0, 7.6)
     ax1.set_xlabel("Cold-Start Shot Index at Target (30, 20)")
     ax1.set_ylabel("Final Radial Error (counts)")
-    ax1.set_title("(a) Gate 1 Cold-Start Convergence at (30, 20) [45ea2aa PASS]")
+    ax1.set_title("(a) Protocol I Cold-Start Convergence at (30, 20) [PASS]")
     ax1.grid(True)
 
     h1, l1 = ax1.get_legend_handles_labels()
@@ -401,7 +407,7 @@ def plot_fig4_gate1_gate2a_results() -> str:
     ax2.set_aspect("equal", adjustable="box")
     ax2.set_xlabel("Relative Final X Error Δe_x (counts)")
     ax2.set_ylabel("Relative Final Y Error Δe_y (counts)")
-    ax2.set_title("(b) Gate 2a Residuals (t_bal=83.6 ms, t_set=98.2 ms < 100 ms)")
+    ax2.set_title("(b) Protocol II Residuals (t_bal=83.6 ms, t_set=98.2 ms)")
     ax2.grid(True)
     ax2.legend(loc="upper center", fontsize=6.4, framealpha=0.94, ncol=2)
 
