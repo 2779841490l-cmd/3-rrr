@@ -683,6 +683,15 @@ class HardwareRectangleTrainer:
             if u2_retract_locked:
                 rev_blocked[1] = True
                 err_for_du[1] = 0.0
+                if float(chord_vec[1]) > 15.0 and abs(float(chord_vec[0])) < 8.0:
+                    rev_blocked[0] = True
+                    err_for_du[0] = 0.0
+            if float(chord_vec[0]) < -25.0 and abs(float(chord_vec[1])) < 8.0:
+                rev_blocked[0] = True
+                err_for_du[0] = 0.0
+            if float(chord_vec[0]) > 25.0 and abs(float(chord_vec[1])) < 8.0:
+                rev_blocked[1] = True
+                err_for_du[1] = 0.0
 
             # Max Step Cap: single Stage-2 step expected displacement strictly capped <= 3.5 counts
             err_norm_cap = float(np.hypot(err_for_du[0], err_for_du[1]))
@@ -847,14 +856,14 @@ class HardwareRectangleTrainer:
         # Anchors: (theta_rad, L_ref, pre_du, du_bst, du_eq, cut_r, y_min_r, b_dur_us)
         # FROZEN optimal low-std Stage-1 baselines per direction (task-9790 / task-9800 R1_fast5 / task-9816 / task-9859)
         anchors = [
-            (-float(np.pi),                 35.0, [-20.5,  0.0], [-78.0,   1.5], [-18.0,  -0.4], 0.35, 0.000, 58000.0),
-            (float(np.arctan2(-25, -30)),   39.05,[ -6.2, 11.5], [-27.5,  29.2], [-11.0,  16.5], 0.37, 0.200, 58000.0),
-            (-0.5 * float(np.pi),           35.0, [  8.6,  8.8], [ 54.2,  32.1], [ 23.2,  17.8], 0.41, 0.257, 58000.0),
-            (0.0,                           35.0, [  9.9, -2.0], [ 54.2,  -9.8], [  8.0,  -3.2], 0.35, 0.000, 58000.0),
-            (float(np.arctan2(20, 30)),     36.06,[  8.8,-11.0], [ 45.5, -18.7], [ 21.3,  -8.3], 0.31, 0.160, 62000.0),
-            (float(np.arctan2(25, 30)),     39.05,[  8.8,-11.0], [ 45.5, -24.5], [ 19.4, -13.6], 0.33, 0.160, 62000.0),
-            (0.5 * float(np.pi),            35.0, [-13.5,-13.5], [-42.1, -33.5], [-21.9, -21.1], 0.35, 0.160, 60000.0),
-            (float(np.pi),                  35.0, [-20.5,  0.0], [-78.0,   1.5], [-18.0,  -0.4], 0.35, 0.000, 58000.0),
+            (-float(np.pi),                 35.0, [-22.5,  0.0], [-84.5,   0.5], [-24.5,  -1.2], 0.42, 0.000, 58000.0),
+            (float(np.arctan2(-25, -30)),   39.05,[ -6.0, 11.7], [-27.0,  30.8], [-10.6,  17.6], 0.39, 0.200, 58000.0),
+            (-0.5 * float(np.pi),           35.0, [ 12.5,  9.2], [ 65.5,  34.2], [ 33.5,  19.8], 0.44, 0.257, 58000.0),
+            (0.0,                           35.0, [ 10.5, -1.8], [ 56.8,  -8.8], [ 11.5,  -2.6], 0.38, 0.000, 58000.0),
+            (float(np.arctan2(20, 30)),     36.06,[  8.8,-10.5], [ 45.5, -17.5], [ 21.3,  -7.2], 0.31, 0.160, 62000.0),
+            (float(np.arctan2(25, 30)),     39.05,[  8.8,-10.5], [ 46.2, -19.8], [ 21.2,  -9.4], 0.31, 0.160, 62000.0),
+            (0.5 * float(np.pi),            35.0, [-17.5,-12.8], [-50.2, -31.4], [-28.8, -19.5], 0.44, 0.160, 58000.0),
+            (float(np.pi),                  35.0, [-22.5,  0.0], [-84.5,   0.5], [-24.5,  -1.2], 0.42, 0.000, 58000.0),
         ]
         idx = 0
         while idx < len(anchors) - 2 and th > anchors[idx + 1][0]:
@@ -1049,7 +1058,8 @@ class HardwareRectangleTrainer:
                     y_ready = (not need_y_gate) or ((rel_vec[1] * y_dir_sgn) >= y_min_early)
                     if t_onset is None and p_par >= max(1.8, 0.05 * min(L, 80.0)):
                         t_onset = now
-                    if (elapsed_ms >= 34.0 or L > 70.0) and y_ready and p_par >= pos_cut_early:
+                    min_cut_ms = 52.0 if (abs(float(chord_vec[1])) < 8.0 or abs(float(chord_vec[0])) < 8.0) else 36.0
+                    if (elapsed_ms >= min_cut_ms or L > 70.0) and y_ready and p_par >= pos_cut_early:
                         overrode_early = True
                         break
                     if t_onset is not None:
@@ -1111,10 +1121,7 @@ class HardwareRectangleTrainer:
                         s1_hint[ax_h] = float(np.sign(eq_v))
                     elif abs(bst_v) >= 5.0 and ((bst_v * float(s1_hint[ax_h]) >= 0.0) or abs(bst_v) >= 18.0):
                         s1_hint[ax_h] = float(np.sign(bst_v))
-                self._s2_lock_u2 = bool(
-                    abs(float(du_bst[1] - du_eq[1])) > 14.0
-                    or (abs(float(chord_vec[0])) >= 15.0 and abs(float(chord_vec[1])) >= 15.0 and abs(float(du_bst[1] - du_eq[1])) > 10.0)
-                )
+                self._s2_lock_u2 = bool(abs(float(du_bst[1] - du_eq[1])) > 10.0)
                 if dual_lattice:
                     p_final, t_s2_last, dual_trials = self._stage2_p0b_step(
                         p_s1,
