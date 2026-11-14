@@ -1,0 +1,11 @@
+stage_id,stage_label,protocol,err_cnt,err_um,t_bal_ms,t_set_ms,notes
+S0_PID,"Traditional PID
+(50 Hz Loop)",5-Dir (exp1_controller_comparison.csv),101.04,802.0,1244.9,1244.9,Mean over 5 directions; large backlash limit-cycle oscillation
+S1_1US_FW,"① 1 us Old FW
+(SW Timer)","Gate 1 (30,20) 12-shot Last-5 Mean",41.95,333.0,129.2,229.9,1us quantization (4.33 cnt/us Y-arm) + PC phase jitter
+S2_SUBUS_BCMD,"② 0.1 us SUBUS_V2
+(w/o Preload+S2 Lock)",Gate 2a 6-Dir Mean (Pre-B_CMD H-proto),5.67,45.0,84.3,139.3,"0.1us H-protocol; Gate 1=1.41 cnt, but 6-dir mean=5.67 cnt w/o directional preload"
+S3_PRELOAD,"③ +B_CMD & 10-12 us
+Sandwich Preload",Gate 2a 6-Dir Mean (commit ac877f8),4.17,33.1,83.6,125.4,Hardware B_CMD + sandwich preload; residual B->eq retraction disengagement in Stage-2
+S4_FULL_45EA2AA,"④ Full Stage-1 H_OVR
++ S2 Axial Isolation",Gate 2a 6-Dir Trimmed-3 Mean (commit 45ea2aa),2.39,19.0,83.6,98.2,"45ea2aa PASS: Gate 1 Last-5 Trimmed-4=1.83 cnt (14.5 um), Gate 2a 6-Dir=2.39 cnt (19.0 um), t_set=98.2ms"

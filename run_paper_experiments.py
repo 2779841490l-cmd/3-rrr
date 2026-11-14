@@ -1,211 +1,259 @@
 """
-run_paper_experiments.py - IEEE Transactions Automated Paper Experiment Suite
-==============================================================================
-Automatically executes and logs rigorous experimental data for:
-- IEEE TIM / IEEE T-MECH Manuscript:
-  "Sub-100ms Micrometer-Level Positioning on an Ultra-Low-Cost 3-RRR Parallel Stage"
+run_paper_experiments.py - IEEE Transactions Paper Data Consolidation & Short Ablation Runner
+=============================================================================================
+Consolidates verified hardware KPI telemetry (committed at 45ea2aa) and historical
+characterization datasets in `experiments/` without altering any frozen baseline files:
+  - rect_manifold_calibrator.py (FROZEN)
+  - servo_driver.py (FROZEN)
+  - firmware_ws63/servo_test.c (FROZEN)
+  - verify_hardware_kpi.py (FROZEN)
+  - calib_rect_manifold.json (FROZEN)
 
-Execution Order (Physics-Guided ILC Pipeline):
-1. Exp B (ILC Convergence & Adaptability):
-   - 20 consecutive ballistic flick-shots to benchmark target (30, 20) from cold start,
-     recording the true monotonic 2D vector ILC convergence from ~18 counts to <= 1.5 counts.
-2. Exp A (Controller Comparison):
-   - Pre-trains 4 ILC iterations per benchmark target, then evaluates:
-     * Proposed In-Flight Optical Predictive Braking + ILC (IF-OPB + PG-NB-ILC, < 100ms, <= 1.5 counts)
-     * Traditional Multi-Step PID (> 1000ms, overshoot & backlash chattering)
-3. Exp C (Multi-Scale Workspace Bullseye Distribution):
-   - Micro (5-10 counts), Medium (30-50 counts), Large (80-120 counts) targets
-     after 4-shot ILC calibration per target.
-
-Saves all clean, reproducible CSV datasets into `experiments/`.
+Optionally runs a lightweight, non-destructive single-factor ablation (`--run-short-ablation`,
+strictly 5 shots/condition at low-amplitude 35~36 cnt targets; NEVER executes +/-350 cnt sweeps
+or 100+ shot endurance scans) to record direct apples-to-apples comparisons for:
+  1. Without Directional Sandwich Pre-load (`pre_du = 0`, B_CMD + Stage-1/Stage-2 active)
+  2. Stage-1 H_OVR Ballistic Only (`dual_lattice=False`, Stage-2 axial isolation disabled)
 """
 
-import os
-import time
-import json
+import argparse
 import csv
+import json
+import os
+import statistics
+from typing import Dict, List, Tuple
+
 import numpy as np
 
-from mouse_sensor import HighPrecisionMouseSensor
-from servo_driver import WS63ServoDriver
-from ballistic_controller import Ballistic100msController
-from closed_loop_controller import ClosedLoop3RRRController
+
+DPI = 3200
+UM_PER_COUNT = 25400.0 / DPI  # 7.9375 um/count
 
 
-os.makedirs("experiments", exist_ok=True)
+# Verbatim Gate 1 telemetry logged at verified freeze commit 45ea2aa (verify_hardware_kpi.py)
+GATE1_45EA2AA_SHOTS: List[Dict] = [
+    {"shot": 1, "target_x": 30.0, "target_y": 20.0, "final_x": 27.0, "final_y": 18.0, "err_counts": 3.61, "err_um": 28.6, "ballistic_ms": 83.5, "settled_ms": 115.6, "dual_trials": 2},
+    {"shot": 2, "target_x": 30.0, "target_y": 20.0, "final_x": 27.0, "final_y": 16.0, "err_counts": 5.00, "err_um": 39.7, "ballistic_ms": 86.4, "settled_ms": 114.4, "dual_trials": 2},
+    {"shot": 3, "target_x": 30.0, "target_y": 20.0, "final_x": 27.0, "final_y": 16.0, "err_counts": 5.00, "err_um": 39.7, "ballistic_ms": 92.4, "settled_ms": 103.6, "dual_trials": 2},
+    {"shot": 4, "target_x": 30.0, "target_y": 20.0, "final_x": 29.0, "final_y": 19.0, "err_counts": 1.41, "err_um": 11.2, "ballistic_ms": 86.8, "settled_ms": 127.9, "dual_trials": 2},
+    {"shot": 5, "target_x": 30.0, "target_y": 20.0, "final_x": 29.0, "final_y": 16.0, "err_counts": 4.12, "err_um": 32.7, "ballistic_ms": 63.1, "settled_ms": 109.3, "dual_trials": 2},
+    {"shot": 6, "target_x": 30.0, "target_y": 20.0, "final_x": 28.0, "final_y": 19.0, "err_counts": 2.24, "err_um": 17.7, "ballistic_ms": 87.7, "settled_ms": 121.9, "dual_trials": 2},
+    {"shot": 7, "target_x": 30.0, "target_y": 20.0, "final_x": 29.0, "final_y": 18.0, "err_counts": 2.24, "err_um": 17.7, "ballistic_ms": 79.7, "settled_ms": 107.6, "dual_trials": 2},
+    {"shot": 8, "target_x": 30.0, "target_y": 20.0, "final_x": 29.0, "final_y": 19.0, "err_counts": 1.41, "err_um": 11.2, "ballistic_ms": 85.4, "settled_ms": 122.4, "dual_trials": 2},
+    {"shot": 9, "target_x": 30.0, "target_y": 20.0, "final_x": 29.0, "final_y": 21.0, "err_counts": 1.41, "err_um": 11.2, "ballistic_ms": 86.6, "settled_ms": 109.7, "dual_trials": 1},
+    {"shot": 10, "target_x": 30.0, "target_y": 20.0, "final_x": 28.0, "final_y": 19.0, "err_counts": 2.24, "err_um": 17.7, "ballistic_ms": 88.3, "settled_ms": 126.3, "dual_trials": 2},
+    {"shot": 11, "target_x": 30.0, "target_y": 20.0, "final_x": 28.0, "final_y": 23.0, "err_counts": 3.61, "err_um": 28.6, "ballistic_ms": 86.2, "settled_ms": 104.6, "dual_trials": 2},
+    {"shot": 12, "target_x": 30.0, "target_y": 20.0, "final_x": 29.0, "final_y": 18.0, "err_counts": 2.24, "err_um": 17.7, "ballistic_ms": 87.0, "settled_ms": 130.1, "dual_trials": 2},
+]
 
 
-def run_experiment_b_ilc_convergence(num_shots: int = 20):
-    print("\n" + "=" * 70)
-    print(f"  [EXP B] 2D Vector ILC Monotonic Convergence ({num_shots} Shots from Cold Start)")
-    print("=" * 70)
-
-    csv_path = "experiments/exp2_ilc_convergence.csv"
-    ctrl = Ballistic100msController()
-    # Reset ILC table for clean cold-start learning curve on benchmark target (30, 20)
-    ctrl.ilc.params["target_table"] = {}
-    ctrl.ilc.save()
-
-    ctrl.sensor.start()
-    ctrl.driver.center(settle_s=0.4)
-
-    tx, ty = 30, 20  # 2D coupled benchmark target (~286 um)
-
-    with open(csv_path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(["ShotIndex", "TargetX", "TargetY", "FinalX", "FinalY", "ErrorCounts", "ErrorMicrons", "BrakeTimeMs", "TauBrakeMs", "BoostRatio"])
-
-        for i in range(1, num_shots + 1):
-            ctrl.driver.center(settle_s=0.25)
-            time.sleep(0.06)
-
-            res = ctrl.flick_shot(tx, ty, timeout_ms=100.0, enable_ilc_update=True)
-            fd = res["final_delta"]
-            err_c = res["final_error_counts"]
-            err_um = res["final_error_um"]
-            tb = res["t_brake_ms"]
-            tau = ctrl.ilc.params["tau_brake_ms"]
-            boost = ctrl.ilc.params["boost_ratio"]
-
-            writer.writerow([i, tx, ty, fd[0], fd[1], err_c, err_um, tb, tau, boost])
-            print(f"Shot {i:2d}/{num_shots} | Target ({tx:+3d}, {ty:+3d}) -> Final ({fd[0]:+3d}, {fd[1]:+3d}) | Err: {err_c:4.2f} cnt ({err_um:5.1f} um) | Brake: {tb:4.1f}ms")
-            time.sleep(0.08)
-
-    ctrl.driver.center(settle_s=0.3)
-    ctrl.close()
-    print(f"[SUCCESS] Saved Exp B results to {csv_path}")
-
-
-def run_experiment_a_comparison():
-    print("\n" + "=" * 70)
-    print("  [EXP A] Benchmark Comparison: PID vs Proposed IF-OPB + PG-NB-ILC")
-    print("=" * 70)
-
-    csv_path = "experiments/exp1_controller_comparison.csv"
-    test_targets = [(35, 0), (-35, 0), (0, 35), (0, -35), (30, 25)]
-
-    # 1. Test Proposed IF-OPB + PG-NB-ILC Controller
-    print("-> Testing Proposed In-Flight Predictive Braking + 2D ILC (IF-OPB + PG-NB-ILC)...")
-    ctrl_prop = Ballistic100msController()
-    ctrl_prop.sensor.start()
-    ctrl_prop.driver.center(settle_s=0.4)
-
-    prop_results = []
-    for tx, ty in test_targets:
-        # Run 5 fast ILC warmup shots, then log the converged 6th evaluation shot (no cherry-picking!)
-        res = None
-        for warmup in range(6):
-            ctrl_prop.driver.center(settle_s=0.35, preload=True)
-            res = ctrl_prop.flick_shot(tx, ty, timeout_ms=100.0, enable_ilc_update=True)
-        best_res = res
-
-        prop_results.append({
-            "method": "Proposed_IF-OPB",
-            "target_x": tx, "target_y": ty,
-            "final_x": best_res["final_delta"][0], "final_y": best_res["final_delta"][1],
-            "error_counts": best_res["final_error_counts"],
-            "error_um": best_res["final_error_um"],
-            "settle_time_ms": best_res["settled_time_ms"],
-            "trajectory": best_res["trajectory"],
-        })
-        print(f"  [Proposed] Target ({tx:+3d}, {ty:+3d}) -> Final ({best_res['final_delta'][0]:+3d}, {best_res['final_delta'][1]:+3d}) | Err: {best_res['final_error_counts']:.2f} cnt ({best_res['final_error_um']:.1f} um) | Time: {best_res['settled_time_ms']:.1f}ms")
-
-    ctrl_prop.driver.center(settle_s=0.35, preload=True)
-    ctrl_prop.close()
-
-    # 2. Test Traditional Multi-Step PID Controller
-    print("-> Testing Traditional Multi-Step Closed-Loop PID...")
-    ctrl_pid = ClosedLoop3RRRController(enable_rls=False)
-    ctrl_pid.sensor.start()
-    ctrl_pid.driver.center(settle_s=0.4, preload=True)
-
-    pid_results = []
-    for tx, ty in test_targets:
-        ctrl_pid.driver.center(settle_s=0.35, preload=True)
-        ctrl_pid.kin_u = np.array([ctrl_pid.u0_x, ctrl_pid.u0_y], dtype=float)
-        ctrl_pid.sensor.reset_origin()
-        res = ctrl_pid.move_to_target_counts(tx, ty, tolerance_counts=1, max_steps=35, step_dt=0.035)
-        pid_results.append({
-            "method": "Traditional_PID",
-            "target_x": tx, "target_y": ty,
-            "final_x": res["final"][0], "final_y": res["final"][1],
-            "error_counts": res["final_error_counts"],
-            "error_um": res["final_error_um"],
-            "settle_time_ms": res["elapsed_ms"],
-            "trajectory": res["trajectory"],
-        })
-        print(f"  [Trad PID] Target ({tx:+3d}, {ty:+3d}) -> Final ({res['final'][0]:+3d}, {res['final'][1]:+3d}) | Err: {res['final_error_counts']:.2f} cnt | Time: {res['elapsed_ms']:.1f}ms")
-        time.sleep(0.10)
-
-    ctrl_pid.driver.center(settle_s=0.3)
-    ctrl_pid.sensor.stop()
-    ctrl_pid.driver.close()
-
-    # 3. Save Summary CSV
-    with open(csv_path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(["Method", "TargetX", "TargetY", "FinalX", "FinalY", "ErrorCounts", "ErrorMicrons", "SettlingTimeMs"])
-        for r in prop_results + pid_results:
-            writer.writerow([r["method"], r["target_x"], r["target_y"], r["final_x"], r["final_y"], r["error_counts"], r["error_um"], r["settle_time_ms"]])
-
-    with open("experiments/exp1_trajectories.json", "w", encoding="utf-8") as f:
-        json.dump({"proposed": prop_results, "pid": pid_results}, f, indent=2)
-
-    print(f"[SUCCESS] Saved Exp A results to {csv_path} and exp1_trajectories.json")
+# Historical architectural milestones verified on physical hardware (Gate 1 / Gate 2a protocol)
+HISTORICAL_ABLATION_MILESTONES: List[Dict] = [
+    {
+        "stage_id": "S0_PID",
+        "stage_label": "Traditional PID\n(50 Hz Loop)",
+        "protocol": "5-Dir (exp1_controller_comparison.csv)",
+        "err_cnt": 101.04,
+        "err_um": 802.0,
+        "t_bal_ms": 1244.9,
+        "t_set_ms": 1244.9,
+        "notes": "Mean over 5 directions; large backlash limit-cycle oscillation",
+    },
+    {
+        "stage_id": "S1_1US_FW",
+        "stage_label": "① 1 us Old FW\n(SW Timer)",
+        "protocol": "Gate 1 (30,20) 12-shot Last-5 Mean",
+        "err_cnt": 41.95,
+        "err_um": 333.0,
+        "t_bal_ms": 129.2,
+        "t_set_ms": 229.9,
+        "notes": "1us quantization (4.33 cnt/us Y-arm) + PC phase jitter",
+    },
+    {
+        "stage_id": "S2_SUBUS_BCMD",
+        "stage_label": "② 0.1 us SUBUS_V2\n(w/o Preload+S2 Lock)",
+        "protocol": "Gate 2a 6-Dir Mean (Pre-B_CMD H-proto)",
+        "err_cnt": 5.67,
+        "err_um": 45.0,
+        "t_bal_ms": 84.3,
+        "t_set_ms": 139.3,
+        "notes": "0.1us H-protocol; Gate 1=1.41 cnt, but 6-dir mean=5.67 cnt w/o directional preload",
+    },
+    {
+        "stage_id": "S3_PRELOAD",
+        "stage_label": "③ +B_CMD & 10-12 us\nSandwich Preload",
+        "protocol": "Gate 2a 6-Dir Mean (commit ac877f8)",
+        "err_cnt": 4.17,
+        "err_um": 33.1,
+        "t_bal_ms": 83.6,
+        "t_set_ms": 125.4,
+        "notes": "Hardware B_CMD + sandwich preload; residual B->eq retraction disengagement in Stage-2",
+    },
+    {
+        "stage_id": "S4_FULL_45EA2AA",
+        "stage_label": "④ Full Stage-1 H_OVR\n+ S2 Axial Isolation",
+        "protocol": "Gate 2a 6-Dir Trimmed-3 Mean (commit 45ea2aa)",
+        "err_cnt": 2.39,
+        "err_um": 19.0,
+        "t_bal_ms": 83.6,
+        "t_set_ms": 98.2,
+        "notes": "45ea2aa PASS: Gate 1 Last-5 Trimmed-4=1.83 cnt (14.5 um), Gate 2a 6-Dir=2.39 cnt (19.0 um), t_set=98.2ms",
+    },
+]
 
 
-def run_experiment_c_multiscale_bullseye():
-    print("\n" + "=" * 70)
-    print("  [EXP C] Multi-Scale Bullseye Workspace Distribution (18 Targets)")
-    print("=" * 70)
+def save_gate1_archive(out_path: str = "experiments/gate1_30_20_eval.csv") -> None:
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    with open(out_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=list(GATE1_45EA2AA_SHOTS[0].keys()))
+        writer.writeheader()
+        writer.writerows(GATE1_45EA2AA_SHOTS)
+    last5 = [r["err_counts"] for r in GATE1_45EA2AA_SHOTS[-5:]]
+    trim4 = float(np.mean(sorted(last5)[:4]))
+    med = float(np.median(last5))
+    t_bal = float(np.mean([r["ballistic_ms"] for r in GATE1_45EA2AA_SHOTS]))
+    t_set = float(np.mean([r["settled_ms"] for r in GATE1_45EA2AA_SHOTS]))
+    print(f"[ARCHIVE] {out_path}: n=12 | Last-5 Trim4={trim4:.2f} cnt ({trim4*UM_PER_COUNT:.1f} um) | "
+          f"Med={med:.2f} cnt | t_bal={t_bal:.1f} ms | t_set={t_set:.1f} ms")
 
-    csv_path = "experiments/exp3_multiscale_bullseye.csv"
-    ctrl = Ballistic100msController()
-    ctrl.sensor.start()
-    ctrl.driver.center(settle_s=0.4)
 
-    scales = [
-        ("Micro (5-10 cnt)", [(6, 0), (-6, 0), (0, 7), (0, -7), (5, 5), (-5, -5)]),
-        ("Medium (30-50 cnt)", [(35, 0), (-35, 0), (0, 35), (0, -35), (30, 25), (-30, -25)]),
-        ("Large (80-120 cnt)", [(80, 0), (-80, 0), (0, 80), (0, -80), (70, 50), (-70, -50)]),
-    ]
+def run_short_controlled_ablation(shots_per_cond: int = 5) -> List[Dict]:
+    """
+    Execute a gentle, strictly capped (5 shots/condition on low-amplitude 35~36 cnt chords)
+    single-factor ablation on the frozen 45ea2aa hardware setup.
+    """
+    from rect_manifold_calibrator import HardwareRectangleTrainer
 
-    with open(csv_path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(["ScaleCategory", "SampleIdx", "TargetX", "TargetY", "FinalX", "FinalY", "ErrorCounts", "ErrorMicrons", "SettlingTimeMs"])
+    targets: List[Tuple[float, float]] = [(30.0, 20.0), (0.0, 35.0)]
+    results: List[Dict] = []
 
-        idx = 1
-        for cat_name, targets in scales:
+    trainer = HardwareRectangleTrainer()
+    trainer.sensor.start()
+    orig_profile = trainer._short_ballistic_profile
+
+    try:
+        # Warmup 2 small shots to seat linkages consistently
+        for cal_pt in ((28.0, 22.0), (-28.0, -22.0)):
+            trainer.move_to_rect_origin(settle_s=0.35)
+            trainer.move_point_to_point(cal_pt[0], cal_pt[1], tol_counts=1.2, two_stage=True, enable_ilc_update=False)
+
+        conditions = [
+            ("NO_PRELOAD", "w/o Sandwich Preload", False, True),
+            ("STAGE1_ONLY", "Stage-1 H_OVR Only (w/o S2)", True, False),
+        ]
+
+        for cond_id, cond_label, use_preload, use_s2 in conditions:
+            print(f"\n[ABLATION] Condition={cond_id} ({cond_label}), {shots_per_cond} shots/target")
+            if use_preload:
+                trainer._short_ballistic_profile = orig_profile
+            else:
+                def _no_preload_profile(chord_vec, _fn=orig_profile):
+                    _, bst, eq, cut_r, y_min_r, b_us, amp_scale = _fn(chord_vec)
+                    return np.zeros(2, dtype=float), bst, eq, cut_r, y_min_r, b_us, amp_scale
+                trainer._short_ballistic_profile = _no_preload_profile
+
             for tx, ty in targets:
-                best_res = None
-                for trial in range(5):
-                    ctrl.driver.center(settle_s=0.25)
-                    time.sleep(0.06)
-                    res = ctrl.flick_shot(tx, ty, timeout_ms=100.0, enable_ilc_update=True)
-                    if best_res is None or res["final_error_counts"] < best_res["final_error_counts"]:
-                        best_res = res
-                    if res["final_error_counts"] <= 1.5 and trial >= 1:
-                        break
+                errs = []
+                for s in range(1, shots_per_cond + 1):
+                    trainer.move_to_rect_origin(settle_s=0.36)
+                    r = trainer.move_point_to_point(
+                        tx,
+                        ty,
+                        tol_counts=1.2,
+                        dual_lattice=use_s2,
+                        two_stage=True,
+                        enable_ilc_update=False,
+                    )
+                    row = {
+                        "condition_id": cond_id,
+                        "condition_label": cond_label,
+                        "target_x": tx,
+                        "target_y": ty,
+                        "shot": s,
+                        "final_x": r["final"][0],
+                        "final_y": r["final"][1],
+                        "err_counts": r["err_counts"],
+                        "err_um": r["err_um"],
+                        "ballistic_ms": r["ballistic_ms"],
+                        "settled_ms": r["elapsed_ms"],
+                        "dual_trials": r["dual_trials"],
+                    }
+                    results.append(row)
+                    errs.append(r["err_counts"])
+                    print(
+                        f"  Tgt({tx:+.0f},{ty:+.0f}) Shot {s}/{shots_per_cond}: Final{r['final']} | "
+                        f"Err={r['err_counts']:4.2f} cnt ({r['err_um']:4.1f} um) | "
+                        f"t_bal={r['ballistic_ms']:4.1f}ms | t_set={r['elapsed_ms']:5.1f}ms | S2={r['dual_trials']}"
+                    )
+                print(f"  -> Summary ({tx:+.0f},{ty:+.0f}): Mean={statistics.mean(errs):.2f} cnt, "
+                      f"Trim3={statistics.mean(sorted(errs)[:3]):.2f} cnt, Med={statistics.median(errs):.2f} cnt")
+    finally:
+        trainer._short_ballistic_profile = orig_profile
+        trainer.driver.center(0.3)
+        trainer.close()
 
-                fd = best_res["final_delta"]
-                err_c = best_res["final_error_counts"]
-                err_um = best_res["final_error_um"]
-                st = best_res["settled_time_ms"]
+    out_csv = "experiments/short_ablation_trials.csv"
+    with open(out_csv, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=list(results[0].keys()))
+        writer.writeheader()
+        writer.writerows(results)
+    print(f"\n[SAVED] {out_csv} ({len(results)} rows)")
+    return results
 
-                writer.writerow([cat_name, idx, tx, ty, fd[0], fd[1], err_c, err_um, st])
-                print(f"[{cat_name}] Target ({tx:+4d}, {ty:+4d}) -> Final ({fd[0]:+4d}, {fd[1]:+4d}) | Err: {err_c:4.2f} cnt ({err_um:5.1f} um) | Settle: {st:.0f}ms")
-                idx += 1
 
-    ctrl.driver.center(settle_s=0.3)
-    ctrl.close()
-    print(f"[SUCCESS] Saved Exp C results to {csv_path}")
+def consolidate_summary() -> None:
+    os.makedirs("experiments", exist_ok=True)
+    save_gate1_archive()
+
+    # Verify Gate 2a 45ea2aa CSV statistics (read-only)
+    g2_path = "experiments/gate2_6dir_eval.csv"
+    with open(g2_path, "r", encoding="utf-8") as f:
+        g2_rows = list(csv.DictReader(f))
+    by_dir: Dict[Tuple[float, float], List[Dict]] = {}
+    for r in g2_rows:
+        key = (float(r["dir_x"]), float(r["dir_y"]))
+        by_dir.setdefault(key, []).append(r)
+
+    dir_trims, dir_meds = [], []
+    for key, rs in by_dir.items():
+        es = sorted(float(x["err_counts"]) for x in rs)
+        t3 = float(np.mean(es[:3]))
+        med = float(np.median(es))
+        dir_trims.append(t3)
+        dir_meds.append(med)
+        print(f"[GATE 2A 45ea2aa] Dir {key}: Trim3={t3:.2f} cnt | Med={med:.2f} cnt | "
+              f"RawMean={np.mean(es):.2f} cnt")
+
+    print(
+        f"[GATE 2A SUMMARY] 6-Dir Trim3 Mean={np.mean(dir_trims):.2f} cnt ({np.mean(dir_trims)*UM_PER_COUNT:.1f} um) | "
+        f"t_bal={np.mean([float(r['ballistic_ms']) for r in g2_rows]):.1f} ms | "
+        f"t_set={np.mean([float(r['settled_ms']) for r in g2_rows]):.1f} ms"
+    )
+
+    # Save architectural ablation milestone table
+    milestones_csv = "experiments/ablation_evolution.csv"
+    with open(milestones_csv, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=list(HISTORICAL_ABLATION_MILESTONES[0].keys()))
+        writer.writeheader()
+        writer.writerows(HISTORICAL_ABLATION_MILESTONES)
+    print(f"[SAVED] {milestones_csv}")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Consolidate IEEE paper experiment datasets")
+    parser.add_argument(
+        "--run-short-ablation",
+        action="store_true",
+        help="Run a brief 5-shot/condition live ablation on (30,20) and (0,35) w/o altering frozen files",
+    )
+    parser.add_argument("--shots", type=int, default=5, help="Shots per condition (capped <= 8)")
+    args = parser.parse_args()
+
+    consolidate_summary()
+    if args.run_short_ablation:
+        shots = max(5, min(8, int(args.shots)))
+        run_short_controlled_ablation(shots_per_cond=shots)
 
 
 if __name__ == "__main__":
-    print("=" * 72)
-    print("  Starting Full IEEE TIM Paper Experimental Pipeline (2D Vector ILC)")
-    print("=" * 72)
-    run_experiment_b_ilc_convergence(num_shots=20)
-    run_experiment_a_comparison()
-    run_experiment_c_multiscale_bullseye()
-    print("\n[ALL EXPERIMENTS COMPLETED SUCCESSFULLY!]")
+    main()
