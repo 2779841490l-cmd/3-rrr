@@ -1,4 +1,11 @@
-# PAPER_OUTLINE.md — IEEE Transactions 学术论文结构与实验设计大纲
+# PAPER_OUTLINE.md — Early Architecture Brainstorm [ARCHIVED / SUPERSEDED]
+
+> **[!NOTE] ARCHIVED EARLY OUTLINE**: This file records the initial pre-redesign outline and contains superseded hypotheses (200 Hz PWM, velocity-based braking, Micro-Yaw compensation, active short-range ILC).  
+> **For the current, verified, submission-ready paper structure, ground-truth numbers, and Overleaf LaTeX engineering package, always refer to [`paper/README.md`](README.md), [`paper/manuscript.md`](manuscript.md), and [`paper/latex/main.tex`](latex/main.tex).**
+
+---
+
+# (Original Draft Below)
 
 > **目标期刊**：*IEEE Transactions on Instrumentation and Measurement (IEEE TIM)* 或 *IEEE/ASME Transactions on Mechatronics (T-MECH)*
 > **论文题目（Title）**：

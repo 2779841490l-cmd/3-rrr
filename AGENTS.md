@@ -78,3 +78,21 @@
 > 3. **不达标死磕到底铁律（Iterative Hardware Tuning Loop）**：
 >    - 只要 `verify_hardware_kpi.py` 退出码不为 `0`（输出 `[KPI GATE FAILED]`），`Gemini 3.8 Flash` **必须自动分析日志中哪个方向或哪一发超差**（例如检查 `-X` 反向齿隙偏置 `b_offset_x`、正负向不对称增益、早刹时间 `t_brake` 或闭环微调时机），修改 `ballistic_controller.py` 后立即重跑 `verify_hardware_kpi.py`，循环死磕直到 `[ALL HARDWARE KPI GATES PASSED]` 为止！
 >    - **唯有 `verify_hardware_kpi.py` 100% 通过后**，才允许运行 `run_paper_experiments.py` 和 `plot_paper_figures.py` 更新最终论文数据。
+
+---
+
+## 五、 论文资产与黄金基线快照（Paper Assets & Frozen Baseline Master Map）
+
+> **跨会话快速检索协议**：一旦用户提及“论文 / 投稿 / Overleaf / LaTeX / 审稿回复 / 实验数据”，Agent 必须直接读取 `paper/README.md` 即可掌握全部事实，严禁复原早期已证伪假设。
+
+1. **封板代码与实机黄金基线（Frozen at commit `45ea2aa`，禁止修改）**
+   - 封板文件：`rect_manifold_calibrator.py`、`servo_driver.py`、`firmware_ws63/servo_test.c`、`verify_hardware_kpi.py`、`calib_rect_manifold.json`、`experiments/*.csv`。
+   - **已确立核心架构（In-Flight Optical-Feedback Optimal-Time Ballistic Control, IF-OPB）**：
+     - 硬件与固件：`100 Hz` 载波周期（$T_{\text{pwm}} = 10000\ \mu\text{s}$）+ $T_{\text{low,min}} = 4500\ \mu\text{s}$ 电容恢复保护 + `0.1 µs` TCXO 定时 + 原子多相发包 + 短臂 $Y$ 连杆降敏 $-49.6\%$（$4.332 \to 2.182\ \text{cnt}/\mu\text{s}$）+ $u_{y1}+u_{y2}=3000\ \mu\text{s}$；
+     - 控制律：Active Sandwich Preload（$4\text{--}20\ \mu\text{s}$）$\to$ Stage-1 纯位置时间门限截断（$p_\parallel \ge r_{\text{cut}} L$ 且 $t \ge t_{\min} \in \{36, 52\}\ \text{ms}$）$\to$ 短程 $L \le 70$ 冻结跨发 ILC $\to$ Stage-2 笛卡尔符号防反向（$e_i \cdot (p_{\text{target},i} - p_{\text{start},i}) \le 0$ 钳位）与 $B\to\text{eq}$ 回撤 $Y$ 轴锁。
+     - **严禁误恢复的早期证伪设计**：200 Hz PWM、Micro-Yaw 差模补偿、$6\ \text{ms}$ 光学速度微分切换、$L \le 70$ 跨发 ILC。
+
+2. **终稿交付物与核心实测指标（commit `be8b8b2`）**
+   - 作者与单位：`Qiuhan Liu`，`School of Mechanical and Electronic Engineering, Wuhan University of Technology, Wuhan 430070, China`。
+   - 文档与源码：`paper/README.md`（总索引）、`paper/manuscript.md`（去 AI 精修洁净稿）、`paper/references.bib`（15 篇实查 BibTeX）、`paper/latex/main.tex`（`IEEEtran` 双栏工程）、`paper/paper_overleaf_submission.zip`（Overleaf 一键包；仅待作者上传 `fig0_hardware_photo.jpg` 替换 Fig. 1 占位框）。
+   - 核心指标：Protocol I `(30, 20)` 12 发 Last-5 Trim-4 Mean **$1.83\ \text{cnt}$ ($14.5\ \mu\text{m}$)**；Protocol II 6 方向 30 发 Trim-3 Mean **$2.39\ \text{cnt}$ ($19.0\ \mu\text{m}$)**、$t_{\text{bal}} = 83.6\ \text{ms}$、$t_{\text{set}} = 98.2\ \text{ms}$（`5/6 PASS`）；较 PID（$101.04\ \text{cnt}$ / $1244.9\ \text{ms}$）误差降 **$97.63\%$**、提速 **$12.68\times$**。
