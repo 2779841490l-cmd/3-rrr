@@ -1,9 +1,9 @@
 {
-  "timestamp": "2026-11-14T21:17:23",
-  "session_duration_s": 9.26,
+  "timestamp": "2026-11-14T21:49:22",
+  "session_duration_s": 10.03,
   "roi_backend": "gdi_bitblt",
-  "measured_roi_fps": 144.6,
-  "decision_p95_ms": 0.1778,
+  "measured_roi_fps": 144.3,
+  "decision_p95_ms": 0.1879,
   "safe_envelope_cnt": 85.0,
   "cooldown_lock_ms": 85.0,
   "controller_params": {
@@ -25,73 +25,56 @@
   "mounting_angle_deg": 0.0,
   "f8_calibrations": [
     {
-      "elapsed_s": 1.589,
-      "p_u1_pos": [
-        30.0,
-        -15.0
+      "elapsed_s": 2.5661524000024656,
+      "visual_calib_source": "PINHOLE_FALLBACK",
+      "du_x_px": [
+        0.0,
+        0.0
       ],
-      "p_u1_neg": [
-        -31.0,
-        -23.0
+      "du_y_px": [
+        0.0,
+        0.0
       ],
-      "p_u2_pos": [
-        -23.0,
-        -45.0
-      ],
-      "p_u2_neg": [
-        25.0,
-        33.0
-      ],
-      "J_emp": [
+      "resp_x": 1.0,
+      "resp_y": 1.0,
+      "J_s2w": [
         [
-          2.0215,
-          -1.1438
+          0.0,
+          0.0
         ],
         [
-          0.2651,
-          -1.8588
+          0.0,
+          0.0
         ]
       ],
-      "J_stage": [
+      "J_screen_to_stage": [
         [
-          2.0221,
-          -1.6765
+          -4.019,
+          0.0
         ],
         [
-          -0.2419,
-          -1.3936
-        ]
-      ],
-      "K_stage": [
-        [
-          0.43231,
-          -0.52007
-        ],
-        [
-          -0.07504,
-          -0.62729
+          0.0,
+          -4.019
         ]
       ],
       "mounting_angle_deg": 0.0,
-      "recon_error_pct": 1.71,
-      "recon_ref_error_pct": 1.71,
-      "inv_consistency": 8.171257169510635e-17,
       "pass_time": true,
-      "pass_recon": true
+      "pass_recon": true,
+      "recon_error_pct": 1.7
     }
   ],
   "overall_summary": {
     "total_shots": 6,
-    "mean_e_actual_cnt": 11.71,
+    "mean_e_actual_cnt": 10.454,
     "mean_e_hand_cnt": 27.225,
-    "mean_delta_e_cnt": 15.514,
-    "head_hit_rate": 0.5,
-    "effective_hit_rate": 0.5,
-    "whiff_rate": 0.5,
+    "mean_delta_e_cnt": 16.771,
+    "head_hit_rate": 0.6667,
+    "effective_hit_rate": 0.6667,
+    "whiff_rate": 0.3333,
     "conflict_rate": 0.0,
     "saturation_count": 0,
     "saturation_rate": 0.0,
-    "max_stage_disp_cnt": 33.0,
+    "max_stage_disp_cnt": 39.0,
     "fault_counts": {
       "FAULT_LAG": 0,
       "FAULT_CONFLICT": 0,
@@ -103,11 +86,11 @@
   "mode_comparison": {
     "ASSIST_ON": {
       "total_shots": 4,
-      "head_hit_rate": 0.75,
-      "effective_hit_rate": 0.75,
+      "head_hit_rate": 1.0,
+      "effective_hit_rate": 1.0,
       "mean_e_hand_cnt": 29.835,
-      "mean_e_actual_cnt": 6.563,
-      "mean_delta_e_cnt": 23.271,
+      "mean_e_actual_cnt": 4.678,
+      "mean_delta_e_cnt": 25.157,
       "conflict_rate": 0.0
     },
     "SHADOW_REFEREE_ONLY": {
@@ -123,71 +106,71 @@
   "shots": [
     {
       "shot_idx": 1,
-      "t_s": 3.722,
+      "t_s": 4.683,
       "mode": "ASSIST_ON",
       "state": "COUNTER_STRAFE",
       "hitbox": "HEAD_HIT",
       "anchor_mode": "HEAD",
       "e_hand_cnt": 24.382,
-      "e_actual_cnt": 3.453,
-      "delta_e_cnt": 20.929,
+      "e_actual_cnt": 4.023,
+      "delta_e_cnt": 20.359,
       "stage_pos_cnt": [
-        25.0,
+        26.0,
         -10.0
       ],
       "faults": []
     },
     {
       "shot_idx": 2,
-      "t_s": 4.544,
+      "t_s": 5.531,
       "mode": "ASSIST_ON",
       "state": "COUNTER_STRAFE",
-      "hitbox": "WHIFF",
+      "hitbox": "HEAD_HIT",
       "anchor_mode": "HEAD",
       "e_hand_cnt": 31.918,
-      "e_actual_cnt": 10.961,
-      "delta_e_cnt": 20.957,
+      "e_actual_cnt": 8.675,
+      "delta_e_cnt": 23.243,
       "stage_pos_cnt": [
-        -30.0,
-        -1.0
+        -39.0,
+        10.0
       ],
       "faults": []
     },
     {
       "shot_idx": 3,
-      "t_s": 5.264,
+      "t_s": 6.179,
       "mode": "ASSIST_ON",
       "state": "SPRAY_TRANSFER",
       "hitbox": "HEAD_HIT",
       "anchor_mode": "HEAD",
       "e_hand_cnt": 34.482,
-      "e_actual_cnt": 4.336,
-      "delta_e_cnt": 30.146,
+      "e_actual_cnt": 2.362,
+      "delta_e_cnt": 32.12,
       "stage_pos_cnt": [
-        33.0,
-        13.0
+        28.0,
+        16.0
       ],
       "faults": []
     },
     {
       "shot_idx": 4,
-      "t_s": 6.204,
+      "t_s": 6.971,
       "mode": "ASSIST_ON",
       "state": "SPRAY_TRANSFER",
       "hitbox": "HEAD_HIT",
       "anchor_mode": "HEAD",
       "e_hand_cnt": 28.557,
-      "e_actual_cnt": 7.503,
-      "delta_e_cnt": 21.054,
+      "e_actual_cnt": 3.653,
+      "delta_e_cnt": 24.904,
       "stage_pos_cnt": [
-        -16.0,
+        -20.0,
         -15.0
       ],
       "faults": []
     },
     {
       "shot_idx": 5,
-      "t_s": 6.4,
+      "t_s": 7.164,
       "mode": "SHADOW_REFEREE_ONLY",
       "state": "COUNTER_STRAFE",
       "hitbox": "WHIFF",
@@ -203,7 +186,7 @@
     },
     {
       "shot_idx": 6,
-      "t_s": 6.405,
+      "t_s": 7.169,
       "mode": "SHADOW_REFEREE_ONLY",
       "state": "COUNTER_STRAFE",
       "hitbox": "WHIFF",

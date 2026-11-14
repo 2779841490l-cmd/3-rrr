@@ -38,6 +38,9 @@ class TargetDetection:
     vel_px_s: np.ndarray = field(default_factory=lambda: np.zeros(2, dtype=float))
     head_pred_px: Optional[np.ndarray] = None
     chest_pred_px: Optional[np.ndarray] = None
+    head_bbox_px: Optional[Tuple[float, float, float, float]] = None
+    chest_bbox_px: Optional[Tuple[float, float, float, float]] = None
+    seen_frames: int = 1
 
 
 class ConstantVelocityKF:
@@ -231,8 +234,10 @@ class VisionROITracker:
         roi_size: int = 256,
         onnx_model_path: Optional[str] = None,
         yolo_model_path: Optional[str] = None,
-        yolo_conf: float = 0.35,
+        yolo_conf: float = 0.48,
         yolo_imgsz: int = 256,
+        max_box_w: float = 90.0,
+        max_box_h: float = 140.0,
         synthetic_only: bool = False,
     ):
         self.screen_w = int(screen_w)
@@ -241,6 +246,8 @@ class VisionROITracker:
         self.synthetic_only = bool(synthetic_only)
         self.yolo_conf = float(yolo_conf)
         self.yolo_imgsz = int(yolo_imgsz)
+        self.max_box_w = float(max_box_w)
+        self.max_box_h = float(max_box_h)
         self.backend_name = "synthetic"
         self.detector_backend = "synthetic_blobs" if self.synthetic_only else "none"
         self._dxcam = None
@@ -253,6 +260,7 @@ class VisionROITracker:
 
         self.crosshair_tracker = DynamicCrosshairTracker(roi_size=roi_size)
         self.target_kfs: Dict[int, ConstantVelocityKF] = {}
+        self.track_hits: Dict[int, int] = {}
         self.last_capture_ms = 0.0
         self.last_infer_ms = 0.0
 
@@ -363,15 +371,30 @@ class VisionROITracker:
         heads = []
         chests = []
         for b, conf, cls_id in zip(xyxy, confs, clss):
+            c_val = float(conf)
+            if c_val < self.yolo_conf:
+                continue
             x1, y1, x2, y2 = [float(v) for v in b]
             w = max(2.0, x2 - x1)
             h = max(2.0, y2 - y1)
-            cx = 0.5 * (x1 + x2)
-            cy = 0.5 * (y1 + y2)
+            # Filter out weapon viewmodels, walls, and malformed aspect ratios
+            if w > self.max_box_w or h > self.max_box_h:
+                continue
+            if w < 5.0 or h < 5.0:
+                continue
+            ar = w / h
             if cls_id == 0:
-                heads.append((cx, cy, w, h, float(conf)))
+                if ar > 2.6 or (1.0 / ar) > 2.6:
+                    continue
+                cx = 0.5 * (x1 + x2)
+                cy = 0.5 * (y1 + y2)
+                heads.append((cx, cy, w, h, c_val, (x1, y1, x2, y2)))
             elif cls_id == 1:
-                chests.append((cx, cy, w, h, float(conf)))
+                if w < 8.0 or h < 10.0 or ar > 2.8 or (1.0 / ar) > 3.2:
+                    continue
+                cx = 0.5 * (x1 + x2)
+                cy = 0.5 * (y1 + y2)
+                chests.append((cx, cy, w, h, c_val, (x1, y1, x2, y2)))
 
         detections: List[TargetDetection] = []
         used_ids = set()
@@ -379,13 +402,13 @@ class VisionROITracker:
 
         # Pair each detected head with its best matching chest box underneath
         heads.sort(key=lambda item: item[4], reverse=True)
-        for hx, hy, hw, hh, hconf in heads:
+        for hx, hy, hw, hh, hconf, hbox in heads:
             h_radius = max(4.0, 0.5 * min(hw, hh))
             head_xy = np.array([hx, hy], dtype=float)
 
             best_ci = -1
             best_score = 1e9
-            for ci, (cx, cy, cw, ch, _) in enumerate(chests):
+            for ci, (cx, cy, cw, ch, _, _) in enumerate(chests):
                 if ci in used_chests:
                     continue
                 if abs(cx - hx) <= max(24.0, 1.2 * cw) and -4.0 <= (cy - hy) <= max(70.0, 2.5 * ch):
@@ -396,12 +419,13 @@ class VisionROITracker:
 
             if best_ci >= 0:
                 used_chests.add(best_ci)
-                cx, cy, cw, ch, _ = chests[best_ci]
+                cx, cy, cw, ch, _, cbox = chests[best_ci]
                 chest_xy = np.array([cx, cy], dtype=float)
                 c_radius = max(8.0, 0.5 * min(cw, ch))
             else:
                 chest_xy = head_xy + np.array([0.0, max(12.0, 2.2 * h_radius)], dtype=float)
                 c_radius = max(10.0, 1.8 * h_radius)
+                cbox = None
 
             tid = self._assign_track_id(head_xy, used_ids)
             used_ids.add(tid)
@@ -413,13 +437,17 @@ class VisionROITracker:
                     chest_px=chest_xy,
                     chest_radius_px=c_radius,
                     confidence=hconf,
+                    head_bbox_px=hbox,
+                    chest_bbox_px=cbox,
                 )
             )
 
-        # Fallback if only torso/chest is visible (infer head position above chest)
+        # Fallback if only high-confidence torso/chest is visible (infer head position above chest)
         if not detections and chests:
             chests.sort(key=lambda item: item[4], reverse=True)
-            for cx, cy, cw, ch, cconf in chests:
+            for cx, cy, cw, ch, cconf, cbox in chests:
+                if cconf < max(0.55, self.yolo_conf):
+                    continue
                 c_radius = max(8.0, 0.5 * min(cw, ch))
                 chest_xy = np.array([cx, cy], dtype=float)
                 head_xy = np.array([cx, max(2.0, cy - 0.55 * ch)], dtype=float)
@@ -434,6 +462,7 @@ class VisionROITracker:
                         chest_px=chest_xy,
                         chest_radius_px=c_radius,
                         confidence=0.8 * cconf,
+                        chest_bbox_px=cbox,
                     )
                 )
 
@@ -495,11 +524,17 @@ class VisionROITracker:
             det.vel_px_s = vel
             det.head_pred_px = pos + float(k_lead_s) * vel
             det.chest_pred_px = det.chest_px + float(k_lead_s) * vel
+            self.track_hits[tid] = self.track_hits.get(tid, 0) + 1
+            det.seen_frames = self.track_hits[tid]
 
-        # Prune stale tracks only if absent
-        stale = [tid for tid in self.target_kfs if tid not in active_ids and len(active_ids) > 0]
-        for tid in stale:
-            self.target_kfs[tid].step(None, dt_s=dt_s)
+        # Decay missing tracks immediately so consecutive-frame gate strictly enforces continuous visibility
+        missing = [tid for tid in list(self.target_kfs.keys()) if tid not in active_ids]
+        for tid in missing:
+            self.track_hits.pop(tid, None)
+            if len(active_ids) > 0:
+                self.target_kfs[tid].step(None, dt_s=dt_s)
+            else:
+                self.target_kfs.pop(tid, None)
 
         self.last_infer_ms = (time.perf_counter() - t0) * 1000.0
         return detections
@@ -537,6 +572,7 @@ class VisionROITracker:
 
     def reset_filters(self) -> None:
         self.target_kfs.clear()
+        self.track_hits.clear()
         c0 = 0.5 * self.roi_size
         self.crosshair_tracker.kf = ConstantVelocityKF(x0=c0, y0=c0, q_acc=20000.0, r_pos=0.4)
 

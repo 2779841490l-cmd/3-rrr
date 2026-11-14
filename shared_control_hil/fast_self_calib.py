@@ -66,6 +66,13 @@ class FastSelfCalibrator:
         self.J_stage = np.array(kin["J_stage"], dtype=float)
         self.K_stage = np.array(kin["K_stage"], dtype=float)
         self.mounting_angle_deg = float(kin.get("mounting_angle_deg", 0.0))
+        deg_per_px_nom = 2.0 * math.degrees(math.atan2(1.0, self.f_x)) * 0.5
+        cpp_nom = deg_per_px_nom / max(1e-6, self.m_yaw * self.s_game)
+        self.J_screen_to_stage = np.array(
+            kin.get("J_screen_to_stage", [[-cpp_nom, 0.0], [0.0, -cpp_nom]]),
+            dtype=float,
+        )
+        self.visual_calib_source = str(kin.get("visual_calib_source", "PINHOLE_FALLBACK"))
 
         # RLS covariance matrices for independent X and Y scale factors alpha_x, alpha_y
         self._rls_P = np.array([10.0, 10.0], dtype=float)
@@ -85,6 +92,8 @@ class FastSelfCalibrator:
         self.config["stage_kinematics"]["J_stage"] = np.round(self.J_stage, 6).tolist()
         self.config["stage_kinematics"]["K_stage"] = np.round(self.K_stage, 6).tolist()
         self.config["stage_kinematics"]["mounting_angle_deg"] = round(float(self.mounting_angle_deg), 4)
+        self.config["stage_kinematics"]["J_screen_to_stage"] = np.round(self.J_screen_to_stage, 6).tolist()
+        self.config["stage_kinematics"]["visual_calib_source"] = self.visual_calib_source
         with open(self.config_path, "w", encoding="utf-8") as f:
             json.dump(self.config, f, indent=2, ensure_ascii=False)
 
@@ -142,6 +151,150 @@ class FastSelfCalibrator:
         return corrective mouse pull displacement in 3200 DPI counts (dy > 0 = move mouse DOWN).
         """
         return -self.sensor_to_screen_polarity * self.pixel_to_counts(du_px, dv_px)
+
+    def aim_error_to_stage_delta(self, ex_px: float, ey_px: float) -> np.ndarray:
+        """
+        Map enemy residual relative to live recoil crosshair e_px = h(t) - c(t)
+        into incremental manifold stage command dp_stage via J_screen_to_stage:
+            dp_stage = -J_screen_to_stage @ (h(t) - c(t))
+        When the stage shifts world/enemy h(t) toward c(t), e_px -> 0 (true closed loop).
+        """
+        return -(self.J_screen_to_stage @ np.array([float(ex_px), float(ey_px)], dtype=float))
+
+    def recoil_offset_to_stage_abs(self, cx_off_px: float, cy_off_px: float) -> np.ndarray:
+        """
+        1:1 P-only absolute positional mapping for pure follow-recoil spray (NO integration):
+            p_stage_cmd(t) = J_screen_to_stage @ (c(t) - u0)
+        Moving the mouse moves the world, NOT c(t) - u0, so c(t) - u0 must map 1:1 directly
+        to absolute stage coordinates without cross-frame accumulation.
+        """
+        return self.J_screen_to_stage @ np.array([float(cx_off_px), float(cy_off_px)], dtype=float)
+
+    @staticmethod
+    def _compute_phase_shift_px(img0_rgb: np.ndarray, img1_rgb: np.ndarray) -> Tuple[Tuple[float, float], float]:
+        """Compute background optical flow shift (du_px, dv_px) from img0 to img1 using Hann-windowed phaseCorrelate."""
+        import cv2
+
+        def _prep(rgb: np.ndarray) -> np.ndarray:
+            g = (
+                0.299 * rgb[:, :, 0].astype(np.float32)
+                + 0.587 * rgb[:, :, 1].astype(np.float32)
+                + 0.114 * rgb[:, :, 2].astype(np.float32)
+            )
+            h, w = g.shape
+            cy, cx = h // 2, w // 2
+            # Mask static center crosshair area (36x36) with surrounding background median so it doesn't anchor flow
+            bg_med = float(np.median(g))
+            g[max(0, cy - 18) : min(h, cy + 18), max(0, cx - 18) : min(w, cx + 18)] = bg_med
+            g -= float(np.mean(g))
+            win = cv2.createHanningWindow((w, h), cv2.CV_32F)
+            return g * win
+
+        g0 = _prep(img0_rgb)
+        g1 = _prep(img1_rgb)
+        shift, resp = cv2.phaseCorrelate(g0, g1)
+        return (float(shift[0]), float(shift[1])), float(resp)
+
+    def run_visual_flow_calib(
+        self,
+        grab_roi_fn,
+        step_counts: float = 60.0,
+        settle_s: float = 0.12,
+    ) -> Dict:
+        """
+        Direct CS2 screen-space optical-flow calibration (F8 inside game):
+          1) Anchor manifold at (0, 0), capture img_0x
+          2) Drive manifold to (+step, 0) via evaluate_pulse, wait settle_s, capture img_x; return (0, 0)
+          3) Capture img_0y, drive manifold to (0, +step), wait settle_s, capture img_y; return (0, 0)
+          4) Measure world pixel shifts du_x, du_y via cv2.phaseCorrelate -> invert to J_screen_to_stage.
+        Falls back cleanly to pinhole prior if screen world did not shift (e.g. Windows desktop self-test).
+        """
+        trainer = self.ensure_trainer()
+        manifold = trainer.manifold
+        driver = trainer.driver
+        t0 = time.perf_counter()
+
+        def _drive_man(xm: float, ym: float, hint: Tuple[float, float], wait_s: float) -> None:
+            u1, u2 = manifold.evaluate_pulse(float(xm), float(ym), dir_hint=hint)
+            driver.send_raw_pulses(u1, u2)
+            time.sleep(wait_s)
+
+        # Backlash-free anchor at (0, 0)
+        _drive_man(-22.0, -22.0, (-1.0, -1.0), 0.11)
+        _drive_man(0.0, 0.0, (1.0, 1.0), 0.14)
+        img_0x = grab_roi_fn()
+
+        # Probe +X stage step
+        _drive_man(step_counts, 0.0, (1.0, 0.0), settle_s)
+        img_x = grab_roi_fn()
+        _drive_man(0.0, 0.0, (-1.0, 0.0), settle_s)
+
+        # Anchor before +Y step
+        _drive_man(0.0, -18.0, (0.0, -1.0), 0.09)
+        _drive_man(0.0, 0.0, (0.0, 1.0), settle_s)
+        img_0y = grab_roi_fn()
+
+        # Probe +Y stage step
+        _drive_man(0.0, step_counts, (0.0, 1.0), settle_s)
+        img_y = grab_roi_fn()
+        _drive_man(0.0, 0.0, (0.0, -1.0), settle_s)
+
+        du_x, resp_x = self._compute_phase_shift_px(img_0x, img_x)
+        du_y, resp_y = self._compute_phase_shift_px(img_0y, img_y)
+        mag_x = float(math.hypot(du_x[0], du_x[1]))
+        mag_y = float(math.hypot(du_y[0], du_y[1]))
+
+        J_s2w = np.array(
+            [
+                [du_x[0] / step_counts, du_y[0] / step_counts],
+                [du_x[1] / step_counts, du_y[1] / step_counts],
+            ],
+            dtype=float,
+        )
+        det_j = float(np.linalg.det(J_s2w))
+        cond_ok = False
+        if mag_x >= 2.0 and mag_y >= 2.0 and mag_x <= 120.0 and mag_y <= 120.0 and abs(det_j) > 1e-4:
+            # Check axes are reasonably orthogonal (|cos theta| < 0.65)
+            dot = abs((du_x[0] * du_y[0] + du_x[1] * du_y[1]) / (mag_x * mag_y))
+            cond_ok = dot < 0.65
+
+        if cond_ok:
+            J_inv = np.linalg.inv(J_s2w)
+            # Sanity clamp eigenvalues against outlier flow spikes
+            norm_inv = float(np.linalg.norm(J_inv, ord=2))
+            if norm_inv <= 25.0:
+                self.J_screen_to_stage = J_inv
+                self.visual_calib_source = "OPTICAL_FLOW"
+                self.mounting_angle_deg = float(math.degrees(math.atan2(-J_s2w[1, 0], -J_s2w[0, 0])))
+            else:
+                cond_ok = False
+
+        if not cond_ok:
+            # Fallback for non-game desktop / --self-test: retain sensor-based pinhole matrix
+            sensor_res = self.run_online_self_calib()
+            deg_per_px = math.degrees(math.atan2(1.0, self.f_x))
+            cpp = deg_per_px / max(1e-6, self.m_yaw * self.s_game)
+            self.J_screen_to_stage = np.array([[-cpp, 0.0], [0.0, -cpp]], dtype=float)
+            self.visual_calib_source = "PINHOLE_FALLBACK"
+        else:
+            sensor_res = {"pass_time": True, "pass_recon": True, "recon_error_pct": 0.0}
+
+        elapsed_s = time.perf_counter() - t0
+        self.save_config()
+        return {
+            "elapsed_s": float(elapsed_s),
+            "visual_calib_source": self.visual_calib_source,
+            "du_x_px": [round(du_x[0], 2), round(du_x[1], 2)],
+            "du_y_px": [round(du_y[0], 2), round(du_y[1], 2)],
+            "resp_x": round(resp_x, 3),
+            "resp_y": round(resp_y, 3),
+            "J_s2w": np.round(J_s2w, 5).tolist(),
+            "J_screen_to_stage": np.round(self.J_screen_to_stage, 4).tolist(),
+            "mounting_angle_deg": float(self.mounting_angle_deg),
+            "pass_time": bool(sensor_res.get("pass_time", True)),
+            "pass_recon": bool(sensor_res.get("pass_recon", True)),
+            "recon_error_pct": float(sensor_res.get("recon_error_pct", 0.0)),
+        }
 
     def rls_update_scale(self, delta_c_px: np.ndarray, delta_p_stage_cnt: np.ndarray) -> np.ndarray:
         """
