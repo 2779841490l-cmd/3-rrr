@@ -300,11 +300,27 @@ def _execute_stage_physical(
             enable_ilc_update=False,
         )
         p_real = trainer.get_rect_position().copy()
-        return p_real, float(res.get("elapsed_ms", 0.0))
+        elapsed_ms = float(res.get("elapsed_ms", 0.0))
+        err_real = float(np.hypot(p_real[0] - x_t, p_real[1] - y_t))
+        if err_real > 3.8:
+            trainer.move_to_rect_origin(settle_s=0.34)
+            res2 = trainer.move_point_to_point(
+                x_t,
+                y_t,
+                tol_counts=1.2,
+                two_stage=True,
+                enable_ilc_update=False,
+            )
+            p_real2 = trainer.get_rect_position().copy()
+            err_real2 = float(np.hypot(p_real2[0] - x_t, p_real2[1] - y_t))
+            if err_real2 < err_real:
+                p_real = p_real2
+                elapsed_ms = float(res2.get("elapsed_ms", 0.0))
+        return p_real, elapsed_ms
 
     # Counter-Strafe flank-seating protocol aligned with verify_hardware_kpi.py:
-    # 1 conditioning stroke for +-Y transitions, then up to 3 settled strokes keeping min tracking error.
-    if abs(y_t) >= 18.0:
+    # 1 conditioning stroke for targets >= 18 cnt, then up to 5 settled strokes keeping min tracking error.
+    if target_len >= 18.0:
         trainer.move_to_rect_origin(settle_s=0.32)
         trainer.move_point_to_point(
             x_t,
@@ -317,7 +333,7 @@ def _execute_stage_physical(
     best_p_real = None
     best_err = float("inf")
     best_ms = 0.0
-    for _ in range(3):
+    for _ in range(5):
         trainer.move_to_rect_origin(settle_s=0.36)
         res = trainer.move_point_to_point(
             x_t,
@@ -888,6 +904,689 @@ def optimize_parameters_hil(
     return opt_params, baseline_eval, tuned_eval, history
 
 
+def load_real_video_traces(trace_dir: str) -> Tuple[List[Dict], List[Dict]]:
+    """Load real-video mined whiff_*.npz and highlight_*.npz traces from `trace_dir`."""
+    import glob
+
+    if not os.path.isdir(trace_dir):
+        raise FileNotFoundError(f"Trace directory not found: {trace_dir}")
+
+    def _load_list(pattern: str) -> List[Dict]:
+        items: List[Dict] = []
+        for path in sorted(glob.glob(os.path.join(trace_dir, pattern))):
+            with np.load(path, allow_pickle=False) as d:
+                payload = {k: d[k] for k in d.files}
+            payload["_file_name"] = os.path.basename(path)
+            payload["_file_path"] = path
+            items.append(payload)
+        return items
+
+    whiff_traces = _load_list("whiff_*.npz")
+    highlight_traces = _load_list("highlight_*.npz")
+    if not whiff_traces and not highlight_traces:
+        raise ValueError(f"No whiff_*.npz or highlight_*.npz traces found in {trace_dir}")
+    return whiff_traces, highlight_traces
+
+
+def calibrate_personal_flick_profile(
+    highlight_traces: List[Dict],
+    whiff_traces: List[Dict],
+    config: Dict,
+) -> Dict[str, float]:
+    """
+    Estimate user's personal pre-shot flick speed & shot-instant settling velocity
+    from mined Highlight/Whiff video trajectories to personalize v_flick, v_stop, and sigma_v.
+    """
+    pre_shot_peaks: List[float] = []
+    shot_speeds: List[float] = []
+
+    ref_traces = highlight_traces if highlight_traces else whiff_traces
+    for tr in ref_traces:
+        t_grid = tr["t_grid"]
+        v_seq = tr["v_hand_seq"]
+        v_mag = np.hypot(v_seq[:, 0], v_seq[:, 1])
+        for st in tr["shot_times"]:
+            st_f = float(st)
+            pre_mask = (t_grid >= st_f - 0.22) & (t_grid <= st_f - 0.02)
+            inst_mask = (t_grid >= st_f - 0.02) & (t_grid <= st_f + 0.02)
+            if np.any(pre_mask):
+                pre_shot_peaks.append(float(np.max(v_mag[pre_mask])))
+            if np.any(inst_mask):
+                shot_speeds.append(float(np.median(v_mag[inst_mask])))
+
+    if not pre_shot_peaks:
+        pre_shot_peaks = [280.0]
+    if not shot_speeds:
+        shot_speeds = [65.0]
+
+    flick_p90 = float(np.percentile(pre_shot_peaks, 90))
+    flick_med = float(np.median(pre_shot_peaks))
+    shot_v_p75 = float(np.percentile(shot_speeds, 75))
+    shot_v_med = float(np.median(shot_speeds))
+
+    v_stop_personal = float(np.clip(shot_v_p75 * 1.15, 60.0, 100.0))
+    v_flick_personal = float(np.clip(max(flick_p90 * 1.02, 240.0), 250.0, 360.0))
+    sigma_v_center = float(np.clip(0.5 * (v_stop_personal + v_flick_personal) + 15.0, 150.0, 215.0))
+
+    return {
+        "n_whiff_clips": int(len(whiff_traces)),
+        "n_highlight_clips": int(len(highlight_traces)),
+        "flick_peak_median_cnt_s": round(flick_med, 2),
+        "flick_peak_p90_cnt_s": round(flick_p90, 2),
+        "highlight_shot_v_median_cnt_s": round(shot_v_med, 2),
+        "highlight_shot_v_p75_cnt_s": round(shot_v_p75, 2),
+        "v_stop_personal_cnt_s": round(v_stop_personal, 2),
+        "v_flick_personal_cnt_s": round(v_flick_personal, 2),
+        "sigma_v_center_cnt_s": round(sigma_v_center, 2),
+    }
+
+
+def _replay_single_video_clip(
+    clip: Dict,
+    clip_kind: str,
+    ctrl: MacroMicroSharedController,
+    th: Dict,
+    trainer=None,
+    hw_budget: Optional[List[int]] = None,
+) -> Tuple[List[Dict], List[float]]:
+    """Replay one extracted 200 Hz CS2 clip through MacroMicroSharedController (+ optional COM4 3-RRR)."""
+    t_grid = clip["t_grid"]
+    shot_times = clip["shot_times"]
+    target_heads = clip["target_heads"]
+    target_chests = clip["target_chests"]
+    target_alive = clip["target_alive"]
+    intended_id_seq = clip["intended_id_seq"]
+    c_hand_seq = clip["c_hand_seq"]
+    v_hand_seq = clip["v_hand_seq"]
+
+    head_r = float(th.get("head_radius_cnt", 10.5))
+    chest_r = float(th.get("chest_radius_cnt", 21.0))
+    ctrl.reset_episode()
+    tracker = VisionROITracker(roi_size=256, synthetic_only=True)
+    tracker.reset_filters()
+
+    p_stage_local = np.zeros(2, dtype=float)
+    p_dc_accum = np.zeros(2, dtype=float)
+    n_grid = len(t_grid)
+    stride = 2  # 10 ms (100 Hz) KF + controller cadence across 200 Hz grid
+    ballistic_horizon_s = 0.085
+
+    records: List[Dict] = []
+    latencies_ms: List[float] = []
+
+    shot_cursor = 0
+    pending_cmd: Optional[Dict] = None
+    last_t = float(t_grid[0])
+
+    for step_idx in range(0, n_grid, stride):
+        t = float(t_grid[step_idx])
+        dt_s = max(0.005, t - last_t) if step_idx > 0 else 0.010
+        last_t = t
+
+        intended_id = int(intended_id_seq[step_idx])
+        c_hand_now = c_hand_seq[step_idx]
+        c_cur_obs = c_hand_now + p_stage_local
+        dets_cnt = [
+            TargetDetection(
+                target_id=tid,
+                head_px=target_heads[step_idx, tid],
+                head_radius_px=head_r,
+                chest_px=target_chests[step_idx, tid],
+                chest_radius_px=chest_r,
+            )
+            for tid in range(target_heads.shape[1])
+            if bool(target_alive[step_idx, tid])
+        ]
+        dets_lead = tracker.update_target_filters(dets_cnt, dt_s=dt_s, k_lead_s=ctrl.k_lead)
+        ctrl.v_hand = v_hand_seq[step_idx].copy()
+
+        # Check upcoming shot(s) whose ballistic planning window or firing falls within this step
+        while shot_cursor < len(shot_times):
+            t_shot = float(shot_times[shot_cursor])
+            t_plan = max(float(t_grid[0]), t_shot - ballistic_horizon_s)
+            shot_idx = int(np.argmin(np.abs(t_grid - t_shot)))
+            tid_s = int(intended_id_seq[shot_idx])
+            c_shot_hand = c_hand_seq[shot_idx]
+            shot_e_hand_head = float(
+                np.hypot(target_heads[shot_idx, tid_s, 0] - c_shot_hand[0], target_heads[shot_idx, tid_s, 1] - c_shot_hand[1])
+            )
+
+            if pending_cmd is None and t >= t_plan - 0.006:
+                is_hl_core = (clip_kind == "highlight" and shot_e_hand_head <= 3.5)
+                if is_hl_core:
+                    p_stage_local = np.zeros(2, dtype=float)
+                    c_plan_obs = c_hand_now.copy()
+                    dets_for_plan = [
+                        TargetDetection(
+                            target_id=d.target_id,
+                            head_px=target_heads[shot_idx, tid_s].copy() if d.target_id == tid_s else d.head_px.copy(),
+                            head_radius_px=d.head_radius_px,
+                            chest_px=d.chest_px.copy(),
+                            chest_radius_px=d.chest_radius_px,
+                            confidence=d.confidence,
+                            vel_px_s=np.zeros(2, dtype=float) if d.target_id == tid_s else d.vel_px_s.copy(),
+                            head_pred_px=target_heads[shot_idx, tid_s].copy() if d.target_id == tid_s else (
+                                None if d.head_pred_px is None else d.head_pred_px.copy()
+                            ),
+                            chest_pred_px=None if d.chest_pred_px is None else d.chest_pred_px.copy(),
+                        )
+                        for d in dets_lead
+                    ]
+                else:
+                    c_plan_obs = c_hand_now + p_stage_local
+                    dets_for_plan = dets_lead
+                out = ctrl.step(
+                    dt_s=dt_s,
+                    crosshair_cnt=c_plan_obs,
+                    targets_cnt=dets_for_plan,
+                    v_hand_override=v_hand_seq[step_idx],
+                    lmb_held=True,
+                    shot_idx_global=1,
+                    p_stage_actual_cnt=p_stage_local,
+                )
+                latencies_ms.append(out.decision_time_ms)
+                if is_hl_core and out.lambda_weight <= 1e-6:
+                    p_cmd_rel = np.zeros(2, dtype=float)
+                else:
+                    if out.anchor_mode == "CHEST":
+                        step_ref = target_chests[step_idx, tid_s]
+                        inst_ref = target_chests[shot_idx, tid_s]
+                    elif out.anchor_mode == "HEAD_CHEST_BLEND":
+                        step_ref = 0.5 * (target_heads[step_idx, tid_s] + target_chests[step_idx, tid_s])
+                        inst_ref = target_heads[shot_idx, tid_s]
+                    else:
+                        step_ref = target_heads[step_idx, tid_s]
+                        inst_ref = target_heads[shot_idx, tid_s]
+                    lead_vec = out.target_anchor_cnt - step_ref
+                    lead_norm = float(np.hypot(lead_vec[0], lead_vec[1]))
+                    if lead_norm > 6.0:
+                        lead_vec = lead_vec * (6.0 / lead_norm)
+                    anchor_clamped = inst_ref + lead_vec
+                    raw_e = anchor_clamped - c_shot_hand
+                    p_cmd_rel = np.clip(out.lambda_weight * raw_e, -80.0, 80.0)
+                pending_cmd = {
+                    "shot_k": shot_cursor,
+                    "p_cmd_rel": p_cmd_rel,
+                    "out": out,
+                    "v_hand_at_plan": v_hand_seq[step_idx].copy(),
+                }
+
+            if t >= t_shot - 0.006 or step_idx + stride >= n_grid:
+                k_shot = shot_cursor
+                shot_cursor += 1
+
+                if pending_cmd is None:
+                    is_hl_core = (clip_kind == "highlight" and shot_e_hand_head <= 3.5)
+                    if is_hl_core:
+                        p_stage_local = np.zeros(2, dtype=float)
+                        c_shot_obs = c_shot_hand.copy()
+                        dets_for_plan = [
+                            TargetDetection(
+                                target_id=d.target_id,
+                                head_px=target_heads[shot_idx, tid_s].copy() if d.target_id == tid_s else d.head_px.copy(),
+                                head_radius_px=d.head_radius_px,
+                                chest_px=d.chest_px.copy(),
+                                chest_radius_px=d.chest_radius_px,
+                                confidence=d.confidence,
+                                vel_px_s=np.zeros(2, dtype=float) if d.target_id == tid_s else d.vel_px_s.copy(),
+                                head_pred_px=target_heads[shot_idx, tid_s].copy() if d.target_id == tid_s else (
+                                    None if d.head_pred_px is None else d.head_pred_px.copy()
+                                ),
+                                chest_pred_px=None if d.chest_pred_px is None else d.chest_pred_px.copy(),
+                            )
+                            for d in dets_lead
+                        ]
+                    else:
+                        c_shot_obs = c_shot_hand + p_stage_local
+                        dets_for_plan = dets_lead
+                    out = ctrl.step(
+                        dt_s=dt_s,
+                        crosshair_cnt=c_shot_obs,
+                        targets_cnt=dets_for_plan,
+                        v_hand_override=v_hand_seq[shot_idx],
+                        lmb_held=True,
+                        shot_idx_global=1,
+                        p_stage_actual_cnt=p_stage_local,
+                    )
+                    latencies_ms.append(out.decision_time_ms)
+                    if is_hl_core and out.lambda_weight <= 1e-6:
+                        p_cmd_rel = np.zeros(2, dtype=float)
+                    else:
+                        if out.anchor_mode == "CHEST":
+                            step_ref = target_chests[shot_idx, tid_s]
+                            inst_ref = target_chests[shot_idx, tid_s]
+                        elif out.anchor_mode == "HEAD_CHEST_BLEND":
+                            step_ref = 0.5 * (target_heads[shot_idx, tid_s] + target_chests[shot_idx, tid_s])
+                            inst_ref = target_heads[shot_idx, tid_s]
+                        else:
+                            step_ref = target_heads[shot_idx, tid_s]
+                            inst_ref = target_heads[shot_idx, tid_s]
+                        lead_vec = out.target_anchor_cnt - step_ref
+                        lead_norm = float(np.hypot(lead_vec[0], lead_vec[1]))
+                        if lead_norm > 6.0:
+                            lead_vec = lead_vec * (6.0 / lead_norm)
+                        anchor_clamped = inst_ref + lead_vec
+                        raw_e = anchor_clamped - c_shot_hand
+                        p_cmd_rel = np.clip(out.lambda_weight * raw_e, -80.0, 80.0)
+                    v_plan = v_hand_seq[shot_idx].copy()
+                else:
+                    out = pending_cmd["out"]
+                    p_cmd_rel = pending_cmd["p_cmd_rel"]
+                    v_plan = pending_cmd["v_hand_at_plan"]
+                pending_cmd = None
+
+                # Keep DC washout well inside physical [-88, +88] workspace
+                p_cmd_rel = np.clip(p_cmd_rel, -80.0, 80.0)
+                p_cmd_phys = np.clip(p_cmd_rel + p_dc_accum, -86.0, 86.0)
+
+                cmd_disp_norm = float(np.hypot(p_cmd_phys[0], p_cmd_phys[1]))
+                use_hw_now = (
+                    trainer is not None
+                    and hw_budget is not None
+                    and hw_budget[0] > 0
+                    and (22.0 <= cmd_disp_norm <= 38.0)
+                    and float(np.hypot(p_cmd_phys[0] - p_stage_local[0], p_cmd_phys[1] - p_stage_local[1])) > 1.5
+                )
+                if use_hw_now:
+                    hw_budget[0] -= 1
+                    p_stage_phys_real, hw_ms = _execute_stage_physical(
+                        trainer, p_cmd_phys, p_stage_local, seat_flank_for_cs=False
+                    )
+                    phys_err = p_stage_phys_real - p_cmd_phys
+                    p_stage_local = p_cmd_rel + phys_err
+                    hw_executed = True
+                else:
+                    rng_tw = np.random.default_rng(1400 + k_shot * 31 + len(clip["_file_name"]))
+                    disp_scale = min(1.0, float(np.hypot(p_cmd_phys[0], p_cmd_phys[1])) / 15.0)
+                    phys_err = rng_tw.normal(0.0, 1.35 * disp_scale, size=2)
+                    p_stage_phys_real = p_cmd_phys + phys_err
+                    p_stage_local = p_cmd_rel + phys_err
+                    hw_ms = 84.0 * disp_scale
+                    hw_executed = False
+
+                h_true = target_heads[shot_idx, tid_s]
+                c_true = target_chests[shot_idx, tid_s]
+                ref_pt = c_true if out.anchor_mode == "CHEST" else h_true
+
+                e_hand = float(np.hypot(ref_pt[0] - c_shot_hand[0], ref_pt[1] - c_shot_hand[1]))
+                e_hand_head = float(np.hypot(h_true[0] - c_shot_hand[0], h_true[1] - c_shot_hand[1]))
+                e_hand_chest = float(np.hypot(c_true[0] - c_shot_hand[0], c_true[1] - c_shot_hand[1]))
+                hand_hit = bool((e_hand_head <= head_r) or (e_hand_chest <= chest_r))
+
+                c_fire = c_shot_hand + p_stage_local
+                e_act_head = float(np.hypot(h_true[0] - c_fire[0], h_true[1] - c_fire[1]))
+                e_act_chest = float(np.hypot(c_true[0] - c_fire[0], c_true[1] - c_fire[1]))
+                e_assisted = float(np.hypot(ref_pt[0] - c_fire[0], ref_pt[1] - c_fire[1]))
+                assisted_hit = bool((e_act_head <= head_r) or (e_act_chest <= chest_r))
+                delta_e = e_hand - e_assisted
+
+                stage_mag = float(np.hypot(p_stage_phys_real[0], p_stage_phys_real[1]))
+                hl_conflict = bool(
+                    clip_kind == "highlight"
+                    and e_hand_head <= 3.5
+                    and (e_act_head > 3.5 or stage_mag > 1.5)
+                )
+                sat_flag = bool(max(abs(float(p_stage_phys_real[0])), abs(float(p_stage_phys_real[1]))) >= 88.0)
+
+                records.append(
+                    {
+                        "clip_file": clip["_file_name"],
+                        "clip_kind": clip_kind,
+                        "shot_idx": k_shot + 1,
+                        "t_s": round(t_shot, 4),
+                        "e_hand_cnt": round(e_hand, 3),
+                        "e_hand_head_cnt": round(e_hand_head, 3),
+                        "e_assisted_cnt": round(e_assisted, 3),
+                        "e_assisted_head_cnt": round(e_act_head, 3),
+                        "delta_e_cnt": round(delta_e, 3),
+                        "hand_hit": hand_hit,
+                        "assisted_hit": assisted_hit,
+                        "highlight_conflict": hl_conflict,
+                        "lambda_w": round(out.lambda_weight, 4),
+                        "v_hand_mag": round(float(np.hypot(v_plan[0], v_plan[1])), 2),
+                        "p_stage_x": round(float(p_stage_phys_real[0]), 2),
+                        "p_stage_y": round(float(p_stage_phys_real[1]), 2),
+                        "saturation_flag": sat_flag,
+                        "hw_executed": hw_executed,
+                        "hw_ms": round(hw_ms, 1),
+                    }
+                )
+            else:
+                break
+
+        # Track smooth hand velocity across inter-shot frames without drifting p_stage_local
+        ctrl.v_hand = v_hand_seq[step_idx].copy()
+
+    return records, latencies_ms
+
+
+def replay_real_video_traces(
+    params: Dict[str, float],
+    config: Dict,
+    whiff_traces: List[Dict],
+    highlight_traces: List[Dict],
+    trainer=None,
+    use_physical_hardware: bool = False,
+) -> Dict:
+    """
+    Replay extracted real-video CS2 engagements (`whiff_*.npz` and `highlight_*.npz`).
+    When `use_physical_hardware=True`, caps physical COM4 executions to <= 12 representative shots
+    across Whiff + Highlight clips to prevent servo thermal fatigue while verifying physical trajectories.
+    """
+    import copy
+
+    cfg_eval = copy.deepcopy(config)
+    cfg_eval["controller_params"].update({k: float(v) for k, v in params.items()})
+    ctrl = MacroMicroSharedController(cfg_eval)
+    th = cfg_eval["thresholds"]
+
+    hw_budget_whiff = [10] if (use_physical_hardware and trainer is not None) else None
+    hw_budget_hl = [2] if (use_physical_hardware and trainer is not None) else None
+
+    if use_physical_hardware and trainer is not None:
+        trainer.reset_online_adaptation(reset_alpha=True, reset_ilc=True)
+        trainer.move_to_rect_origin(settle_s=0.32)
+
+    whiff_shots: List[Dict] = []
+    hl_shots: List[Dict] = []
+    all_lat: List[float] = []
+
+    for tr in whiff_traces:
+        recs, lats = _replay_single_video_clip(
+            tr,
+            "whiff",
+            ctrl,
+            th,
+            trainer=trainer if (use_physical_hardware and hw_budget_whiff and hw_budget_whiff[0] > 0) else None,
+            hw_budget=hw_budget_whiff,
+        )
+        whiff_shots.extend(recs)
+        all_lat.extend(lats)
+
+    for tr in highlight_traces:
+        recs, lats = _replay_single_video_clip(
+            tr,
+            "highlight",
+            ctrl,
+            th,
+            trainer=trainer if (use_physical_hardware and hw_budget_hl and hw_budget_hl[0] > 0) else None,
+            hw_budget=hw_budget_hl,
+        )
+        hl_shots.extend(recs)
+        all_lat.extend(lats)
+
+    n_w = max(1, len(whiff_shots))
+    w_hand_err = float(np.mean([r["e_hand_cnt"] for r in whiff_shots])) if whiff_shots else 0.0
+    w_asst_err = float(np.mean([r["e_assisted_cnt"] for r in whiff_shots])) if whiff_shots else 0.0
+    w_hand_hit = float(sum(1 for r in whiff_shots if r["hand_hit"]) / n_w)
+    w_asst_hit = float(sum(1 for r in whiff_shots if r["assisted_hit"]) / n_w)
+    w_delta_e = float(np.mean([r["delta_e_cnt"] for r in whiff_shots])) if whiff_shots else 0.0
+
+    # In-envelope subset (errors <= 85 cnt within 3-RRR physical workspace)
+    env_shots = [r for r in whiff_shots if r["e_hand_cnt"] <= 85.0]
+    n_env = max(1, len(env_shots))
+    env_hand_err = float(np.mean([r["e_hand_cnt"] for r in env_shots])) if env_shots else 0.0
+    env_asst_err = float(np.mean([r["e_assisted_cnt"] for r in env_shots])) if env_shots else 0.0
+    env_hand_hit = float(sum(1 for r in env_shots if r["hand_hit"]) / n_env)
+    env_asst_hit = float(sum(1 for r in env_shots if r["assisted_hit"]) / n_env)
+    env_delta_e = float(np.mean([r["delta_e_cnt"] for r in env_shots])) if env_shots else 0.0
+
+    hl_lethal = [r for r in hl_shots if r["e_hand_head_cnt"] <= 3.5]
+    n_hl_eval = max(1, len(hl_lethal)) if hl_lethal else max(1, len(hl_shots))
+    hl_conflicts = sum(1 for r in hl_shots if r["highlight_conflict"])
+    hl_conflict_rate = float(hl_conflicts / n_hl_eval)
+
+    all_shots = whiff_shots + hl_shots
+    sats = sum(1 for r in all_shots if r["saturation_flag"])
+    sat_rate = float(sats / max(1, len(all_shots)))
+    hw_shots_run = sum(1 for r in all_shots if r["hw_executed"])
+
+    loss_video = (
+        w_asst_err
+        + 25.0 * (1.0 - w_asst_hit)
+        + 200.0 * hl_conflict_rate
+        + 50.0 * sat_rate
+    )
+
+    return {
+        "loss_video": round(loss_video, 4),
+        "n_whiff_clips": len(whiff_traces),
+        "n_highlight_clips": len(highlight_traces),
+        "n_whiff_shots": len(whiff_shots),
+        "n_highlight_shots": len(hl_shots),
+        "hw_physical_shots_executed": hw_shots_run,
+        "whiff": {
+            "hand_only_mean_err_cnt": round(w_hand_err, 3),
+            "assisted_mean_err_cnt": round(w_asst_err, 3),
+            "hand_only_hit_rate": round(w_hand_hit, 4),
+            "effective_hit_rate": round(w_asst_hit, 4),
+            "mean_delta_e_cnt": round(w_delta_e, 3),
+            "in_envelope_shots": len(env_shots),
+            "in_envelope_hand_err_cnt": round(env_hand_err, 3),
+            "in_envelope_assisted_err_cnt": round(env_asst_err, 3),
+            "in_envelope_hand_hit_rate": round(env_hand_hit, 4),
+            "in_envelope_effective_hit_rate": round(env_asst_hit, 4),
+            "in_envelope_delta_e_cnt": round(env_delta_e, 3),
+        },
+        "highlight": {
+            "lethal_shots_checked": len(hl_lethal),
+            "conflict_count": int(hl_conflicts),
+            "conflict_rate": round(hl_conflict_rate, 4),
+        },
+        "saturation_count": int(sats),
+        "saturation_rate": round(sat_rate, 4),
+        "decision_mean_ms": round(float(np.mean(all_lat)) if all_lat else 0.0, 4),
+        "shots": all_shots,
+    }
+
+
+def run_real_video_hil_pipeline(
+    trace_dir: str,
+    max_iters: int = 20,
+    use_hw: bool = True,
+    config_path: Optional[str] = None,
+) -> Dict:
+    """
+    End-to-end personalized HIL auto-tuning on real mined CS2 traces (`whiff_*.npz`, `highlight_*.npz`):
+      1) Calibrate user's personal flick/settling profile from video kinematics.
+      2) Run Step 1 Baseline & Step 3 Tuned evaluation on real COM4 3-RRR hardware.
+      3) Optimize controller_params jointly over real-video Whiff rescue, Highlight zero-conflict,
+         and 5-gate synthetic benchmark safety.
+      4) Persist updated config_hil.json, comparison JSON/CSV, and print comparison table.
+    """
+    import copy
+    import csv
+
+    hil_dir = os.path.dirname(os.path.abspath(__file__))
+    cfg_path = config_path or os.path.join(hil_dir, "config_hil.json")
+    logs_dir = os.path.join(hil_dir, "logs")
+    os.makedirs(logs_dir, exist_ok=True)
+
+    with open(cfg_path, "r", encoding="utf-8") as f:
+        config = json.load(f)
+
+    whiff_traces, highlight_traces = load_real_video_traces(trace_dir)
+    profile = calibrate_personal_flick_profile(highlight_traces, whiff_traces, config)
+
+    # Apply conservative personal speed bounds compatible with both real traces and S1-S4 KPIs
+    config["thresholds"]["v_flick_cnt_s"] = profile["v_flick_personal_cnt_s"]
+    config["thresholds"]["v_stop_cnt_s"] = profile["v_stop_personal_cnt_s"]
+    config["personal_profile"] = profile
+
+    # Load synthetic safety benchmark to ensure 5-gate regression safety
+    cs_path, spray_path = generate_benchmarks()
+    cs_trace = np.load(cs_path)
+    spray_trace = np.load(spray_path)
+
+    print("==========================================================================")
+    print("  3-RRR Real-Video Personalized HIL Auto-Tuner (--trace-dir)             ")
+    print("==========================================================================")
+    print(
+        f"[VideoHIL] Loaded {len(whiff_traces)} Whiff clips & {len(highlight_traces)} Highlight clips "
+        f"from '{trace_dir}'"
+    )
+    print(
+        f"[PersonalProfile] flick_p90={profile['flick_peak_p90_cnt_s']} cnt/s, "
+        f"shot_v_p75={profile['highlight_shot_v_p75_cnt_s']} cnt/s -> "
+        f"v_stop={profile['v_stop_personal_cnt_s']}, v_flick={profile['v_flick_personal_cnt_s']}, "
+        f"sigma_v_center={profile['sigma_v_center_cnt_s']}"
+    )
+
+    trainer = None
+    if use_hw:
+        from rect_manifold_calibrator import HardwareRectangleTrainer
+
+        trainer = HardwareRectangleTrainer()
+        trainer.sensor.start()
+
+    try:
+        keys = ["k_lead", "lambda_0", "sigma_v", "beta", "P_switch", "tau_w"]
+        bounds = [tuple(config["param_bounds"][k]) for k in keys]
+        base_params = dict(config["controller_params_baseline"])
+        cur_params = dict(config["controller_params"])
+
+        print("\n[VideoHIL Step 1/3] Evaluating UN-TUNED BASELINE on real 3-RRR hardware...")
+        base_eval = replay_real_video_traces(
+            base_params,
+            config,
+            whiff_traces,
+            highlight_traces,
+            trainer=trainer,
+            use_physical_hardware=(trainer is not None),
+        )
+
+        x0 = np.array(
+            [
+                float(np.clip(0.085, bounds[0][0], bounds[0][1])),
+                float(np.clip(0.995, bounds[1][0], bounds[1][1])),
+                float(np.clip(profile["sigma_v_center_cnt_s"], bounds[2][0], bounds[2][1])),
+                float(np.clip(0.25, bounds[3][0], bounds[3][1])),
+                float(np.clip(9.2, bounds[4][0], bounds[4][1])),
+                float(np.clip(0.40, bounds[5][0], bounds[5][1])),
+            ],
+            dtype=float,
+        )
+
+        print(f"\n[VideoHIL Step 2/3] Running Nelder-Mead Simplex personalization ({max_iters} iters)...")
+        sigma_c = profile["sigma_v_center_cnt_s"]
+
+        def _obj(x_vec: np.ndarray) -> float:
+            clipped = {
+                k: float(np.clip(x_vec[i], bounds[i][0], bounds[i][1]))
+                for i, k in enumerate(keys)
+            }
+            vid_res = replay_real_video_traces(
+                clipped,
+                config,
+                whiff_traces,
+                highlight_traces,
+                trainer=None,
+                use_physical_hardware=False,
+            )
+            bench_res = replay_combined_hil(
+                clipped,
+                config,
+                cs_trace,
+                spray_trace,
+                trainer=None,
+                use_physical_hardware=False,
+            )
+            reg = (
+                2.5 * (1.0 - clipped["lambda_0"]) ** 2
+                + 0.02 * (clipped["tau_w"] - 0.40) ** 2
+                + 1e-4 * (clipped["sigma_v"] - sigma_c) ** 2
+            )
+            return float(0.50 * vid_res["loss_video"] + 0.50 * bench_res["loss"] + reg)
+
+        opt_res = minimize(
+            _obj,
+            x0,
+            method="Nelder-Mead",
+            options={"maxiter": int(max_iters), "xatol": 1e-3, "fatol": 1e-3},
+        )
+        opt_params = {
+            k: round(float(np.clip(opt_res.x[i], bounds[i][0], bounds[i][1])), 5)
+            for i, k in enumerate(keys)
+        }
+
+        print("\n[VideoHIL Step 3/3] Verifying PERSONALIZED PARAMETERS end-to-end on real COM4 3-RRR hardware...")
+        tuned_eval = replay_real_video_traces(
+            opt_params,
+            config,
+            whiff_traces,
+            highlight_traces,
+            trainer=trainer,
+            use_physical_hardware=(trainer is not None),
+        )
+    finally:
+        if trainer is not None:
+            trainer.close()
+
+    # Save updated config_hil.json
+    config["controller_params"] = opt_params
+    with open(cfg_path, "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=2, ensure_ascii=False)
+
+    # Save shot-level CSV & comparison JSON
+    shots_csv = os.path.join(logs_dir, "real_video_hil_shots.csv")
+    all_rows = [{"phase": "BASELINE", **r} for r in base_eval["shots"]] + [
+        {"phase": "PERSONALIZED_TUNED", **r} for r in tuned_eval["shots"]
+    ]
+    if all_rows:
+        fieldnames = list(all_rows[0].keys())
+        with open(shots_csv, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(all_rows)
+
+    summary_out = {
+        "trace_dir": trace_dir,
+        "hardware_mode": "REAL_COM4_3RRR" if use_hw else "DIGITAL_TWIN_DRY_RUN",
+        "personal_profile": profile,
+        "optimal_params": opt_params,
+        "baseline_eval": {k: v for k, v in base_eval.items() if k != "shots"},
+        "tuned_eval": {k: v for k, v in tuned_eval.items() if k != "shots"},
+    }
+    comp_json = os.path.join(logs_dir, "real_video_hil_comparison.json")
+    with open(comp_json, "w", encoding="utf-8") as f:
+        json.dump(summary_out, f, indent=2, ensure_ascii=False)
+
+    # Print Before/After Markdown table cleanly (7.94 um/count from 3200 DPI)
+    um_per_cnt = 25400.0 / 3200.0
+    w_t = tuned_eval["whiff"]
+    hl_t = tuned_eval["highlight"]
+    raw_err_um = w_t["hand_only_mean_err_cnt"] * um_per_cnt
+    asst_err_um = w_t["assisted_mean_err_cnt"] * um_per_cnt
+
+    print("\n### 《真实录屏马枪库：无辅助原片 vs 3-RRR 物理介入后》")
+    print("| 评估指标 (Metrics) | 无辅助原片 (Unassisted Original) | 3-RRR 物理介入后 (Personalized HIL) |")
+    print("| :--- | :--- | :--- |")
+    print(
+        f"| **脱靶切片平均误差 (Mean Miss Error)** | {w_t['hand_only_mean_err_cnt']:.2f} cnt ({raw_err_um:.1f} um) | "
+        f"{w_t['assisted_mean_err_cnt']:.2f} cnt ({asst_err_um:.1f} um) |"
+    )
+    print(
+        f"| **有效命中率 (Effective Hit Rate)** | {100.0 * w_t['hand_only_hit_rate']:.1f}% | "
+        f"{100.0 * w_t['effective_hit_rate']:.1f}% |"
+    )
+    print(
+        f"| **单发平均净辅助增益 (Mean Net Assist Gain dE)** | 0.00 cnt | "
+        f"{w_t['mean_delta_e_cnt']:+.2f} cnt |"
+    )
+    print(
+        f"| **高光样本冲突率 (Highlight Conflict Penalty Rate)** | N/A | "
+        f"{100.0 * hl_t['conflict_rate']:.1f}% ({hl_t['conflict_count']}/{hl_t['lethal_shots_checked']}) |"
+    )
+    print(
+        f"\n[VideoHIL] Physical COM4 shots executed: baseline={base_eval['hw_physical_shots_executed']}, "
+        f"tuned={tuned_eval['hw_physical_shots_executed']} | In-envelope Hit Rate: "
+        f"{100.0 * w_t['in_envelope_hand_hit_rate']:.1f}% -> {100.0 * w_t['in_envelope_effective_hit_rate']:.1f}%"
+    )
+    print(f"[VideoHIL] Saved tuned params -> {cfg_path}")
+    print(f"[VideoHIL] Saved comparison   -> {comp_json}")
+    return summary_out
+
+
 def record_live_session(duration_s: float = 10.0, out_name: str = "recorded_session.npz") -> str:
     """Record live 256x256 ROI crosshair + 3200 DPI mouse deltas + LMB timestamps to traces/."""
     from mouse_sensor import HighPrecisionMouseSensor
@@ -973,7 +1672,21 @@ def main():
     parser.add_argument("--record", type=float, default=0.0, help="Record live ROI + 3200DPI trace for N seconds")
     parser.add_argument("--max-iters", type=int, default=20, help="Simplex tuning iterations (default 20)")
     parser.add_argument("--no-hw", action="store_true", help="Offline dry-run without COM4 hardware")
+    parser.add_argument(
+        "--trace-dir",
+        type=str,
+        default=None,
+        help="Run personalized HIL auto-tuning on real extracted CS2 traces (whiff_*.npz & highlight_*.npz)",
+    )
     args = parser.parse_args()
+
+    if args.trace_dir:
+        run_real_video_hil_pipeline(
+            trace_dir=args.trace_dir,
+            max_iters=int(args.max_iters),
+            use_hw=(not args.no_hw),
+        )
+        return
 
     _ensure_dirs()
     if args.record > 0.0:

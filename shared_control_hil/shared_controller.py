@@ -194,9 +194,12 @@ class MacroMicroSharedController:
         """
         v_norm_sq = float(np.dot(self.v_hand, self.v_hand))
         lam = self.lambda_0 * math.exp(-v_norm_sq / max(1e-6, 2.0 * self.sigma_v * self.sigma_v))
-        if e_cnt is not None and v_norm_sq > (self.v_stop * self.v_stop):
+        if e_cnt is not None:
             e_norm = float(np.hypot(e_cnt[0], e_cnt[1]))
-            if e_norm > 1e-3:
+            stage_norm = float(np.hypot(self.p_stage_cur[0], self.p_stage_cur[1]))
+            if e_norm <= 3.5 and stage_norm <= 3.5:
+                return 0.0
+            if v_norm_sq > (self.v_stop * self.v_stop) and e_norm > 1e-3:
                 e_hat = np.asarray(e_cnt, dtype=float) / e_norm
                 same_dir_v = float(np.dot(self.v_hand, e_hat))
                 if same_dir_v > 0.35 * self.sigma_v:

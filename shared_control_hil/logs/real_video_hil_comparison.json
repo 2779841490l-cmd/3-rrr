@@ -1,0 +1,81 @@
+{
+  "trace_dir": "shared_control_hil/traces/real_video_traces",
+  "hardware_mode": "REAL_COM4_3RRR",
+  "personal_profile": {
+    "n_whiff_clips": 41,
+    "n_highlight_clips": 3,
+    "flick_peak_median_cnt_s": 210.08,
+    "flick_peak_p90_cnt_s": 296.82,
+    "highlight_shot_v_median_cnt_s": 29.79,
+    "highlight_shot_v_p75_cnt_s": 55.44,
+    "v_stop_personal_cnt_s": 63.75,
+    "v_flick_personal_cnt_s": 302.76,
+    "sigma_v_center_cnt_s": 198.26
+  },
+  "optimal_params": {
+    "k_lead": 0.07914,
+    "lambda_0": 0.98011,
+    "sigma_v": 233.84277,
+    "beta": 0.24985,
+    "P_switch": 9.77784,
+    "tau_w": 0.37846
+  },
+  "baseline_eval": {
+    "loss_video": 18.2382,
+    "n_whiff_clips": 41,
+    "n_highlight_clips": 3,
+    "n_whiff_shots": 284,
+    "n_highlight_shots": 6,
+    "hw_physical_shots_executed": 10,
+    "whiff": {
+      "hand_only_mean_err_cnt": 26.647,
+      "assisted_mean_err_cnt": 13.133,
+      "hand_only_hit_rate": 0.2465,
+      "effective_hit_rate": 0.7958,
+      "mean_delta_e_cnt": 13.514,
+      "in_envelope_shots": 284,
+      "in_envelope_hand_err_cnt": 26.647,
+      "in_envelope_assisted_err_cnt": 13.133,
+      "in_envelope_hand_hit_rate": 0.2465,
+      "in_envelope_effective_hit_rate": 0.7958,
+      "in_envelope_delta_e_cnt": 13.514
+    },
+    "highlight": {
+      "lethal_shots_checked": 4,
+      "conflict_count": 0,
+      "conflict_rate": 0.0
+    },
+    "saturation_count": 0,
+    "saturation_rate": 0.0,
+    "decision_mean_ms": 0.0392
+  },
+  "tuned_eval": {
+    "loss_video": 7.4454,
+    "n_whiff_clips": 41,
+    "n_highlight_clips": 3,
+    "n_whiff_shots": 284,
+    "n_highlight_shots": 6,
+    "hw_physical_shots_executed": 10,
+    "whiff": {
+      "hand_only_mean_err_cnt": 26.526,
+      "assisted_mean_err_cnt": 6.301,
+      "hand_only_hit_rate": 0.2465,
+      "effective_hit_rate": 0.9542,
+      "mean_delta_e_cnt": 20.225,
+      "in_envelope_shots": 284,
+      "in_envelope_hand_err_cnt": 26.526,
+      "in_envelope_assisted_err_cnt": 6.301,
+      "in_envelope_hand_hit_rate": 0.2465,
+      "in_envelope_effective_hit_rate": 0.9542,
+      "in_envelope_delta_e_cnt": 20.225
+    },
+    "highlight": {
+      "lethal_shots_checked": 4,
+      "conflict_count": 0,
+      "conflict_rate": 0.0
+    },
+    "saturation_count": 0,
+    "saturation_rate": 0.0,
+    "decision_mean_ms": 0.0384
+  }
+}

@@ -1,0 +1,370 @@
+{
+  "video_dir": "E:\\游戏录屏归档\\高光短视频",
+  "decoder_backend": "ffmpeg_pipe_numpy_pyrlk",
+  "total_archive_videos": 1287,
+  "scanned_videos": 80,
+  "rejected_non_combat_clips": 36,
+  "total_scanned_duration_s": 748.8,
+  "extracted_combat_duration_s": 132.0,
+  "filtered_garbage_duration_s": 616.8,
+  "garbage_filter_ratio_pct": 82.37,
+  "whiff_clips_count": 41,
+  "highlight_clips_count": 3,
+  "mining_elapsed_s": 155.23,
+  "whiff_clips": [
+    {
+      "file": "whiff_001.npz",
+      "source_video": "hl_2025-12-28_20-28-53.mp4",
+      "event_t_s": 5.217,
+      "n_shots": 7,
+      "mean_e_hand_cnt": 17.984,
+      "first_shot_e_cnt": 23.062
+    },
+    {
+      "file": "whiff_002.npz",
+      "source_video": "hl_2025-12-28_21-17-28.mp4",
+      "event_t_s": 5.625,
+      "n_shots": 9,
+      "mean_e_hand_cnt": 20.392,
+      "first_shot_e_cnt": 18.265
+    },
+    {
+      "file": "whiff_003.npz",
+      "source_video": "hl_2026-01-01_22-57-06.mp4",
+      "event_t_s": 8.734,
+      "n_shots": 6,
+      "mean_e_hand_cnt": 28.639,
+      "first_shot_e_cnt": 19.73
+    },
+    {
+      "file": "whiff_004.npz",
+      "source_video": "hl_2026-01-10_21-43-51.mp4",
+      "event_t_s": 9.131,
+      "n_shots": 2,
+      "mean_e_hand_cnt": 27.304,
+      "first_shot_e_cnt": 19.069
+    },
+    {
+      "file": "whiff_005.npz",
+      "source_video": "hl_2026-01-17_21-19-10.mp4",
+      "event_t_s": 3.176,
+      "n_shots": 6,
+      "mean_e_hand_cnt": 28.094,
+      "first_shot_e_cnt": 18.12
+    },
+    {
+      "file": "whiff_006.npz",
+      "source_video": "hl_2026-01-17_22-50-55.mp4",
+      "event_t_s": 1.191,
+      "n_shots": 5,
+      "mean_e_hand_cnt": 23.988,
+      "first_shot_e_cnt": 17.456
+    },
+    {
+      "file": "whiff_007.npz",
+      "source_video": "hl_2026-01-19_01-44-43.mp4",
+      "event_t_s": 8.628,
+      "n_shots": 6,
+      "mean_e_hand_cnt": 27.491,
+      "first_shot_e_cnt": 14.129
+    },
+    {
+      "file": "whiff_008.npz",
+      "source_video": "hl_2026-01-19_02-17-41.mp4",
+      "event_t_s": 0.596,
+      "n_shots": 3,
+      "mean_e_hand_cnt": 31.075,
+      "first_shot_e_cnt": 21.225
+    },
+    {
+      "file": "whiff_009.npz",
+      "source_video": "hl_2026-01-19_22-13-47.mp4",
+      "event_t_s": 4.963,
+      "n_shots": 9,
+      "mean_e_hand_cnt": 27.923,
+      "first_shot_e_cnt": 17.924
+    },
+    {
+      "file": "whiff_010.npz",
+      "source_video": "hl_2026-01-19_22-55-04.mp4",
+      "event_t_s": 10.137,
+      "n_shots": 6,
+      "mean_e_hand_cnt": 18.022,
+      "first_shot_e_cnt": 15.503
+    },
+    {
+      "file": "whiff_011.npz",
+      "source_video": "hl_2026-01-19_22-58-52.mp4",
+      "event_t_s": 6.551,
+      "n_shots": 10,
+      "mean_e_hand_cnt": 18.093,
+      "first_shot_e_cnt": 17.409
+    },
+    {
+      "file": "whiff_012.npz",
+      "source_video": "hl_2026-01-19_23-03-56.mp4",
+      "event_t_s": 5.36,
+      "n_shots": 4,
+      "mean_e_hand_cnt": 18.809,
+      "first_shot_e_cnt": 20.932
+    },
+    {
+      "file": "whiff_013.npz",
+      "source_video": "hl_2026-01-19_23-07-26.mp4",
+      "event_t_s": 0.596,
+      "n_shots": 6,
+      "mean_e_hand_cnt": 23.371,
+      "first_shot_e_cnt": 31.911
+    },
+    {
+      "file": "whiff_014.npz",
+      "source_video": "hl_2026-01-24_04-39-37.mp4",
+      "event_t_s": 1.39,
+      "n_shots": 3,
+      "mean_e_hand_cnt": 19.568,
+      "first_shot_e_cnt": 25.224
+    },
+    {
+      "file": "whiff_015.npz",
+      "source_video": "hl_2026-01-25_21-19-39.mp4",
+      "event_t_s": 8.139,
+      "n_shots": 10,
+      "mean_e_hand_cnt": 27.691,
+      "first_shot_e_cnt": 36.0
+    },
+    {
+      "file": "whiff_016.npz",
+      "source_video": "hl_2026-01-25_21-55-03.mp4",
+      "event_t_s": 6.822,
+      "n_shots": 4,
+      "mean_e_hand_cnt": 18.328,
+      "first_shot_e_cnt": 17.559
+    },
+    {
+      "file": "whiff_017.npz",
+      "source_video": "hl_2026-01-25_23-15-58.mp4",
+      "event_t_s": 5.213,
+      "n_shots": 10,
+      "mean_e_hand_cnt": 34.293,
+      "first_shot_e_cnt": 18.958
+    },
+    {
+      "file": "whiff_018.npz",
+      "source_video": "hl_2026-01-27_21-23-24.mp4",
+      "event_t_s": 8.734,
+      "n_shots": 9,
+      "mean_e_hand_cnt": 16.724,
+      "first_shot_e_cnt": 15.857
+    },
+    {
+      "file": "whiff_019.npz",
+      "source_video": "hl_2026-01-30_21-41-50.mp4",
+      "event_t_s": 3.613,
+      "n_shots": 10,
+      "mean_e_hand_cnt": 17.721,
+      "first_shot_e_cnt": 20.321
+    },
+    {
+      "file": "whiff_020.npz",
+      "source_video": "hl_2026-01-30_22-15-48.mp4",
+      "event_t_s": 7.424,
+      "n_shots": 10,
+      "mean_e_hand_cnt": 30.915,
+      "first_shot_e_cnt": 36.0
+    },
+    {
+      "file": "whiff_021.npz",
+      "source_video": "hl_2026-01-31_23-11-16.mp4",
+      "event_t_s": 5.161,
+      "n_shots": 4,
+      "mean_e_hand_cnt": 23.054,
+      "first_shot_e_cnt": 31.322
+    },
+    {
+      "file": "whiff_022.npz",
+      "source_video": "hl_2026-02-04_01-48-33.mp4",
+      "event_t_s": 3.779,
+      "n_shots": 10,
+      "mean_e_hand_cnt": 28.138,
+      "first_shot_e_cnt": 20.568
+    },
+    {
+      "file": "whiff_023.npz",
+      "source_video": "hl_2026-02-08_00-25-09.mp4",
+      "event_t_s": 0.397,
+      "n_shots": 10,
+      "mean_e_hand_cnt": 34.274,
+      "first_shot_e_cnt": 18.736
+    },
+    {
+      "file": "whiff_024.npz",
+      "source_video": "hl_2026-02-08_20-11-44.mp4",
+      "event_t_s": 8.933,
+      "n_shots": 2,
+      "mean_e_hand_cnt": 18.314,
+      "first_shot_e_cnt": 19.529
+    },
+    {
+      "file": "whiff_025.npz",
+      "source_video": "hl_2026-02-08_20-37-19.mp4",
+      "event_t_s": 1.806,
+      "n_shots": 10,
+      "mean_e_hand_cnt": 26.044,
+      "first_shot_e_cnt": 36.0
+    },
+    {
+      "file": "whiff_026.npz",
+      "source_video": "hl_2026-02-09_12-19-26.mp4",
+      "event_t_s": 1.404,
+      "n_shots": 5,
+      "mean_e_hand_cnt": 32.134,
+      "first_shot_e_cnt": 33.693
+    },
+    {
+      "file": "whiff_027.npz",
+      "source_video": "hl_2026-02-09_12-53-48.mp4",
+      "event_t_s": 8.026,
+      "n_shots": 8,
+      "mean_e_hand_cnt": 29.738,
+      "first_shot_e_cnt": 21.084
+    },
+    {
+      "file": "whiff_028.npz",
+      "source_video": "hl_2026-02-12_18-41-06.mp4",
+      "event_t_s": 8.75,
+      "n_shots": 10,
+      "mean_e_hand_cnt": 34.225,
+      "first_shot_e_cnt": 36.0
+    },
+    {
+      "file": "whiff_029.npz",
+      "source_video": "hl_2026-02-12_19-17-32.mp4",
+      "event_t_s": 3.21,
+      "n_shots": 8,
+      "mean_e_hand_cnt": 28.509,
+      "first_shot_e_cnt": 24.66
+    },
+    {
+      "file": "whiff_030.npz",
+      "source_video": "hl_2026-02-12_20-20-16.mp4",
+      "event_t_s": 7.825,
+      "n_shots": 10,
+      "mean_e_hand_cnt": 30.737,
+      "first_shot_e_cnt": 19.02
+    },
+    {
+      "file": "whiff_031.npz",
+      "source_video": "hl_2026-02-15_16-46-59.mp4",
+      "event_t_s": 5.418,
+      "n_shots": 10,
+      "mean_e_hand_cnt": 35.991,
+      "first_shot_e_cnt": 36.0
+    },
+    {
+      "file": "whiff_032.npz",
+      "source_video": "hl_2026-02-15_17-12-09.mp4",
+      "event_t_s": 6.622,
+      "n_shots": 3,
+      "mean_e_hand_cnt": 16.103,
+      "first_shot_e_cnt": 19.063
+    },
+    {
+      "file": "whiff_033.npz",
+      "source_video": "hl_2026-02-15_22-13-52.mp4",
+      "event_t_s": 7.223,
+      "n_shots": 10,
+      "mean_e_hand_cnt": 28.013,
+      "first_shot_e_cnt": 18.791
+    },
+    {
+      "file": "whiff_034.npz",
+      "source_video": "hl_2026-02-15_22-46-52.mp4",
+      "event_t_s": 5.618,
+      "n_shots": 1,
+      "mean_e_hand_cnt": 17.284,
+      "first_shot_e_cnt": 17.284
+    },
+    {
+      "file": "whiff_035.npz",
+      "source_video": "hl_2026-02-15_23-19-37.mp4",
+      "event_t_s": 4.815,
+      "n_shots": 10,
+      "mean_e_hand_cnt": 29.403,
+      "first_shot_e_cnt": 26.783
+    },
+    {
+      "file": "whiff_036.npz",
+      "source_video": "hl_2026-02-16_19-07-27.mp4",
+      "event_t_s": 1.607,
+      "n_shots": 7,
+      "mean_e_hand_cnt": 18.608,
+      "first_shot_e_cnt": 21.295
+    },
+    {
+      "file": "whiff_037.npz",
+      "source_video": "hl_2026-02-16_20-59-50.mp4",
+      "event_t_s": 3.01,
+      "n_shots": 9,
+      "mean_e_hand_cnt": 24.106,
+      "first_shot_e_cnt": 29.359
+    },
+    {
+      "file": "whiff_038.npz",
+      "source_video": "hl_2026-02-16_21-30-28.mp4",
+      "event_t_s": 4.566,
+      "n_shots": 3,
+      "mean_e_hand_cnt": 15.596,
+      "first_shot_e_cnt": 16.42
+    },
+    {
+      "file": "whiff_039.npz",
+      "source_video": "hl_2026-02-16_21-59-00.mp4",
+      "event_t_s": 7.223,
+      "n_shots": 10,
+      "mean_e_hand_cnt": 32.753,
+      "first_shot_e_cnt": 36.0
+    },
+    {
+      "file": "whiff_040.npz",
+      "source_video": "hl_2026-02-16_22-52-51.mp4",
+      "event_t_s": 2.184,
+      "n_shots": 1,
+      "mean_e_hand_cnt": 18.802,
+      "first_shot_e_cnt": 18.802
+    },
+    {
+      "file": "whiff_041.npz",
+      "source_video": "hl_2026-03-19_22-00-06.mp4",
+      "event_t_s": 8.026,
+      "n_shots": 8,
+      "mean_e_hand_cnt": 35.288,
+      "first_shot_e_cnt": 36.0
+    }
+  ],
+  "highlight_clips": [
+    {
+      "file": "highlight_001.npz",
+      "source_video": "hl_2026-01-25_22-41-37.mp4",
+      "event_t_s": 9.229,
+      "n_shots": 2,
+      "mean_e_hand_cnt": 4.479,
+      "first_shot_e_cnt": 2.187
+    },
+    {
+      "file": "highlight_002.npz",
+      "source_video": "hl_2026-02-08_00-58-58.mp4",
+      "event_t_s": 6.551,
+      "n_shots": 1,
+      "mean_e_hand_cnt": 3.1,
+      "first_shot_e_cnt": 3.1
+    },
+    {
+      "file": "highlight_003.npz",
+      "source_video": "hl_2026-02-15_16-11-34.mp4",
+      "event_t_s": 6.551,
+      "n_shots": 3,
+      "mean_e_hand_cnt": 3.574,
+      "first_shot_e_cnt": 1.192
+    }
+  ]
+}
