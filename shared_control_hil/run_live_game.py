@@ -147,7 +147,8 @@ def detect_live_crosshair_and_targets(
     dt_s: float,
     k_lead_s: float,
     prev_gray: Optional[np.ndarray],
-) -> Tuple[np.ndarray, List[TargetDetection], np.ndarray, np.ndarray]:
+    compute_bg_flow: bool = True,
+) -> Tuple[np.ndarray, List[TargetDetection], np.ndarray, Optional[np.ndarray]]:
     """
     Extract dynamic crosshair c_px, live targets (head + chest), ego background shift, and gray frame.
     Supports Cyan (0,255,255), Green (0,255,0)/(0,255,80), and synthetic/silhouette fallback.
@@ -194,24 +195,26 @@ def detect_live_crosshair_and_targets(
     else:
         c_px, _ = vision.crosshair_tracker.detect_in_frame(roi_rgb, dt_s=dt_s)
 
-    gray = (0.299 * r + 0.587 * g + 0.114 * b).astype(np.float32)
+    gray: Optional[np.ndarray] = None
     du_bg = np.zeros(2, dtype=float)
-    if prev_gray is not None and prev_gray.shape == gray.shape:
-        # Fast FFT phase correlation on outer ROI ring for mouse turn fallback
-        g0 = prev_gray - float(prev_gray.mean())
-        g1 = gray - float(gray.mean())
-        f0 = np.fft.rfft2(g0)
-        f1 = np.fft.rfft2(g1)
-        cross = f1 * np.conj(f0)
-        cross /= np.maximum(np.abs(cross), 1e-6)
-        corr = np.fft.irfft2(cross, s=gray.shape)
-        py, px = np.unravel_index(int(np.argmax(corr)), corr.shape)
-        if py > h // 2:
-            py -= h
-        if px > w // 2:
-            px -= w
-        if abs(px) <= 18 and abs(py) <= 18:
-            du_bg = np.array([float(px), float(py)], dtype=float)
+    if compute_bg_flow:
+        gray = (0.299 * r + 0.587 * g + 0.114 * b).astype(np.float32)
+        if prev_gray is not None and prev_gray.shape == gray.shape:
+            # Fast FFT phase correlation on outer ROI ring for mouse turn fallback
+            g0 = prev_gray - float(prev_gray.mean())
+            g1 = gray - float(gray.mean())
+            f0 = np.fft.rfft2(g0)
+            f1 = np.fft.rfft2(g1)
+            cross = f1 * np.conj(f0)
+            cross /= np.maximum(np.abs(cross), 1e-6)
+            corr = np.fft.irfft2(cross, s=gray.shape)
+            py, px = np.unravel_index(int(np.argmax(corr)), corr.shape)
+            if py > h // 2:
+                py -= h
+            if px > w // 2:
+                px -= w
+            if abs(px) <= 18 and abs(py) <= 18:
+                du_bg = np.array([float(px), float(py)], dtype=float)
 
     # Use real trained YOLOv8n CS2 head/chest detector in live mode; color blobs ONLY in synthetic mode
     if vision.synthetic_only:
@@ -425,6 +428,9 @@ class LiveGameSharedControlRunner:
         self._yolo_miss_since_t = None
         self._last_high_flick_t = 0.0
         self._settled_low_vh_ticks = 0
+        self._last_high_flick_1k_t = 0.0
+        self._hand_settled_1k_since_t = 0.0
+        self._last_hud_t = 0.0
         if hasattr(self, "_cmd_history"):
             self._cmd_history.clear()
         self._last_engage_t = time.perf_counter()
@@ -592,6 +598,15 @@ class LiveGameSharedControlRunner:
                 prev_wasd = wasd_now
 
                 rec_key = any(self.keys.is_down(vk) for vk in (VK_R, VK_1, VK_2, VK_3, VK_Q))
+                vh_1k_norm = float(math.hypot(v_hand_est[0], v_hand_est[1]))
+                if vh_1k_norm >= 240.0:
+                    self._last_high_flick_1k_t = t_now
+                    self._hand_settled_1k_since_t = 0.0
+                elif vh_1k_norm <= 155.0:
+                    if getattr(self, "_hand_settled_1k_since_t", 0.0) <= 0.0:
+                        self._hand_settled_1k_since_t = t_now
+                else:
+                    self._hand_settled_1k_since_t = 0.0
                 with self._state_lock:
                     self._v_hand_1k = v_hand_est.copy()
                     if lmb_now and not prev_lmb_1k:
@@ -1576,9 +1591,9 @@ class LiveGameSharedControlRunner:
                 c_eff_px = roi_center_arr
 
         # Track true human hand settle & high-flick timestamps to avoid firing into 1-frame USB gaps
-        if v_hand_norm >= 220.0:
+        if v_hand_norm >= 240.0:
             self._last_high_flick_t = t_now
-        if v_hand_norm <= 95.0:
+        if v_hand_norm <= 155.0:
             self._settled_low_vh_ticks = getattr(self, "_settled_low_vh_ticks", 0) + 1
         else:
             self._settled_low_vh_ticks = 0
@@ -1644,9 +1659,30 @@ class LiveGameSharedControlRunner:
                         off_arr = raw_off
                     self._prev_recoil_off_px = off_arr.copy()
                     if float(np.hypot(off_arr[0], off_arr[1])) >= 3.0:
-                        p_rec_raw = self.calibrator.recoil_offset_to_stage_abs(float(off_arr[0]), float(off_arr[1]))
-                        p_rec_raw[0] = float(np.clip(p_rec_raw[0], -90.0, 90.0))
-                        p_rec_raw[1] = float(np.clip(p_rec_raw[1], 0.0, self.live_max_y_cnt))
+                        p_rec_offset = self.calibrator.recoil_offset_to_stage_abs(float(off_arr[0]), float(off_arr[1]))
+                        if locked_det is not None:
+                            # Target-aware shared recoil: never pull down past the head when human already compensates!
+                            e_tgt = locked_det.head_px - c_eff_px
+                            if float(e_tgt[1]) <= 0.5:
+                                release_y = min(
+                                    max(0.0, float(self.p_recoil_cnt[1])),
+                                    max(0.0, (-float(e_tgt[1]) - 1.5) * 1.8),
+                                )
+                                p_rec_y = max(0.0, float(self.p_recoil_cnt[1]) - release_y)
+                            else:
+                                need_delta = self.calibrator.aim_error_to_stage_delta(float(e_tgt[0]), float(e_tgt[1]))
+                                max_needed_y = float(self.p_recoil_cnt[1]) + max(0.0, float(need_delta[1]))
+                                p_rec_y = min(0.55 * max(0.0, float(p_rec_offset[1])), max_needed_y, 130.0)
+                            p_rec_x = float(np.clip(0.50 * float(p_rec_offset[0]), -55.0, 55.0))
+                            p_rec_raw = np.array([p_rec_x, max(0.0, p_rec_y)], dtype=float)
+                        else:
+                            p_rec_raw = np.array(
+                                [
+                                    float(np.clip(0.42 * float(p_rec_offset[0]), -55.0, 55.0)),
+                                    float(np.clip(0.42 * float(p_rec_offset[1]), 0.0, 105.0)),
+                                ],
+                                dtype=float,
+                            )
                         p_rec_goal = np.clip(p_rec_raw, -limits, limits)
                         d_rec = p_rec_raw - self.p_recoil_cnt
                         d_rec_norm = float(np.hypot(d_rec[0], d_rec[1]))
@@ -1726,8 +1762,17 @@ class LiveGameSharedControlRunner:
                 self._mono_cmd_t = 0.0
                 print(f"\n[MONO_TRIP] target#{tid_cur} diverged {self._mono_e0_norm:.1f}->{e_norm:.1f}px; pausing aim lock.")
 
-            hand_settled = (v_hand_norm <= 95.0) and (getattr(self, "_settled_low_vh_ticks", 0) >= 2)
-            since_flick_s = t_now - getattr(self, "_last_high_flick_t", 0.0)
+            if getattr(self, "_tracker_running", False):
+                settled_1k_t = getattr(self, "_hand_settled_1k_since_t", 0.0)
+                hand_settled = (v_hand_norm <= 155.0) and (settled_1k_t > 0.0 and (t_now - settled_1k_t) >= 0.015)
+                last_flick_t = max(
+                    getattr(self, "_last_high_flick_t", 0.0),
+                    getattr(self, "_last_high_flick_1k_t", 0.0),
+                )
+            else:
+                hand_settled = (v_hand_norm <= 155.0) and (getattr(self, "_settled_low_vh_ticks", 0) >= 2)
+                last_flick_t = getattr(self, "_last_high_flick_t", 0.0)
+            since_flick_s = t_now - last_flick_t
             aim_due = (
                 (not self._mono_tripped)
                 and (not in_tap_guard)
@@ -1745,8 +1790,9 @@ class LiveGameSharedControlRunner:
                 fine_trim_px = min(float(self.small_error_px), 7.5)
                 is_initial_snap = (
                     (not lmb_down)
+                    and (v_hand_norm <= 125.0)
                     and (self._snap_done_tid != tid_cur)
-                    and (since_flick_s >= 0.075)
+                    and (since_flick_s >= 0.045)
                     and (e_pred_norm > fine_trim_px)
                     and (float(np.hypot(dp_in_flight[0], dp_in_flight[1])) < 12.0)
                 )
@@ -1760,14 +1806,20 @@ class LiveGameSharedControlRunner:
                     is_fine = e_pred_norm <= fine_trim_px
                     base_gain = (min(0.58, self.kp_small_head + 0.08) if (is_fine and not lmb_down) else self.kp_small_head) if e_pred_norm <= self.small_error_px else self.kp_large_error
                     gain = base_gain * (1.0 if lmb_down else ff_trim)
+                    if v_hand_norm > 95.0:
+                        gain *= 0.72
                     step_cap = 115.0
                     use_boost_aim = not lmb_down
                     b_scale_aim = max(self.boost_scale, 1.25) if is_fine else self.boost_scale
                     b_dur_aim = 16.0 if is_fine else self.boost_dur_ms
 
                 dp_stage = self.calibrator.aim_error_to_stage_delta(float(e_pred_px[0]), float(e_pred_px[1])) * gain
-                # Prevent vertical aim integration from fighting active follow-recoil pull-down (PRE_SAT -200 vs +187 fix)
-                if lmb_down and abs(self.p_recoil_cnt[1]) >= 18.0 and (dp_stage[1] * self.p_recoil_cnt[1]) < 0.0:
+                # During spray, peel opposing vertical delta off p_recoil_cnt first instead of fighting via -Y p_aim_cnt
+                if lmb_down and abs(self.p_recoil_cnt[1]) >= 10.0 and (dp_stage[1] * self.p_recoil_cnt[1]) < 0.0:
+                    recoil_peel = min(abs(float(self.p_recoil_cnt[1])), abs(float(dp_stage[1])))
+                    p_rec_cand[1] = float(self.p_recoil_cnt[1]) - math.copysign(recoil_peel, float(self.p_recoil_cnt[1]))
+                    p_rec_goal[1] = p_rec_cand[1]
+                    recoil_due = True
                     dp_stage[1] = 0.0
                 dp_n = float(np.hypot(dp_stage[0], dp_stage[1]))
                 if dp_n > step_cap:
@@ -2028,6 +2080,7 @@ class LiveGameSharedControlRunner:
                     dt_s=dt_s,
                     k_lead_s=self.ctrl.k_lead,
                     prev_gray=self._prev_gray,
+                    compute_bg_flow=not self._tracker_running,
                 )
                 self._prev_gray = cur_gray
 
@@ -2115,16 +2168,18 @@ class LiveGameSharedControlRunner:
                 elif lmb_down and float(np.hypot(c_px[0] - roi_center, c_px[1] - roi_center)) >= 2.5:
                     arrow_tip_px = np.array([roi_center, roi_center], dtype=float)
 
-                with self._hw_lock:
-                    p_stage_hud = self.p_stage_est.copy()
-                self._render_vision_hud(
-                    roi_rgb=roi_rgb,
-                    c_px=c_px,
-                    dets_px=dets_px,
-                    locked_det=locked_det,
-                    arrow_tip_px=arrow_tip_px,
-                    p_stage_now=p_stage_hud,
-                )
+                if (t_now - float(getattr(self, "_last_hud_t", 0.0))) >= 0.055:
+                    with self._hw_lock:
+                        p_stage_hud = self.p_stage_est.copy()
+                    self._render_vision_hud(
+                        roi_rgb=roi_rgb,
+                        c_px=c_px,
+                        dets_px=dets_px,
+                        locked_det=locked_det,
+                        arrow_tip_px=arrow_tip_px,
+                        p_stage_now=p_stage_hud,
+                    )
+                    self._last_hud_t = float(t_now)
 
                 if fire_now:
                     self._last_fire_t = t_now
