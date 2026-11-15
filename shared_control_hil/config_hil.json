@@ -50,27 +50,27 @@
     ],
     "J_stage": [
       [
-        2.023449,
-        -1.6765
+        1.438734,
+        -1.02007
       ],
       [
-        -0.2419,
-        -1.3936
+        0.087508,
+        -1.655721
       ]
     ],
     "K_stage": [
       [
-        0.432067,
-        -0.519777
+        0.722115,
+        -0.444886
       ],
       [
-        -0.074998,
-        -0.627344
+        0.038165,
+        -0.62748
       ]
     ],
-    "mounting_angle_deg": 0.0,
-    "calib_elapsed_s": 1.587,
-    "recon_error_pct": 1.693,
+    "mounting_angle_deg": 14.9483,
+    "calib_elapsed_s": 1.5878,
+    "recon_error_pct": 3.689,
     "safe_envelope_counts": 80.0,
     "hard_limit_counts": 88.0,
     "live_max_x_counts": 240.0,
@@ -79,28 +79,28 @@
     "spray_max_y_counts": 340.0,
     "J_screen_to_stage": [
       [
-        -4.019047,
-        0.0
+        -7.620278,
+        0.870054
       ],
       [
-        0.0,
-        -4.019047
+        0.79213,
+        -3.256165
       ]
     ],
-    "visual_calib_source": "PINHOLE_FALLBACK",
+    "visual_calib_source": "YOLO_HEAD_FLOW",
     "recenter_trigger_counts": 15.0,
     "recenter_v_hand_min": 120.0,
     "recenter_ramp_ms": 300.0
   },
   "live_control": {
-    "kp_small_head": 0.42,
-    "kp_large_error": 0.68,
+    "kp_small_head": 0.5,
+    "kp_large_error": 0.56,
     "small_error_px": 14.0,
     "in_box_deadband_ratio": 0.35,
     "min_deadband_px": 2.2,
     "max_deadband_px": 4.5,
-    "cooldown_ms": 90.0,
-    "recoil_cooldown_ms": 20.0,
+    "cooldown_ms": 115.0,
+    "recoil_cooldown_ms": 115.0,
     "boost_scale": 1.25,
     "boost_dur_ms": 22.0,
     "recenter_idle_ms": 150.0,

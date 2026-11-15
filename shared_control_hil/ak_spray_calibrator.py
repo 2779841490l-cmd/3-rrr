@@ -701,7 +701,7 @@ class AK47SprayCalibrator:
 
                 if b_target != cur_b_target:
                     cur_b_target = b_target
-                    du_fb_hold = np.zeros(2, dtype=float)
+                    du_fb_hold = np.clip(du_fb_hold * 0.65, -24.0, 24.0)
                     trim1_done = False
                     trim2_done = False
                     trim3_done = False

@@ -27,7 +27,7 @@ import sys
 import threading
 import time
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -328,6 +328,10 @@ class LiveGameSharedControlRunner:
         self._mono_tripped: bool = False
         self._shot_snapshots: deque = deque(maxlen=16)
         self.snapshots_path = os.path.join(LOGS_DIR, "live_shot_snapshots.jpg")
+        self._last_aim_cmd_t: float = 0.0
+        self._last_recoil_cmd_t: float = 0.0
+        self._yolo_miss_since_t: Optional[float] = None
+        self._cmd_history: deque = deque(maxlen=64)
         self._reload_live_control_params()
 
         self.in_game_trainer = InGameAutoTrainer(
@@ -365,7 +369,9 @@ class LiveGameSharedControlRunner:
         self.min_deadband_px = float(lc.get("min_deadband_px", 2.2))
         self.max_deadband_px = float(lc.get("max_deadband_px", 4.5))
         self.cooldown_lock_s = float(lc.get("cooldown_ms", 95.0)) / 1000.0
-        self.recoil_cooldown_s = float(lc.get("recoil_cooldown_ms", 20.0)) / 1000.0
+        self.recoil_cooldown_s = max(0.025, float(lc.get("recoil_cooldown_ms", 25.0)) / 1000.0)
+        self.aim_cooldown_s = max(self.cooldown_lock_s, float(lc.get("aim_cooldown_ms", 115.0)) / 1000.0)
+        self.visual_lag_s = max(0.020, float(lc.get("visual_lag_ms", 95.0)) / 1000.0)
         self.boost_scale = float(lc.get("boost_scale", 1.35))
         self.boost_dur_ms = float(lc.get("boost_dur_ms", 22.0))
         self.recenter_idle_s = float(lc.get("recenter_idle_ms", 150.0)) / 1000.0
@@ -399,6 +405,11 @@ class LiveGameSharedControlRunner:
         self._mono_e0_norm = 0.0
         self._mono_cmd_t = 0.0
         self._mono_tripped = False
+        self._last_aim_cmd_t = 0.0
+        self._last_recoil_cmd_t = 0.0
+        self._yolo_miss_since_t = None
+        if hasattr(self, "_cmd_history"):
+            self._cmd_history.clear()
         self._last_engage_t = time.perf_counter()
 
     def _compute_deadband_px(self, det: Optional[TargetDetection]) -> float:
@@ -495,7 +506,9 @@ class LiveGameSharedControlRunner:
         def _loop() -> None:
             last_t = time.perf_counter()
             last_sensor = np.array(self.trainer.sensor.get_position(), dtype=float)
-            last_stage = self.p_stage_est.copy()
+            with self._hw_lock:
+                last_stage_phys = self.p_stage_est.copy()
+                p_stage_phys = self.p_stage_est.copy()
             prev_lmb_1k = False
             prev_wasd = (False, False, False, False)
             while self._tracker_running:
@@ -505,14 +518,17 @@ class LiveGameSharedControlRunner:
 
                 cur_sensor = np.array(self.trainer.sensor.get_position(), dtype=float)
                 with self._hw_lock:
-                    cur_stage = self.p_stage_est.copy()
+                    cur_stage_cmd = self.p_stage_est.copy()
+                # Track servo first-order physical lag (~35 ms) so cmd jumps don't create phantom hand spikes
+                phys_alpha = min(1.0, dt / 0.035)
+                p_stage_phys = p_stage_phys + phys_alpha * (cur_stage_cmd - p_stage_phys)
                 dp_usb = cur_sensor - last_sensor
-                dp_stage = cur_stage - last_stage
+                dp_stage = p_stage_phys - last_stage_phys
                 last_sensor = cur_sensor
-                last_stage = cur_stage
+                last_stage_phys = p_stage_phys.copy()
 
                 inst_v = (dp_usb - dp_stage) / dt
-                alpha = min(1.0, dt / 0.012)
+                alpha = min(1.0, dt / 0.025)
                 lmb_now = bool(self.keys.is_down(VK_LBUTTON))
                 w_d = bool(self.keys.is_down(VK_W))
                 a_d = bool(self.keys.is_down(VK_A))
@@ -836,7 +852,7 @@ class LiveGameSharedControlRunner:
                 dy=dy,
                 freeze_play_g=(freeze_play_g and (not is_recenter)),
                 locked_play_g=self._locked_play_g,
-                play_deadband_cnt=0.0 if is_recenter else 12.0,
+                play_deadband_cnt=0.0 if is_recenter else 10.0,
             )
             if not (freeze_play_g and (not is_recenter)):
                 self._locked_play_g = play_g
@@ -1088,8 +1104,8 @@ class LiveGameSharedControlRunner:
                         h_lim = (1.15 if spray_active else 0.85) * self.trainer.manifold.H
 
                         if near_origin:
-                            # Map mounted target counts into 0-deg manifold frame and execute IF-OPB ballistic move
-                            p_man = np.linalg.solve(K_lin, K_stage @ p_clamped)
+                            # Mouse sensor target counts (p_clamped) already match move_point_to_point sensor frame
+                            p_man = p_clamped.copy()
                             p_man[0] = float(np.clip(p_man[0], -w_lim, w_lim))
                             p_man[1] = float(np.clip(p_man[1], -h_lim, h_lim))
                             self.trainer.move_point_to_point(
@@ -1369,6 +1385,296 @@ class LiveGameSharedControlRunner:
         except Exception:
             pass
 
+    def _get_visible_stage_pos(self, t_now: float, lag_s: Optional[float] = None) -> np.ndarray:
+        """Estimate stage position already reflected on screen at (t_now - visual_lag_s)."""
+        if not self._cmd_history:
+            return np.zeros(2, dtype=float)
+        tau = self.visual_lag_s if lag_s is None else float(lag_s)
+        t_vis = float(t_now) - max(0.0, tau)
+        vis_pos = np.zeros(2, dtype=float)
+        for t_c, p_c in self._cmd_history:
+            if t_c <= t_vis:
+                vis_pos = p_c
+            else:
+                break
+        return vis_pos.copy()
+
+    def _select_locked_target(
+        self,
+        dets_px: List[TargetDetection],
+        c_px: np.ndarray,
+    ) -> Tuple[Optional[TargetDetection], float]:
+        """Select nearest valid target with ~14 px sticky hysteresis to stop multi-bot hopping."""
+        valid: List[Tuple[float, TargetDetection]] = []
+        locked_cur: Optional[TargetDetection] = None
+        locked_cur_dist = 1e9
+        for d in dets_px:
+            dist_px = float(np.hypot(d.head_px[0] - c_px[0], d.head_px[1] - c_px[1]))
+            if self._lock_target_id is not None and int(d.target_id) == int(self._lock_target_id):
+                if d.seen_frames >= 1 and dist_px <= (1.25 * self.max_aim_dist_px):
+                    locked_cur = d
+                    locked_cur_dist = dist_px
+            if d.seen_frames >= self.min_track_frames and dist_px <= self.max_aim_dist_px:
+                valid.append((dist_px, d))
+        if locked_cur is not None:
+            if valid:
+                best_dist, best_det = min(valid, key=lambda x: x[0])
+                if int(best_det.target_id) != int(locked_cur.target_id) and (best_dist + 14.0) < locked_cur_dist:
+                    return best_det, best_dist
+            return locked_cur, locked_cur_dist
+        if not valid:
+            return None, 1e9
+        best_dist, best_det = min(valid, key=lambda x: x[0])
+        return best_det, best_dist
+
+    def _step_live_assist(
+        self,
+        t_now: float,
+        dt_s: float,
+        roi_rgb: np.ndarray,
+        c_px: np.ndarray,
+        dets_px: List[TargetDetection],
+        lmb_down: bool,
+        v_hand_raw: np.ndarray,
+        p_stage_now: np.ndarray,
+        dispatch_fn: Optional[Callable[..., bool]] = None,
+    ) -> Tuple[Optional[TargetDetection], float]:
+        """
+        Execute one 144 Hz tick of Smith-predicted, latency-decoupled ASSIST_ON control:
+          1. Commits p_aim_cnt / p_recoil_cnt ONLY when hardware dispatch succeeds (zero cooldown windup).
+          2. Enforces full aim_cooldown_s (>= 115 ms) between aim increments even while LMB is held.
+          3. Uses in-flight stage displacement (p_stage_now - p_visible) so aim & recoil never double-count.
+          4. Non-blocking idle recenter + 0.25s YOLO dropout grace during LMB spray.
+        """
+        disp = self._dispatch_stage_manifold_open_loop if dispatch_fn is None else dispatch_fn
+        limits = np.array([self.live_max_x_cnt, self.live_max_y_cnt], dtype=float)
+        aim_env = np.array([min(165.0, self.live_max_x_cnt), min(165.0, self.live_max_y_cnt)], dtype=float)
+        v_hand_norm = float(np.hypot(v_hand_raw[0], v_hand_raw[1]))
+
+        locked_det, locked_dist_px = self._select_locked_target(dets_px, c_px)
+
+        lmb_released = self._prev_lmb_live and (not lmb_down)
+        self._prev_lmb_live = lmb_down
+        if lmb_released:
+            self._prev_recoil_off_px = None
+            self._mono_tripped = False
+            if locked_det is None:
+                self._lock_target_id = None
+                self._lock_dir_sign[:] = 0.0
+
+        # 1. Compute P-only follow-recoil candidate (rate-limited to recoil_cooldown_s, committed only on dispatch)
+        p_rec_cand = self.p_recoil_cnt.copy()
+        recoil_due = False
+        if lmb_down:
+            self._last_engage_t = t_now
+            if (t_now - self._last_recoil_cmd_t) >= self.recoil_cooldown_s:
+                off_px = detect_crosshair_offset_px(roi_rgb, is_rgb=True)
+                if off_px is not None:
+                    off_arr = np.array([float(off_px[0]), float(off_px[1])], dtype=float)
+                    if self._prev_recoil_off_px is not None:
+                        delta_off = off_arr - self._prev_recoil_off_px
+                        dnorm = float(np.hypot(delta_off[0], delta_off[1]))
+                        if dnorm > 8.0:
+                            off_arr = self._prev_recoil_off_px + delta_off * (8.0 / dnorm)
+                    self._prev_recoil_off_px = off_arr.copy()
+                    if float(np.hypot(off_arr[0], off_arr[1])) >= 2.8:
+                        p_rec_raw = self.calibrator.recoil_offset_to_stage_abs(float(off_arr[0]), float(off_arr[1]))
+                        p_rec_raw[0] = float(np.clip(p_rec_raw[0], -90.0, 90.0))
+                        p_rec_raw[1] = float(np.clip(p_rec_raw[1], 0.0, self.live_max_y_cnt))
+                        d_rec = p_rec_raw - self.p_recoil_cnt
+                        d_rec_norm = float(np.hypot(d_rec[0], d_rec[1]))
+                        if d_rec_norm > 95.0:
+                            p_rec_raw = self.p_recoil_cnt + d_rec * (95.0 / d_rec_norm)
+                        p_rec_cand = np.clip(p_rec_raw, -limits, limits)
+                        if float(np.hypot(p_rec_cand[0] - self.p_recoil_cnt[0], p_rec_cand[1] - self.p_recoil_cnt[1])) >= 1.5:
+                            recoil_due = True
+        else:
+            self._prev_recoil_off_px = None
+            if float(np.hypot(self.p_recoil_cnt[0], self.p_recoil_cnt[1])) >= 1.5:
+                p_rec_cand[:] = 0.0
+                recoil_due = True
+
+        # Only apply gentle aim washout on genuine sustained human flicks when NOT locked onto a target
+        if locked_det is None and v_hand_norm > 220.0 and (not lmb_down):
+            decay = math.exp(-dt_s / 0.18)
+            self.p_aim_cnt = self.p_aim_cnt * decay
+
+        aim_sent = False
+        if locked_det is not None:
+            self._last_engage_t = t_now
+            self._yolo_miss_since_t = None
+            e_raw_px = locked_det.head_px - c_px
+            e_norm = float(np.hypot(e_raw_px[0], e_raw_px[1]))
+            r_lock = self._compute_deadband_px(locked_det)
+
+            try:
+                M_stage_to_err = np.linalg.inv(self.calibrator.J_screen_to_stage)
+            except np.linalg.LinAlgError:
+                M_stage_to_err = np.zeros((2, 2), dtype=float)
+            p_pending_base = np.clip(self.p_aim_cnt + p_rec_cand, -limits, limits)
+            dp_in_flight = p_pending_base - self._get_visible_stage_pos(t_now)
+            e_pred_px = e_raw_px + (M_stage_to_err @ dp_in_flight)
+            e_pred_norm = float(np.hypot(e_pred_px[0], e_pred_px[1]))
+
+            tid_cur = int(locked_det.target_id)
+            new_lock = (tid_cur != self._lock_target_id) or (
+                (t_now - self._lock_start_t) >= self.no_reversal_window_s and e_norm > (r_lock * 1.5)
+            )
+            if new_lock:
+                dp_init = self.calibrator.aim_error_to_stage_delta(float(e_pred_px[0]), float(e_pred_px[1]))
+                self._lock_target_id = tid_cur
+                self._lock_start_t = t_now
+                self._lock_dir_sign = np.sign(dp_init)
+                self._mono_target_id = tid_cur
+                self._mono_e0_norm = e_norm
+                self._mono_cmd_t = 0.0
+                self._mono_tripped = False
+
+            if (
+                (not lmb_down)
+                and self._mono_cmd_t > 0.0
+                and self._mono_target_id == tid_cur
+                and 0.115 <= (t_now - self._mono_cmd_t) <= 0.300
+                and v_hand_norm < 120.0
+                and e_norm > max(15.0, self._mono_e0_norm + 12.0)
+            ):
+                self._mono_tripped = True
+                self._mono_cmd_t = 0.0
+                print(f"\n[MONO_TRIP] target#{tid_cur} diverged {self._mono_e0_norm:.1f}->{e_norm:.1f}px; pausing aim lock.")
+
+            aim_due = (
+                (not self._mono_tripped)
+                and (t_now - self._last_aim_cmd_t) >= self.aim_cooldown_s
+                and e_norm > r_lock
+                and e_pred_norm > r_lock
+                and locked_dist_px >= min(self.min_aim_dist_px, r_lock)
+                and v_hand_norm < 240.0
+            )
+            if aim_due:
+                gain = self.kp_small_head if e_pred_norm <= self.small_error_px else self.kp_large_error
+                dp_stage = self.calibrator.aim_error_to_stage_delta(float(e_pred_px[0]), float(e_pred_px[1])) * gain
+                dp_n = float(np.hypot(dp_stage[0], dp_stage[1]))
+                if dp_n > 95.0:
+                    dp_stage = dp_stage * (95.0 / dp_n)
+                # Anti-pingpong damping on any sign reversal during a settled lock
+                if float(np.dot(dp_stage, self._lock_dir_sign)) < 0.0:
+                    dp_stage = dp_stage * 0.55
+
+                if float(np.hypot(dp_stage[0], dp_stage[1])) >= 0.8:
+                    p_aim_cand = np.clip(self.p_aim_cnt + dp_stage, -aim_env, aim_env)
+                    p_cmd_cand = np.clip(p_aim_cand + p_rec_cand, -limits, limits)
+                    cd_req = self.recoil_cooldown_s if (lmb_down and recoil_due) else self.aim_cooldown_s
+                    sent = disp(
+                        p_cmd_cand,
+                        is_recenter=False,
+                        cooldown_s=cd_req,
+                        freeze_play_g=bool(lmb_down),
+                        use_boost=True,
+                    )
+                    if sent:
+                        self.p_aim_cnt = p_aim_cand
+                        self._last_aim_cmd_t = t_now
+                        aim_sent = True
+                        if recoil_due or not lmb_down:
+                            self.p_recoil_cnt = p_rec_cand
+                            self._last_recoil_cmd_t = t_now
+                        self._cmd_history.append((float(t_now), p_cmd_cand.copy()))
+                        if self._mono_cmd_t == 0.0:
+                            self._mono_e0_norm = e_norm
+                            self._mono_cmd_t = t_now
+
+            if (not aim_sent) and recoil_due:
+                p_cmd_cand = np.clip(self.p_aim_cnt + p_rec_cand, -limits, limits)
+                sent = disp(
+                    p_cmd_cand,
+                    is_recenter=False,
+                    cooldown_s=self.recoil_cooldown_s,
+                    freeze_play_g=True,
+                    use_boost=True,
+                )
+                if sent:
+                    self.p_recoil_cnt = p_rec_cand
+                    self._last_recoil_cmd_t = t_now
+                    self._cmd_history.append((float(t_now), p_cmd_cand.copy()))
+        elif lmb_down:
+            if self._yolo_miss_since_t is None:
+                self._yolo_miss_since_t = t_now
+            if (t_now - self._yolo_miss_since_t) >= 0.25:
+                self._lock_target_id = None
+                self._lock_dir_sign[:] = 0.0
+                self._mono_tripped = False
+            if recoil_due or float(np.hypot(p_rec_cand[0], p_rec_cand[1])) >= 2.0:
+                p_cmd_cand = np.clip(self.p_aim_cnt + p_rec_cand, -limits, limits)
+                sent = disp(
+                    p_cmd_cand,
+                    is_recenter=False,
+                    cooldown_s=self.recoil_cooldown_s,
+                    freeze_play_g=False,
+                    use_boost=True,
+                )
+                if sent:
+                    self.p_recoil_cnt = p_rec_cand
+                    self._last_recoil_cmd_t = t_now
+                    self._cmd_history.append((float(t_now), p_cmd_cand.copy()))
+            elif (t_now - self._yolo_miss_since_t) >= 0.25 and float(np.hypot(p_stage_now[0], p_stage_now[1])) >= 4.0:
+                sent = disp(
+                    np.zeros(2, dtype=float),
+                    is_recenter=True,
+                    cooldown_s=0.055,
+                    freeze_play_g=False,
+                    use_boost=False,
+                )
+                if sent:
+                    self.p_aim_cnt[:] = 0.0
+                    self.p_recoil_cnt[:] = 0.0
+                    self._cmd_history.append((float(t_now), np.zeros(2, dtype=float)))
+        else:
+            self._yolo_miss_since_t = None
+            self._lock_target_id = None
+            self._lock_dir_sign[:] = 0.0
+            self._mono_tripped = False
+            idle_s = t_now - self._last_engage_t
+            stage_norm = float(np.hypot(p_stage_now[0], p_stage_now[1]))
+            if recoil_due:
+                p_cmd_cand = np.clip(self.p_aim_cnt + p_rec_cand, -limits, limits)
+                sent = disp(
+                    p_cmd_cand,
+                    is_recenter=False,
+                    cooldown_s=0.040,
+                    freeze_play_g=False,
+                    use_boost=False,
+                )
+                if sent:
+                    self.p_recoil_cnt = p_rec_cand
+                    self._last_recoil_cmd_t = t_now
+                    self._cmd_history.append((float(t_now), p_cmd_cand.copy()))
+            elif stage_norm >= 18.0 and idle_s >= self.recenter_idle_s:
+                p_step = self.p_aim_cnt * 0.45
+                sent = disp(
+                    p_step,
+                    is_recenter=False,
+                    cooldown_s=0.045,
+                    freeze_play_g=False,
+                    use_boost=False,
+                )
+                if sent:
+                    self.p_aim_cnt = p_step
+                    self._cmd_history.append((float(t_now), p_step.copy()))
+            elif stage_norm >= 2.0 and idle_s >= self.recenter_idle_s:
+                sent = disp(
+                    np.zeros(2, dtype=float),
+                    is_recenter=True,
+                    cooldown_s=0.045,
+                    freeze_play_g=False,
+                    use_boost=False,
+                )
+                if sent:
+                    self.p_aim_cnt[:] = 0.0
+                    self.p_recoil_cnt[:] = 0.0
+                    self._cmd_history.append((float(t_now), np.zeros(2, dtype=float)))
+
+        return locked_det, locked_dist_px
+
     def run_live_loop(self, max_duration_s: float = 0.0) -> Dict:
         """Main non-blocking high-frequency loop for real CS2 gameplay."""
         session_t0 = time.perf_counter()
@@ -1507,15 +1813,20 @@ class LiveGameSharedControlRunner:
                 with self._hw_lock:
                     p_stage_now = self.p_stage_est.copy()
 
-                # Strict YOLO target selection: >=2 consecutive frames and [4, 95] px around c(t)
-                locked_det: Optional[TargetDetection] = None
-                locked_dist_px = 1e9
-                for d in dets_px:
-                    dist_px = float(np.hypot(d.head_px[0] - c_px[0], d.head_px[1] - c_px[1]))
-                    if d.seen_frames >= self.min_track_frames and dist_px <= self.max_aim_dist_px:
-                        if dist_px < locked_dist_px:
-                            locked_dist_px = dist_px
-                            locked_det = d
+                t_step = time.perf_counter()
+                if self.mode == MODE_ASSIST_ON:
+                    locked_det, _ = self._step_live_assist(
+                        t_now=t_step,
+                        dt_s=dt_s,
+                        roi_rgb=roi_rgb,
+                        c_px=c_px,
+                        dets_px=dets_px,
+                        lmb_down=lmb_down,
+                        v_hand_raw=v_hand_raw,
+                        p_stage_now=p_stage_now,
+                    )
+                else:
+                    locked_det, _ = self._select_locked_target(dets_px, c_px)
 
                 out = self.ctrl.step(
                     dt_s=dt_s,
@@ -1537,178 +1848,15 @@ class LiveGameSharedControlRunner:
                 elif lmb_down and float(np.hypot(c_px[0] - roi_center, c_px[1] - roi_center)) >= 2.5:
                     arrow_tip_px = np.array([roi_center, roi_center], dtype=float)
 
-                if self.mode == MODE_ASSIST_ON:
-                    # 4 Iron Rules Live Open-Loop Manifold Mode (ZERO mouse_sensor feedback):
-                    #   1. Decompose p_stage = p_aim + p_recoil; reset recoil & smooth-recenter on LMB release / idle
-                    #   2. Bounded In-Box Deadband Freeze r_lock = clip(ratio * min(w_h, h_h), min_db, max_db)
-                    #   3. Piecewise damping + No-Reversal + play_g freeze + Monotonicity Gate
-                    #   4. Atomic WS63 B_CMD boost + RGB crosshair recoil slew/sign guard
-                    limits = np.array([self.live_max_x_cnt, self.live_max_y_cnt], dtype=float)
-                    lmb_released = self._prev_lmb_live and (not lmb_down)
-                    self._prev_lmb_live = lmb_down
-
-                    if lmb_released:
-                        self.p_recoil_cnt[:] = 0.0
-                        self._prev_recoil_off_px = None
-                        self._lock_target_id = None
-                        self._lock_dir_sign[:] = 0.0
-                        self._mono_tripped = False
-                        if locked_det is None and float(np.hypot(p_stage_now[0], p_stage_now[1])) > 12.0:
-                            self._smooth_recenter_3step(duration_s=0.12)
-                            p_stage_now = self.p_stage_est.copy()
-
-                    # Compute bounded, slew-limited live follow-recoil component (RGB input!)
-                    if lmb_down:
-                        self._last_engage_t = t_now
-                        off_px = detect_crosshair_offset_px(roi_rgb, is_rgb=True)
-                        if off_px is not None:
-                            off_arr = np.array([float(off_px[0]), float(off_px[1])], dtype=float)
-                            # Reject single-frame inter-frame jumps > 8.0 px
-                            if self._prev_recoil_off_px is not None:
-                                delta_off = off_arr - self._prev_recoil_off_px
-                                dnorm = float(np.hypot(delta_off[0], delta_off[1]))
-                                if dnorm > 8.0:
-                                    off_arr = self._prev_recoil_off_px + delta_off * (8.0 / dnorm)
-                            self._prev_recoil_off_px = off_arr.copy()
-                            # Only react when recoil cross actually kicked significantly (>= 3.0 px)
-                            if float(np.hypot(off_arr[0], off_arr[1])) >= 3.0:
-                                p_rec_raw = self.calibrator.recoil_offset_to_stage_abs(float(off_arr[0]), float(off_arr[1]))
-                                # Physical AK recoil envelope: pull DOWN only (y >= 0), |x| <= 90 cnt
-                                p_rec_raw[0] = float(np.clip(p_rec_raw[0], -90.0, 90.0))
-                                p_rec_raw[1] = float(np.clip(p_rec_raw[1], 0.0, self.live_max_y_cnt))
-                                # Slew-limit recoil command per tick (<= 45 cnt) to stop 580 cnt slams
-                                d_rec = p_rec_raw - self.p_recoil_cnt
-                                d_rec_norm = float(np.hypot(d_rec[0], d_rec[1]))
-                                if d_rec_norm > 45.0:
-                                    p_rec_raw = self.p_recoil_cnt + d_rec * (45.0 / d_rec_norm)
-                                self.p_recoil_cnt = np.clip(p_rec_raw, -limits, limits)
-                    else:
-                        self.p_recoil_cnt[:] = 0.0
-                        self._prev_recoil_off_px = None
-
-                    # Active human flick washout so X-axis does not stay pinned near saturation walls
-                    if float(np.hypot(v_hand_raw[0], v_hand_raw[1])) > 140.0 and (not lmb_down):
-                        self.p_aim_cnt = self.p_aim_cnt * math.exp(-dt_s / 0.18)
-
-                    if locked_det is not None:
-                        self._last_engage_t = t_now
-                        e_px = locked_det.head_px - c_px
-                        e_norm = float(np.hypot(e_px[0], e_px[1]))
-                        r_lock = self._compute_deadband_px(locked_det)
-
-                        tid_cur = int(locked_det.target_id)
-                        new_lock = (tid_cur != self._lock_target_id) or (
-                            (t_now - self._lock_start_t) >= self.no_reversal_window_s and e_norm > (r_lock * 1.35)
-                        )
-                        if new_lock:
-                            dp_init = self.calibrator.aim_error_to_stage_delta(float(e_px[0]), float(e_px[1]))
-                            self._lock_target_id = tid_cur
-                            self._lock_start_t = t_now
-                            self._lock_dir_sign = np.sign(dp_init)
-                            self._mono_target_id = tid_cur
-                            self._mono_e0_norm = e_norm
-                            self._mono_cmd_t = 0.0
-                            self._mono_tripped = False
-
-                        # Live Monotonicity Feedback Gate: trip only on true positive-feedback divergence (> +12 px)
-                        if (
-                            self._mono_cmd_t > 0.0
-                            and self._mono_target_id == tid_cur
-                            and 0.110 <= (t_now - self._mono_cmd_t) <= 0.280
-                            and float(np.hypot(v_hand_raw[0], v_hand_raw[1])) < 80.0
-                            and e_norm > max(15.0, self._mono_e0_norm + 12.0)
-                        ):
-                            self._mono_tripped = True
-                            self.p_aim_cnt = self.p_aim_cnt * 0.5
-                            self._mono_cmd_t = 0.0
-                            print(f"\n[MONO_TRIP] target#{tid_cur} diverged {self._mono_e0_norm:.1f}->{e_norm:.1f}px; pausing aim lock.")
-
-                        if (not self._mono_tripped) and e_norm > r_lock and locked_dist_px >= min(self.min_aim_dist_px, r_lock):
-                            gain = self.kp_small_head if e_norm <= self.small_error_px else self.kp_large_error
-                            dp_stage = self.calibrator.aim_error_to_stage_delta(float(e_px[0]), float(e_px[1])) * gain
-                            # Cap single-step aim jump to <= 95 cnt (~24 px) for crisp flick responsiveness
-                            dp_n = float(np.hypot(dp_stage[0], dp_stage[1]))
-                            if dp_n > 95.0:
-                                dp_stage = dp_stage * (95.0 / dp_n)
-                            # Soft radial overshoot damping without stranding cross-coupled minor axes
-                            if float(np.dot(dp_stage, self._lock_dir_sign)) < 0.0 and e_norm < 8.0:
-                                dp_stage = dp_stage * 0.72
-
-                            if float(np.hypot(dp_stage[0], dp_stage[1])) >= 0.4:
-                                aim_env = np.array([min(165.0, self.live_max_x_cnt), min(165.0, self.live_max_y_cnt)])
-                                self.p_aim_cnt = np.clip(self.p_aim_cnt + dp_stage, -aim_env, aim_env)
-                                p_cmd = np.clip(self.p_aim_cnt + self.p_recoil_cnt, -limits, limits)
-                                freeze_pg = bool(lmb_down)
-                                cd_s = self.recoil_cooldown_s if lmb_down else self.cooldown_lock_s
-                                sent = self._dispatch_stage_manifold_open_loop(
-                                    p_cmd,
-                                    is_recenter=False,
-                                    cooldown_s=cd_s,
-                                    freeze_play_g=freeze_pg,
-                                    use_boost=True,
-                                )
-                                if sent and self._mono_cmd_t == 0.0:
-                                    self._mono_e0_norm = e_norm
-                                    self._mono_cmd_t = t_now
-                        elif lmb_down and float(np.hypot(self.p_recoil_cnt[0], self.p_recoil_cnt[1])) >= 2.0:
-                            # Head already inside deadband r_lock; still track pure recoil pull-down
-                            p_cmd = np.clip(self.p_aim_cnt + self.p_recoil_cnt, -limits, limits)
-                            self._dispatch_stage_manifold_open_loop(
-                                p_cmd,
-                                is_recenter=False,
-                                cooldown_s=self.recoil_cooldown_s,
-                                freeze_play_g=True,
-                                use_boost=True,
-                            )
-                    elif lmb_down:
-                        self._lock_target_id = None
-                        self._lock_dir_sign[:] = 0.0
-                        self._mono_tripped = False
-                        if float(np.hypot(self.p_recoil_cnt[0], self.p_recoil_cnt[1])) >= 2.0:
-                            p_cmd = np.clip(self.p_aim_cnt + self.p_recoil_cnt, -limits, limits)
-                            self._dispatch_stage_manifold_open_loop(
-                                p_cmd,
-                                is_recenter=False,
-                                cooldown_s=self.recoil_cooldown_s,
-                                freeze_play_g=False,
-                                use_boost=True,
-                            )
-                        elif float(np.hypot(p_stage_now[0], p_stage_now[1])) >= 4.0:
-                            self._dispatch_stage_manifold_open_loop(
-                                np.zeros(2, dtype=float),
-                                is_recenter=True,
-                                cooldown_s=self.recoil_cooldown_s,
-                                freeze_play_g=False,
-                                use_boost=False,
-                            )
-                    else:
-                        # No locked target & no LMB: auto-washout / 150ms idle 3-step smooth recenter
-                        self._lock_target_id = None
-                        self._lock_dir_sign[:] = 0.0
-                        self._mono_tripped = False
-                        idle_s = t_now - self._last_engage_t
-                        stage_norm = float(np.hypot(p_stage_now[0], p_stage_now[1]))
-                        aim_norm = float(np.hypot(self.p_aim_cnt[0], self.p_aim_cnt[1]))
-                        if stage_norm >= 15.0 and idle_s >= self.recenter_idle_s:
-                            self._smooth_recenter_3step(duration_s=0.12)
-                        elif aim_norm >= self.auto_recenter_threshold_cnt and idle_s >= 0.04:
-                            decay = math.exp(-dt_s / self.aim_washout_tau_s)
-                            self.p_aim_cnt = self.p_aim_cnt * decay
-                            self._dispatch_stage_manifold_open_loop(
-                                self.p_aim_cnt,
-                                is_recenter=False,
-                                cooldown_s=self.recoil_cooldown_s,
-                                freeze_play_g=False,
-                                use_boost=False,
-                            )
-
+                with self._hw_lock:
+                    p_stage_hud = self.p_stage_est.copy()
                 self._render_vision_hud(
                     roi_rgb=roi_rgb,
                     c_px=c_px,
                     dets_px=dets_px,
                     locked_det=locked_det,
                     arrow_tip_px=arrow_tip_px,
-                    p_stage_now=p_stage_now,
+                    p_stage_now=p_stage_hud,
                 )
 
                 if fire_now:
@@ -1774,6 +1922,10 @@ class LiveGameSharedControlRunner:
           5) F10 pause neutral recenter & END report save to live_session_report.json
         """
         session_t0 = time.perf_counter()
+        orig_cfg_text = None
+        if os.path.isfile(self.config_path):
+            with open(self.config_path, "r", encoding="utf-8") as f:
+                orig_cfg_text = f.read()
         try:
             self.startup_self_check()
 
@@ -1983,12 +2135,76 @@ class LiveGameSharedControlRunner:
                 f"aim(+20,-10px)={np.round(p_aim,1)} cnt | PASS=True"
             )
 
+            # Verify 144 Hz Delayed-Plant (95ms lag) Closed-Loop _step_live_assist (ZERO windup/double-count)
+            self._reset_live_lock_and_stage_state()
+            self.calibrator.J_screen_to_stage = np.array([[-6.5619, 0.7642], [-0.6433, -3.2631]], dtype=float)
+            M_lag = np.linalg.inv(self.calibrator.J_screen_to_stage)
+            sim_hist: deque = deque([(0.0, np.zeros(2, dtype=float))], maxlen=128)
+            sim_stage = np.zeros(2, dtype=float)
+            sim_last_disp_t = -1.0
+
+            def _sim_disp(p_t, is_recenter=False, cooldown_s=0.0, freeze_play_g=False, use_boost=True):
+                nonlocal sim_stage, sim_last_disp_t
+                if (t_cur - sim_last_disp_t) < float(cooldown_s):
+                    return False
+                sim_stage = np.zeros(2, dtype=float) if is_recenter else np.asarray(p_t, dtype=float).copy()
+                sim_last_disp_t = t_cur
+                sim_hist.append((t_cur, sim_stage.copy()))
+                return True
+
+            def _sim_vis(t_q: float) -> np.ndarray:
+                vis = np.zeros(2, dtype=float)
+                for ts, ps in sim_hist:
+                    if ts <= (t_q - 0.095):
+                        vis = ps
+                    else:
+                        break
+                return vis
+
+            roi_blank = np.zeros((roi_size, roi_size, 3), dtype=np.uint8)
+            # Green crosshair at center during Aim-only phase, then kicks UP -22px on LMB spray
+            h0_px = np.array([roi_center + 18.0, roi_center - 10.0], dtype=float)
+            errs_aim, max_stg_seen = [], 0.0
+            for k in range(110):  # 110 * 7ms = 770 ms at 144 Hz
+                t_cur = 1.0 + k * 0.007
+                lmb_sim = (k >= 60)
+                c_off_sim = np.array([0.0, -22.0]) if lmb_sim else np.zeros(2, dtype=float)
+                c_sim = np.array([roi_center, roi_center]) + c_off_sim
+                roi_sim = roi_blank.copy()
+                cx_i, cy_i = int(round(c_sim[0])), int(round(c_sim[1]))
+                roi_sim[max(0, cy_i - 2) : min(roi_size, cy_i + 3), max(0, cx_i - 2) : min(roi_size, cx_i + 3)] = (0, 255, 0)
+                p_vis_k = _sim_vis(t_cur)
+                h_cur = h0_px + (M_lag @ p_vis_k)
+                # Drop YOLO for 1 frame at k=75 during LMB spray and add distractor bot at id=1
+                dets_k = [] if k == 75 else [
+                    TargetDetection(target_id=0, head_px=h_cur, head_radius_px=6.0, chest_px=h_cur + [0, 12], chest_radius_px=10.0, seen_frames=5),
+                    TargetDetection(target_id=1, head_px=c_sim + [25.0, 25.0], head_radius_px=6.0, chest_px=c_sim + [25, 37], chest_radius_px=10.0, seen_frames=5),
+                ]
+                self._step_live_assist(
+                    t_now=t_cur, dt_s=0.007, roi_rgb=roi_sim, c_px=c_sim, dets_px=dets_k,
+                    lmb_down=lmb_sim, v_hand_raw=np.zeros(2), p_stage_now=sim_stage.copy(), dispatch_fn=_sim_disp,
+                )
+                max_stg_seen = max(max_stg_seen, float(np.max(np.abs(sim_stage))))
+                if k in (55, 108):
+                    errs_aim.append(float(np.hypot(*(h_cur - c_sim))))
+                assert not (k == 76 and float(np.hypot(sim_stage[0], sim_stage[1])) < 5.0), "1-frame YOLO dropout caused recenter slam!"
+            assert max_stg_seen <= 160.0, f"144 Hz delayed-plant rail slam detected: max_stage={max_stg_seen:.1f}"
+            assert all(e <= 4.0 for e in errs_aim), f"144 Hz delayed-plant failed to converge: errs={errs_aim}"
+            print(
+                f"[144Hz Delayed-Plant Smith Check] settle_err={errs_aim[0]:.2f}px | "
+                f"recoil+dropout_err={errs_aim[1]:.2f}px | max_stage={max_stg_seen:.1f} cnt | PASS=True"
+            )
+            self._reset_live_lock_and_stage_state()
+
             # Verify F10 smooth recenter + pause
             self.trigger_f10_pause()
         finally:
             dur = time.perf_counter() - session_t0
             self.close()
             report = self.finalize_and_save_report(dur)
+            if orig_cfg_text is not None:
+                with open(self.config_path, "w", encoding="utf-8") as f:
+                    f.write(orig_cfg_text)
 
         assist_ov = report["mode_comparison"][MODE_ASSIST_ON]
         assert assist_ov["total_shots"] == 4

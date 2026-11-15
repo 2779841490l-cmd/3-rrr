@@ -218,29 +218,33 @@
       {
         "trial_idx": 1,
         "initial_err_px": 26.0,
-        "final_err_px": 2.1,
-        "steps": 7,
+        "final_err_px": 1.49,
+        "steps": 5,
         "err_trace_px": [
           26.0,
-          11.41,
-          4.05,
-          3.53,
-          3.32,
-          3.18,
-          2.98,
-          2.1
+          14.6,
+          7.45,
+          4.44,
+          2.24,
+          1.49
         ],
         "converged": true
       },
       {
         "trial_idx": 2,
         "initial_err_px": 26.0,
-        "final_err_px": 1.32,
-        "steps": 2,
+        "final_err_px": 2.45,
+        "steps": 8,
         "err_trace_px": [
           26.0,
-          7.52,
-          1.32
+          12.04,
+          4.5,
+          2.45,
+          2.45,
+          2.45,
+          2.45,
+          2.45,
+          2.45
         ],
         "converged": true
       },
@@ -248,14 +252,10 @@
         "trial_idx": 3,
         "initial_err_px": 26.0,
         "final_err_px": 1.02,
-        "steps": 6,
+        "steps": 2,
         "err_trace_px": [
           26.0,
-          6.92,
-          3.41,
-          5.0,
-          3.58,
-          2.36,
+          10.44,
           1.02
         ],
         "converged": true
@@ -263,13 +263,17 @@
       {
         "trial_idx": 4,
         "initial_err_px": 42.0,
-        "final_err_px": 1.98,
-        "steps": 3,
+        "final_err_px": 0.61,
+        "steps": 7,
         "err_trace_px": [
           42.0,
-          25.82,
-          6.65,
-          1.98
+          30.67,
+          13.07,
+          8.1,
+          9.37,
+          6.85,
+          3.06,
+          0.61
         ],
         "converged": true
       }
