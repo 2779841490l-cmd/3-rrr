@@ -78,7 +78,7 @@ class FastSelfCalibrator:
         self._rls_P = np.array([10.0, 10.0], dtype=float)
         self._rls_lambda = 0.98
         # Continuous play backlash state (avoids 18.4 us binary step jumps on small cross-coupled trims)
-        self._play_half_w = np.array([8.5, 4.0], dtype=float)
+        self._play_half_w = np.array([8.5, 4.9], dtype=float)
         self._play_off = np.zeros(2, dtype=float)
         self._last_u_lin = self.u0_neutral.copy()
 

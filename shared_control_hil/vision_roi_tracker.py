@@ -121,8 +121,15 @@ class DynamicCrosshairTracker:
         dt_s: float = 0.004,
         recoil_prior_px: Optional[np.ndarray] = None,
     ) -> Tuple[np.ndarray, bool]:
-        """Locate recoil crosshair c(t) inside roi_rgb (HxWx3 uint8). Returns (pos_xy, detected_flag)."""
-        rgb_i16 = roi_rgb.astype(np.int16)
+        """Locate recoil crosshair c(t) inside roi_rgb (HxWx3 uint8) within central recoil cone."""
+        h, w = roi_rgb.shape[:2]
+        cx0, cy0 = 0.5 * w, 0.5 * h
+        x_lo = max(0, int(round(cx0 - 32.0)))
+        x_hi = min(w, int(round(cx0 + 32.0)) + 1)
+        y_lo = max(0, int(round(cy0 - 80.0)))
+        y_hi = min(h, int(round(cy0 + 18.0)) + 1)
+
+        rgb_i16 = roi_rgb[y_lo:y_hi, x_lo:x_hi].astype(np.int16)
         diff = np.abs(rgb_i16 - self.target_rgb)
         mask_target = (diff[:, :, 0] <= self.rgb_tol) & (diff[:, :, 1] <= self.rgb_tol) & (diff[:, :, 2] <= self.rgb_tol)
         # Also match crisp classic green / cyan CS2 crosshairs under varying background lighting
@@ -133,7 +140,7 @@ class DynamicCrosshairTracker:
 
         z_meas: Optional[np.ndarray] = None
         detected = False
-        if 4 <= pixel_count <= 450:
+        if 4 <= pixel_count <= 360:
             # Separable row & col projections localize the cross center in ~0.08 ms
             row_sum = mask.sum(axis=1).astype(float)
             col_sum = mask.sum(axis=0).astype(float)
@@ -144,8 +151,8 @@ class DynamicCrosshairTracker:
             u_win = slice(max(0, u_idx - 10), min(mask.shape[1], u_idx + 11))
             ys, xs = np.nonzero(mask[v_win, u_win])
             if len(xs) >= 3:
-                u_c = float(xs.mean() + u_win.start)
-                v_c = float(ys.mean() + v_win.start)
+                u_c = float(xs.mean() + x_lo + u_win.start)
+                v_c = float(ys.mean() + y_lo + v_win.start)
                 z_meas = np.array([u_c, v_c], dtype=float)
                 detected = True
 
@@ -157,15 +164,29 @@ class DynamicCrosshairTracker:
         return pos, detected
 
 
+def _enable_dpi_awareness() -> None:
+    """Opt into per-monitor DPI awareness so Windows 125%/150% scaling cannot shift GDI/MSS ROI centers."""
+    try:
+        ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+
+
 class _WindowsGDICapture:
     """Zero-dependency Windows BitBlt capture for a fixed center screen ROI (< 1.5 ms)."""
 
     def __init__(self, width: int, height: int, roi_size: int):
+        _enable_dpi_awareness()
         self.user32 = ctypes.windll.user32
         self.gdi32 = ctypes.windll.gdi32
         self.roi_size = int(roi_size)
-        self.left = max(0, (int(width) - self.roi_size) // 2)
-        self.top = max(0, (int(height) - self.roi_size) // 2)
+        cur_w = int(self.user32.GetSystemMetrics(0) or width)
+        cur_h = int(self.user32.GetSystemMetrics(1) or height)
+        self.left = max(0, (cur_w - self.roi_size) // 2)
+        self.top = max(0, (cur_h - self.roi_size) // 2)
 
         self.hwnd = self.user32.GetDesktopWindow()
         self.hdc_screen = self.user32.GetDC(self.hwnd)
@@ -200,6 +221,12 @@ class _WindowsGDICapture:
     def grab_rgb(self) -> np.ndarray:
         SRCCOPY = 0x00CC0020
         DIB_RGB_COLORS = 0
+        # Auto-recenter if user Alt-Tabs into CS2 at a different fullscreen resolution (e.g. 4:3 1280x960)
+        cur_w = int(self.user32.GetSystemMetrics(0) or 0)
+        cur_h = int(self.user32.GetSystemMetrics(1) or 0)
+        if cur_w >= self.roi_size and cur_h >= self.roi_size:
+            self.left = (cur_w - self.roi_size) // 2
+            self.top = (cur_h - self.roi_size) // 2
         self.gdi32.BitBlt(
             self.hdc_mem, 0, 0, self.roi_size, self.roi_size,
             self.hdc_screen, self.left, self.top, SRCCOPY,
@@ -273,6 +300,16 @@ class VisionROITracker:
             self._init_onnx(onnx_model_path)
 
     def _init_capture_backend(self) -> None:
+        _enable_dpi_awareness()
+        try:
+            u32 = ctypes.windll.user32
+            cur_w = int(u32.GetSystemMetrics(0) or self.screen_w)
+            cur_h = int(u32.GetSystemMetrics(1) or self.screen_h)
+            if cur_w >= self.roi_size and cur_h >= self.roi_size:
+                self.screen_w = cur_w
+                self.screen_h = cur_h
+        except Exception:
+            pass
         left = max(0, (self.screen_w - self.roi_size) // 2)
         top = max(0, (self.screen_h - self.roi_size) // 2)
         region = (left, top, left + self.roi_size, top + self.roi_size)
