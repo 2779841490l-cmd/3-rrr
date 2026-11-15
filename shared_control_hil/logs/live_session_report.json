@@ -1,11 +1,11 @@
 {
-  "timestamp": "2026-11-15T17:50:10",
-  "session_duration_s": 11.02,
+  "timestamp": "2026-11-15T18:18:08",
+  "session_duration_s": 10.98,
   "roi_backend": "gdi_bitblt",
-  "measured_roi_fps": 143.4,
-  "decision_p95_ms": 0.0901,
-  "safe_envelope_cnt": 85.0,
-  "cooldown_lock_ms": 85.0,
+  "measured_roi_fps": 144.1,
+  "decision_p95_ms": 0.1847,
+  "safe_envelope_cnt": 165.0,
+  "cooldown_lock_ms": 100.0,
   "controller_params": {
     "k_lead": 0.07914,
     "lambda_0": 0.98011,
@@ -22,10 +22,10 @@
     "head_radius_cnt": 10.5,
     "chest_radius_cnt": 21.0
   },
-  "mounting_angle_deg": 15.7543,
+  "mounting_angle_deg": 15.9418,
   "f8_calibrations": [
     {
-      "elapsed_s": 2.552489699999569,
+      "elapsed_s": 2.56137700000545,
       "visual_calib_source": "PINHOLE_FALLBACK",
       "du_x_px": [
         0.0,
@@ -57,17 +57,17 @@
           -4.019
         ]
       ],
-      "mounting_angle_deg": 15.754260034006105,
+      "mounting_angle_deg": 15.94181139285059,
       "pass_time": true,
       "pass_recon": true,
-      "recon_error_pct": 3.96
+      "recon_error_pct": 3.68
     }
   ],
   "overall_summary": {
     "total_shots": 6,
-    "mean_e_actual_cnt": 9.716,
+    "mean_e_actual_cnt": 9.999,
     "mean_e_hand_cnt": 27.225,
-    "mean_delta_e_cnt": 17.508,
+    "mean_delta_e_cnt": 17.226,
     "head_hit_rate": 0.6667,
     "effective_hit_rate": 0.6667,
     "whiff_rate": 0.3333,
@@ -89,8 +89,8 @@
       "head_hit_rate": 1.0,
       "effective_hit_rate": 1.0,
       "mean_e_hand_cnt": 29.835,
-      "mean_e_actual_cnt": 3.572,
-      "mean_delta_e_cnt": 26.262,
+      "mean_e_actual_cnt": 3.997,
+      "mean_delta_e_cnt": 25.838,
       "conflict_rate": 0.0
     },
     "SHADOW_REFEREE_ONLY": {
@@ -103,80 +103,93 @@
       "conflict_rate": 0.0
     }
   },
+  "gsi_summary": {
+    "gsi_connected": false,
+    "gsi_packets": 0,
+    "map": "",
+    "active_weapon": "",
+    "total_kills": 0,
+    "total_hs": 0
+  },
   "shots": [
     {
       "shot_idx": 1,
-      "t_s": 4.802,
+      "t_s": 4.816,
       "mode": "ASSIST_ON",
       "state": "COUNTER_STRAFE",
       "hitbox": "HEAD_HIT",
       "anchor_mode": "HEAD",
       "e_hand_cnt": 24.382,
-      "e_actual_cnt": 4.36,
-      "delta_e_cnt": 20.022,
+      "e_actual_cnt": 3.332,
+      "head_dist_cnt": 3.332,
+      "delta_e_cnt": 21.051,
       "stage_pos_cnt": [
-        25.0,
-        -11.0
+        26.0,
+        -9.0
       ],
       "faults": []
     },
     {
       "shot_idx": 2,
-      "t_s": 5.662,
+      "t_s": 5.634,
       "mode": "ASSIST_ON",
       "state": "COUNTER_STRAFE",
       "hitbox": "HEAD_HIT",
       "anchor_mode": "HEAD",
       "e_hand_cnt": 31.918,
-      "e_actual_cnt": 3.118,
-      "delta_e_cnt": 28.8,
+      "e_actual_cnt": 2.069,
+      "head_dist_cnt": 2.069,
+      "delta_e_cnt": 29.848,
       "stage_pos_cnt": [
-        -31.0,
-        13.0
+        -30.0,
+        12.0
       ],
       "faults": []
     },
     {
       "shot_idx": 3,
-      "t_s": 6.372,
+      "t_s": 6.41,
       "mode": "ASSIST_ON",
       "state": "SPRAY_TRANSFER",
       "hitbox": "HEAD_HIT",
       "anchor_mode": "HEAD",
       "e_hand_cnt": 34.482,
-      "e_actual_cnt": 3.959,
-      "delta_e_cnt": 30.523,
+      "e_actual_cnt": 3.082,
+      "head_dist_cnt": 3.082,
+      "delta_e_cnt": 31.4,
       "stage_pos_cnt": [
         32.0,
-        20.0
+        19.0
       ],
       "faults": []
     },
     {
       "shot_idx": 4,
-      "t_s": 7.305,
+      "t_s": 7.352,
       "mode": "ASSIST_ON",
       "state": "SPRAY_TRANSFER",
       "hitbox": "HEAD_HIT",
       "anchor_mode": "HEAD",
       "e_hand_cnt": 28.557,
-      "e_actual_cnt": 2.852,
-      "delta_e_cnt": 25.705,
+      "e_actual_cnt": 7.503,
+      "head_dist_cnt": 7.503,
+      "delta_e_cnt": 21.054,
       "stage_pos_cnt": [
-        -21.0,
-        -18.0
+        -16.0,
+        -15.0
       ],
       "faults": []
     },
     {
       "shot_idx": 5,
-      "t_s": 7.491,
+      "t_s": 7.541,
       "mode": "SHADOW_REFEREE_ONLY",
       "state": "COUNTER_STRAFE",
       "hitbox": "WHIFF",
       "anchor_mode": "HEAD",
       "e_hand_cnt": 24.382,
       "e_actual_cnt": 24.382,
+      "head_dist_cnt": 24.382,
       "delta_e_cnt": 0.0,
       "stage_pos_cnt": [
         0.0,
@@ -186,13 +199,14 @@
     },
     {
       "shot_idx": 6,
-      "t_s": 7.492,
+      "t_s": 7.542,
       "mode": "SHADOW_REFEREE_ONLY",
       "state": "COUNTER_STRAFE",
       "hitbox": "WHIFF",
       "anchor_mode": "HEAD",
       "e_hand_cnt": 19.626,
       "e_actual_cnt": 19.626,
+      "head_dist_cnt": 19.626,
       "delta_e_cnt": 0.0,
       "stage_pos_cnt": [
         0.0,
@@ -200,5 +214,14 @@
       ],
       "faults": []
     }
-  ]
+  ],
+  "engagement_summary": {
+    "total_engagements": 1,
+    "total_gsi_kills": 0,
+    "total_gsi_hs": 0,
+    "mean_coupling_ratio": null,
+    "coupling_samples": 0,
+    "jsonl_path": "C:\\Users\\27798\\Desktop\\3-rrr\\shared_control_hil\\logs\\live_engagements.jsonl",
+    "csv_path": "C:\\Users\\27798\\Desktop\\3-rrr\\shared_control_hil\\logs\\live_kill_report.csv"
+  }
 }

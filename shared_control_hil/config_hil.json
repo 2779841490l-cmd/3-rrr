@@ -21,7 +21,7 @@
     "max_box_h": 140.0,
     "min_track_frames": 1,
     "min_aim_dist_px": 2.5,
-    "max_aim_dist_px": 115.0
+    "max_aim_dist_px": 48.0
   },
   "stage_kinematics": {
     "u0_neutral_us": [
@@ -50,27 +50,27 @@
     ],
     "J_stage": [
       [
-        1.419967,
-        -0.918479
+        1.348402,
+        -0.895353
       ],
       [
-        0.113839,
-        -1.767509
+        0.137459,
+        -1.859051
       ]
     ],
     "K_stage": [
       [
-        0.734856,
-        -0.381865
+        0.77991,
+        -0.375619
       ],
       [
-        0.047329,
-        -0.590363
+        0.057667,
+        -0.565682
       ]
     ],
-    "mounting_angle_deg": 17.5398,
-    "calib_elapsed_s": 1.587,
-    "recon_error_pct": 3.883,
+    "mounting_angle_deg": 18.9758,
+    "calib_elapsed_s": 1.5888,
+    "recon_error_pct": 4.504,
     "safe_envelope_counts": 165.0,
     "hard_limit_counts": 180.0,
     "live_max_x_counts": 240.0,
@@ -95,18 +95,19 @@
   "live_control": {
     "kp_small_head": 0.5,
     "kp_large_error": 0.52,
-    "kp_snap": 0.85,
+    "kp_snap": 0.92,
     "small_error_px": 14.0,
     "in_box_deadband_ratio": 0.18,
     "min_deadband_px": 1.4,
     "max_deadband_px": 2.4,
-    "cooldown_ms": 95.0,
-    "aim_cooldown_ms": 95.0,
+    "cooldown_ms": 100.0,
+    "aim_cooldown_ms": 100.0,
     "recoil_cooldown_ms": 40.0,
     "tap_guard_ms": 85.0,
+    "visual_lag_ms": 95.0,
     "boost_scale": 1.25,
     "boost_dur_ms": 22.0,
-    "recenter_idle_ms": 180.0,
+    "recenter_idle_ms": 140.0,
     "aim_washout_tau_s": 0.2,
     "no_reversal_window_ms": 250.0,
     "auto_recenter_threshold_cnt": 190.0

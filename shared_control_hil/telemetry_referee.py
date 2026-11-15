@@ -142,17 +142,15 @@ class TelemetryReferee:
         # Counterfactual hand-only crosshair (what human alone would aim at)
         c_hand = c - p_st
 
-        # Reference target point aligns with hitbox priority
-        ref_pt = h_chest if anchor_mode == "CHEST" else h_head
+        # Hitbox check & reference point: score against HEAD unless anchor is CHEST and chest is actually closer
+        head_dist = float(np.hypot(h_head[0] - c[0], h_head[1] - c[1]))
+        chest_dist = float(np.hypot(h_chest[0] - c[0], h_chest[1] - c[1]))
+        ref_pt = h_chest if (anchor_mode == "CHEST" and chest_dist < head_dist) else h_head
         e_vec = ref_pt - c
         e_actual_cnt = float(np.hypot(e_vec[0], e_vec[1]))
         e_actual_px = e_actual_cnt / self.counts_per_px
         e_hand_cnt = float(np.hypot(ref_pt[0] - c_hand[0], ref_pt[1] - c_hand[1]))
         delta_e_cnt = e_hand_cnt - e_actual_cnt
-
-        # Hitbox check: does crosshair land within physical head OR chest radius?
-        head_dist = float(np.hypot(h_head[0] - c[0], h_head[1] - c[1]))
-        chest_dist = float(np.hypot(h_chest[0] - c[0], h_chest[1] - c[1]))
         r_head = float(head_radius_override) if head_radius_override is not None else self.head_radius_cnt
         if head_dist <= r_head:
             hitbox = "HEAD_HIT"
