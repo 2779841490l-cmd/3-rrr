@@ -72,6 +72,11 @@ class FastSelfCalibrator:
             kin.get("J_screen_to_stage", [[-cpp_nom, 0.0], [0.0, -cpp_nom]]),
             dtype=float,
         )
+        self.axis_x_pos_px_per_cnt = float(kin.get("axis_x_pos_px_per_cnt", 0.0))
+        self.axis_x_neg_px_per_cnt = float(kin.get("axis_x_neg_px_per_cnt", 0.0))
+        self._x_pos_asym_scale = 1.0
+        self._x_neg_asym_scale = 1.0
+        self.set_x_axis_asymmetry(self.axis_x_pos_px_per_cnt, self.axis_x_neg_px_per_cnt)
         self.visual_calib_source = str(kin.get("visual_calib_source", "PINHOLE_FALLBACK"))
 
         # RLS covariance matrices for independent X and Y scale factors alpha_x, alpha_y
@@ -97,6 +102,9 @@ class FastSelfCalibrator:
         self.config["stage_kinematics"]["K_stage"] = np.round(self.K_stage, 6).tolist()
         self.config["stage_kinematics"]["mounting_angle_deg"] = round(float(self.mounting_angle_deg), 4)
         self.config["stage_kinematics"]["J_screen_to_stage"] = np.round(self.J_screen_to_stage, 6).tolist()
+        if self.axis_x_pos_px_per_cnt > 0.0 and self.axis_x_neg_px_per_cnt > 0.0:
+            self.config["stage_kinematics"]["axis_x_pos_px_per_cnt"] = round(float(self.axis_x_pos_px_per_cnt), 4)
+            self.config["stage_kinematics"]["axis_x_neg_px_per_cnt"] = round(float(self.axis_x_neg_px_per_cnt), 4)
         self.config["stage_kinematics"]["visual_calib_source"] = self.visual_calib_source
         # Merge latest on-disk `live_control` / `personal_profile` so F8 never overwrites F5-tuned params
         if os.path.isfile(self.config_path):
@@ -167,14 +175,35 @@ class FastSelfCalibrator:
         """
         return -self.sensor_to_screen_polarity * self.pixel_to_counts(du_px, dv_px)
 
+    def set_x_axis_asymmetry(self, pos_px_per_cnt: float, neg_px_per_cnt: float) -> Tuple[float, float]:
+        """Store F8 empirical +X / -X screen sensitivity and derive half-axis gain multipliers."""
+        pos_v = abs(float(pos_px_per_cnt))
+        neg_v = abs(float(neg_px_per_cnt))
+        self.axis_x_pos_px_per_cnt = pos_v
+        self.axis_x_neg_px_per_cnt = neg_v
+        if pos_v >= 0.05 and neg_v >= 0.05:
+            avg_v = 0.5 * (pos_v + neg_v)
+            self._x_pos_asym_scale = float(np.clip(avg_v / pos_v, 0.68, 1.48))
+            self._x_neg_asym_scale = float(np.clip(avg_v / neg_v, 0.68, 1.48))
+        else:
+            self._x_pos_asym_scale = 1.0
+            self._x_neg_asym_scale = 1.0
+        return self._x_pos_asym_scale, self._x_neg_asym_scale
+
     def aim_error_to_stage_delta(self, ex_px: float, ey_px: float) -> np.ndarray:
         """
         Map enemy residual relative to live recoil crosshair e_px = h(t) - c(t)
         into incremental manifold stage command dp_stage via J_screen_to_stage:
             dp_stage = -J_screen_to_stage @ (h(t) - c(t))
-        When the stage shifts world/enemy h(t) toward c(t), e_px -> 0 (true closed loop).
+        Compensates empirically measured +X / -X half-axis sensitivity asymmetry so both
+        leftward and rightward corrections converge symmetrically without one-sided overshoot.
         """
-        return -(self.J_screen_to_stage @ np.array([float(ex_px), float(ey_px)], dtype=float))
+        dp = -(self.J_screen_to_stage @ np.array([float(ex_px), float(ey_px)], dtype=float))
+        if dp[0] > 0.0:
+            dp[0] *= self._x_pos_asym_scale
+        elif dp[0] < 0.0:
+            dp[0] *= self._x_neg_asym_scale
+        return dp
 
     def recoil_offset_to_stage_abs(self, cx_off_px: float, cy_off_px: float) -> np.ndarray:
         """

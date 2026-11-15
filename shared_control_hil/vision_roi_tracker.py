@@ -14,6 +14,7 @@ Features:
 import ctypes
 import ctypes.wintypes as wintypes
 import os
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
@@ -283,6 +284,14 @@ class VisionROITracker:
         self._ort_session = None
         self._yolo_model = None
         self._yolo_device = "cpu"
+        self._yolo_net_half = None
+        self._cuda_graph = None
+        self._static_x = None
+        self._static_pred = None
+        self._torch = None
+        self._tv = None
+        self._yolo_lock = threading.Lock()
+        self._kf_lock = threading.Lock()
         self._next_track_id = 0
 
         self.crosshair_tracker = DynamicCrosshairTracker(roi_size=roi_size)
@@ -290,6 +299,19 @@ class VisionROITracker:
         self.track_hits: Dict[int, int] = {}
         self.last_capture_ms = 0.0
         self.last_infer_ms = 0.0
+        self.last_yolo_ms = 0.0
+        self._last_det_t = 0.0
+
+        # Asynchronous non-blocking YOLO detection worker state
+        self._async_running = False
+        self._async_thread: Optional[threading.Thread] = None
+        self._async_cond = threading.Condition()
+        self._async_pending_roi: Optional[np.ndarray] = None
+        self._async_pending_t = 0.0
+        self._async_pending_seq = 0
+        self._async_latest_dets: List[TargetDetection] = []
+        self._async_latest_t = 0.0
+        self._async_latest_gen = 0
 
         if not self.synthetic_only:
             self._init_capture_backend()
@@ -347,31 +369,72 @@ class VisionROITracker:
             self._ort_session = None
 
     def _init_yolo(self, model_path: str) -> None:
-        """Load trained YOLOv8n CS2 head/chest detector on CUDA GPU (RTX 4060) if available."""
+        """Load trained YOLOv8n CS2 head/chest detector as CUDA FP16 + CUDAGraph (falls back cleanly)."""
         try:
             import torch
+            import torchvision
             from ultralytics import YOLO
 
+            self._torch = torch
+            self._tv = torchvision
             self._yolo_device = 0 if torch.cuda.is_available() else "cpu"
             self._yolo_model = YOLO(model_path)
-            # Warmup once with dummy ROI so first live frame has no CUDA init stall
-            dummy = np.zeros((self.roi_size, self.roi_size, 3), dtype=np.uint8)
-            self._yolo_model.predict(
-                dummy,
-                imgsz=self.yolo_imgsz,
-                conf=self.yolo_conf,
-                device=self._yolo_device,
-                verbose=False,
-            )
-            self.detector_backend = f"yolov8n_cuda" if self._yolo_device != "cpu" else "yolov8n_cpu"
+
+            if self._yolo_device != "cpu":
+                torch.backends.cudnn.benchmark = True
+                net = self._yolo_model.model.to("cuda").eval()
+                if hasattr(net, "fuse"):
+                    net = net.fuse()
+                self._yolo_net_half = net.half()
+
+                imgsz = int(self.yolo_imgsz)
+                static_x = torch.zeros((1, 3, imgsz, imgsz), device="cuda", dtype=torch.float16)
+                try:
+                    stream = torch.cuda.Stream()
+                    with torch.cuda.stream(stream), torch.inference_mode():
+                        for _ in range(4):
+                            _ = self._yolo_net_half(static_x)
+                    torch.cuda.synchronize()
+
+                    graph = torch.cuda.CUDAGraph()
+                    with torch.cuda.graph(graph), torch.inference_mode():
+                        out = self._yolo_net_half(static_x)
+                        static_pred = out[0] if isinstance(out, (tuple, list)) else out
+                    torch.cuda.synchronize()
+                    self._static_x = static_x
+                    self._static_pred = static_pred
+                    self._cuda_graph = graph
+                    self.detector_backend = "yolov8n_fp16_cudagraph"
+                except Exception:
+                    self._cuda_graph = None
+                    self._static_x = None
+                    self._static_pred = None
+                    with torch.inference_mode():
+                        _ = self._yolo_net_half(static_x)
+                    torch.cuda.synchronize()
+                    self.detector_backend = "yolov8n_fp16_cuda"
+            else:
+                dummy = np.zeros((self.roi_size, self.roi_size, 3), dtype=np.uint8)
+                self._yolo_model.predict(
+                    dummy,
+                    imgsz=self.yolo_imgsz,
+                    conf=self.yolo_conf,
+                    device=self._yolo_device,
+                    verbose=False,
+                )
+                self.detector_backend = "yolov8n_cpu"
         except Exception:
             self._yolo_model = None
+            self._yolo_net_half = None
+            self._cuda_graph = None
             self.detector_backend = "none"
 
     def _assign_track_id(self, pos_xy: np.ndarray, used_ids: set) -> int:
         best_id = -1
         best_d = 38.0
-        for tid, kf in self.target_kfs.items():
+        with self._kf_lock:
+            kf_items = list(self.target_kfs.items())
+        for tid, kf in kf_items:
             if tid in used_ids:
                 continue
             d = float(np.linalg.norm(kf.x[:2] - pos_xy))
@@ -380,30 +443,90 @@ class VisionROITracker:
                 best_id = tid
         if best_id >= 0:
             return best_id
-        tid = self._next_track_id
-        self._next_track_id += 1
+        with self._kf_lock:
+            tid = self._next_track_id
+            self._next_track_id += 1
         return tid
 
     def _detect_yolo(self, roi_rgb: np.ndarray) -> List[TargetDetection]:
-        """Run trained YOLOv8n (0: head, 1: chest) on a 256x256 RGB ROI frame."""
-        if self._yolo_model is None:
+        """Run trained YOLOv8n (0: head, 1: chest) on a 256x256 RGB ROI frame via CUDA FP16 + CUDAGraph."""
+        if self._yolo_model is None and self._yolo_net_half is None:
             return []
-        # Ultralytics expects BGR ndarray when passing numpy arrays
-        roi_bgr = roi_rgb[:, :, ::-1]
-        results = self._yolo_model.predict(
-            roi_bgr,
-            imgsz=self.yolo_imgsz,
-            conf=self.yolo_conf,
-            device=self._yolo_device,
-            verbose=False,
-        )
-        if not results or results[0].boxes is None or len(results[0].boxes) == 0:
-            return []
+        t0 = time.perf_counter()
+        xyxy = None
+        confs = None
+        clss = None
 
-        boxes = results[0].boxes
-        xyxy = boxes.xyxy.detach().cpu().numpy()
-        confs = boxes.conf.detach().cpu().numpy()
-        clss = boxes.cls.detach().cpu().numpy().astype(int)
+        if self._yolo_net_half is not None and self._yolo_device != "cpu" and self._torch is not None:
+            torch = self._torch
+            imgsz = int(self.yolo_imgsz)
+            with self._yolo_lock, torch.inference_mode():
+                arr = np.ascontiguousarray(roi_rgb)
+                h_in, w_in = arr.shape[:2]
+                if self._cuda_graph is not None and h_in == imgsz and w_in == imgsz:
+                    gpu_u8 = torch.from_numpy(arr).to("cuda")
+                    self._static_x.copy_(gpu_u8.permute(2, 0, 1).unsqueeze(0).to(torch.float16) * (1.0 / 255.0))
+                    self._cuda_graph.replay()
+                    raw_out = self._static_pred
+                else:
+                    gpu_u8 = torch.from_numpy(arr).to("cuda")
+                    inp = gpu_u8.permute(2, 0, 1).unsqueeze(0).to(torch.float16) * (1.0 / 255.0)
+                    if h_in != imgsz or w_in != imgsz:
+                        inp = torch.nn.functional.interpolate(inp, size=(imgsz, imgsz), mode="bilinear", align_corners=False)
+                    raw = self._yolo_net_half(inp)
+                    raw_out = raw[0] if isinstance(raw, (tuple, list)) else raw
+
+                preds = raw_out[0].transpose(0, 1)  # (N, 4 + nc): cx, cy, w, h, cls...
+                scores, cls_ids = preds[:, 4:].max(dim=1)
+                mask = scores >= self.yolo_conf
+                has_det = bool(mask.any().item())
+                if has_det:
+                    p_sel = preds[mask].float()
+                    sc_sel = scores[mask].float()
+                    cl_sel = cls_ids[mask]
+                    if sc_sel.numel() > 64:
+                        topk_idx = torch.topk(sc_sel, 64).indices
+                        p_sel = p_sel[topk_idx]
+                        sc_sel = sc_sel[topk_idx]
+                        cl_sel = cl_sel[topk_idx]
+                    x1 = p_sel[:, 0] - 0.5 * p_sel[:, 2]
+                    y1 = p_sel[:, 1] - 0.5 * p_sel[:, 3]
+                    x2 = p_sel[:, 0] + 0.5 * p_sel[:, 2]
+                    y2 = p_sel[:, 1] + 0.5 * p_sel[:, 3]
+                    if h_in != imgsz or w_in != imgsz:
+                        sx_r = float(w_in) / float(imgsz)
+                        sy_r = float(h_in) / float(imgsz)
+                        x1, x2 = x1 * sx_r, x2 * sx_r
+                        y1, y2 = y1 * sy_r, y2 * sy_r
+                    boxes_t = torch.stack([x1, y1, x2, y2], dim=1)
+                    if self._tv is not None:
+                        keep = self._tv.ops.batched_nms(boxes_t, sc_sel, cl_sel, 0.45)
+                        boxes_t = boxes_t[keep]
+                        sc_sel = sc_sel[keep]
+                        cl_sel = cl_sel[keep]
+                    xyxy = boxes_t.cpu().numpy()
+                    confs = sc_sel.cpu().numpy()
+                    clss = cl_sel.cpu().numpy().astype(int)
+        else:
+            # CPU / safe Ultralytics fallback
+            roi_bgr = roi_rgb[:, :, ::-1]
+            with self._yolo_lock:
+                results = self._yolo_model.predict(
+                    roi_bgr,
+                    imgsz=self.yolo_imgsz,
+                    conf=self.yolo_conf,
+                    device=self._yolo_device,
+                    verbose=False,
+                )
+            if results and results[0].boxes is not None and len(results[0].boxes) > 0:
+                boxes = results[0].boxes
+                xyxy = boxes.xyxy.detach().cpu().numpy()
+                confs = boxes.conf.detach().cpu().numpy()
+                clss = boxes.cls.detach().cpu().numpy().astype(int)
+
+        self.last_yolo_ms = (time.perf_counter() - t0) * 1000.0
+        if xyxy is None or len(xyxy) == 0:
+            return []
 
         heads = []
         chests = []
@@ -548,33 +671,136 @@ class VisionROITracker:
         detections: List[TargetDetection],
         dt_s: float,
         k_lead_s: float = 0.085,
+        det_t_s: Optional[float] = None,
     ) -> List[TargetDetection]:
         """Update per-target Constant-Velocity Kalman Filters and attach lead predictions h_hat."""
         t0 = time.perf_counter()
         active_ids = set()
-        for det in detections:
-            tid = int(det.target_id)
-            active_ids.add(tid)
-            if tid not in self.target_kfs:
-                self.target_kfs[tid] = ConstantVelocityKF(float(det.head_px[0]), float(det.head_px[1]))
-            pos, vel = self.target_kfs[tid].step(det.head_px, dt_s=dt_s)
-            det.vel_px_s = vel
-            det.head_pred_px = pos + float(k_lead_s) * vel
-            det.chest_pred_px = det.chest_px + float(k_lead_s) * vel
-            self.track_hits[tid] = self.track_hits.get(tid, 0) + 1
-            det.seen_frames = self.track_hits[tid]
+        with self._kf_lock:
+            for det in detections:
+                tid = int(det.target_id)
+                active_ids.add(tid)
+                if tid not in self.target_kfs:
+                    self.target_kfs[tid] = ConstantVelocityKF(float(det.head_px[0]), float(det.head_px[1]))
+                pos, vel = self.target_kfs[tid].step(det.head_px, dt_s=dt_s)
+                det.vel_px_s = vel
+                det.head_pred_px = pos + float(k_lead_s) * vel
+                det.chest_pred_px = det.chest_px + float(k_lead_s) * vel
+                self.track_hits[tid] = self.track_hits.get(tid, 0) + 1
+                det.seen_frames = self.track_hits[tid]
 
-        # Decay missing tracks immediately so consecutive-frame gate strictly enforces continuous visibility
-        missing = [tid for tid in list(self.target_kfs.keys()) if tid not in active_ids]
-        for tid in missing:
-            self.track_hits.pop(tid, None)
-            if len(active_ids) > 0:
-                self.target_kfs[tid].step(None, dt_s=dt_s)
-            else:
-                self.target_kfs.pop(tid, None)
+            # Decay missing tracks immediately so consecutive-frame gate strictly enforces continuous visibility
+            missing = [tid for tid in list(self.target_kfs.keys()) if tid not in active_ids]
+            for tid in missing:
+                self.track_hits.pop(tid, None)
+                if len(active_ids) > 0:
+                    self.target_kfs[tid].step(None, dt_s=dt_s)
+                else:
+                    self.target_kfs.pop(tid, None)
 
+        if det_t_s is not None:
+            self._last_det_t = float(det_t_s)
+        else:
+            self._last_det_t = t0
         self.last_infer_ms = (time.perf_counter() - t0) * 1000.0
         return detections
+
+    def extrapolate_detections(
+        self,
+        detections: List[TargetDetection],
+        t_now: float,
+        t_det: float,
+        k_lead_s: float = 0.085,
+    ) -> List[TargetDetection]:
+        """Fast KF constant-velocity propagation between async YOLO detections (without corrupting KF vel)."""
+        if not detections:
+            return []
+        dt_ext = float(np.clip(float(t_now) - float(t_det), 0.0, 0.060))
+        out: List[TargetDetection] = []
+        with self._kf_lock:
+            for det in detections:
+                tid = int(det.target_id)
+                kf = self.target_kfs.get(tid)
+                if kf is not None:
+                    pos = kf.x[:2].copy() + kf.x[2:].copy() * dt_ext
+                    vel = kf.x[2:].copy()
+                    seen = self.track_hits.get(tid, det.seen_frames)
+                else:
+                    pos = np.asarray(det.head_px, dtype=float).copy()
+                    vel = np.asarray(det.vel_px_s, dtype=float).copy()
+                    seen = det.seen_frames
+                chest_shift = np.asarray(det.chest_px, dtype=float) - np.asarray(det.head_px, dtype=float)
+                chest_now = pos + chest_shift
+                out.append(
+                    TargetDetection(
+                        target_id=tid,
+                        head_px=pos,
+                        head_radius_px=det.head_radius_px,
+                        chest_px=chest_now,
+                        chest_radius_px=det.chest_radius_px,
+                        confidence=det.confidence,
+                        vel_px_s=vel,
+                        head_pred_px=pos + float(k_lead_s) * vel,
+                        chest_pred_px=chest_now + float(k_lead_s) * vel,
+                        head_bbox_px=det.head_bbox_px,
+                        chest_bbox_px=det.chest_bbox_px,
+                        seen_frames=seen,
+                    )
+                )
+        return out
+
+    def start_async_yolo(self) -> None:
+        """Start high-speed background YOLO FP16 detection worker thread."""
+        if self._async_running:
+            return
+        self._async_running = True
+
+        def _worker() -> None:
+            last_seq = -1
+            while self._async_running:
+                with self._async_cond:
+                    while self._async_running and self._async_pending_seq == last_seq:
+                        self._async_cond.wait(timeout=0.05)
+                    if not self._async_running:
+                        break
+                    roi = self._async_pending_roi
+                    t_cap = self._async_pending_t
+                    last_seq = self._async_pending_seq
+                if roi is None:
+                    continue
+                if self.synthetic_only:
+                    dets = self._detect_color_blobs_fallback(roi)
+                else:
+                    dets = self._detect_yolo(roi)
+                with self._async_cond:
+                    self._async_latest_dets = dets
+                    self._async_latest_t = t_cap
+                    self._async_latest_gen += 1
+
+        self._async_thread = threading.Thread(target=_worker, daemon=True)
+        self._async_thread.start()
+
+    def stop_async_yolo(self) -> None:
+        if not self._async_running:
+            return
+        self._async_running = False
+        with self._async_cond:
+            self._async_cond.notify_all()
+        if self._async_thread is not None and self._async_thread.is_alive():
+            self._async_thread.join(timeout=0.5)
+        self._async_thread = None
+
+    def submit_async_roi(self, roi_rgb: np.ndarray, t_cap: float) -> None:
+        """Non-blocking latest-frame overwrite into async YOLO worker."""
+        with self._async_cond:
+            self._async_pending_roi = roi_rgb
+            self._async_pending_t = float(t_cap)
+            self._async_pending_seq += 1
+            self._async_cond.notify()
+
+    def get_latest_async_detections(self) -> Tuple[List[TargetDetection], float, int]:
+        with self._async_cond:
+            return list(self._async_latest_dets), float(self._async_latest_t), int(self._async_latest_gen)
 
     def process_frame(
         self,
@@ -594,7 +820,7 @@ class VisionROITracker:
         if injected_detections is not None:
             dets = injected_detections
         elif roi_rgb is not None:
-            if self._yolo_model is not None and not self.synthetic_only:
+            if (self._yolo_model is not None or self._yolo_net_half is not None) and not self.synthetic_only:
                 dets = self._detect_yolo(roi_rgb)
             elif self.synthetic_only:
                 dets = self._detect_color_blobs_fallback(roi_rgb)
@@ -608,12 +834,14 @@ class VisionROITracker:
         return c_px, dets
 
     def reset_filters(self) -> None:
-        self.target_kfs.clear()
-        self.track_hits.clear()
+        with self._kf_lock:
+            self.target_kfs.clear()
+            self.track_hits.clear()
         c0 = 0.5 * self.roi_size
         self.crosshair_tracker.kf = ConstantVelocityKF(x0=c0, y0=c0, q_acc=20000.0, r_pos=0.4)
 
     def close(self) -> None:
+        self.stop_async_yolo()
         if self._dxcam is not None:
             try:
                 self._dxcam.stop()

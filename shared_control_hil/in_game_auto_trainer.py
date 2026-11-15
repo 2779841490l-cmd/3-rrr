@@ -450,6 +450,13 @@ class InGameAutoTrainer:
             self.calibrator.J_screen_to_stage = J_screen_to_stage.copy()
             self.calibrator.visual_calib_source = "YOLO_HEAD_FLOW"
             self.calibrator.mounting_angle_deg = float(angle_deg)
+            if hasattr(self.calibrator, "set_x_axis_asymmetry"):
+                try:
+                    x_pos = abs(float(dbg_x["pos_px_per_cnt"][0]))
+                    x_neg = abs(float(dbg_x["neg_px_per_cnt"][0]))
+                    self.calibrator.set_x_axis_asymmetry(x_pos, x_neg)
+                except Exception:
+                    pass
             if hasattr(self.calibrator, "save_config"):
                 self.calibrator.save_config()
 
@@ -586,7 +593,7 @@ class InGameAutoTrainer:
                     )
                 )
 
-                if e_norm <= r_lock or e_norm <= err_tol_px:
+                if e_norm <= min(r_lock, err_tol_px):
                     settling_ms = (self._clock() - t_trial_start) * 1000.0
                     break
 
@@ -666,18 +673,21 @@ class InGameAutoTrainer:
                 params["kp_small_head"] = max(0.22, params["kp_small_head"] * 0.78)
                 params["kp_large_error"] = max(0.36, params["kp_large_error"] * 0.80)
                 params["cooldown_ms"] = min(145.0, params["cooldown_ms"] + 15.0)
-                # Abort F5 early if two consecutive monotonicity violations occur
+                # Abort F5 early if two consecutive monotonicity violations occur (NEVER overwrite config_hil.json)
                 if len(trials) >= 2 and (trials[-1].final_err_px > trials[-1].initial_err_px + 3.0) and (
                     trials[-2].final_err_px > trials[-2].initial_err_px + 3.0
                 ):
-                    self.save_live_control_params(params)
-                    return {
+                    report = {
                         "ok": False,
                         "reason": "monotonicity_polarity_abort",
                         "converged": False,
+                        "config_saved": False,
                         "trials": [asdict(t) for t in trials],
                         "final_params": params,
                     }
+                    self.report_path.parent.mkdir(parents=True, exist_ok=True)
+                    self.report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+                    return report
                 continue
 
             # Adaptive damping/gain update rule
@@ -690,19 +700,21 @@ class InGameAutoTrainer:
                 elif palm_stalled or final_err_px > err_tol_px:
                     # Undershoot / friction stall under palm load
                     step_b = 0.16 if palm_stalled else 0.12
-                    params["boost_scale"] = min(1.90, params["boost_scale"] + step_b)
+                    params["boost_scale"] = min(1.55, params["boost_scale"] + step_b)
                     params["kp_small_head"] = min(0.75, params["kp_small_head"] * 1.10)
 
             if streak >= converge_streak:
                 break
 
         self._recenter(0.12)
-        self.save_live_control_params(params)
-
         converged_all = streak >= converge_streak
+        if converged_all:
+            self.save_live_control_params(params)
+
         report = {
             "ok": True,
             "converged": converged_all,
+            "config_saved": bool(converged_all),
             "converge_streak": int(streak),
             "target_streak": int(converge_streak),
             "elapsed_s": round(self._clock() - t_all_start, 2),
