@@ -130,17 +130,19 @@ class TelemetryReferee:
         anchor_mode: str,
         handover_delay_ms: float = 0.0,
         head_radius_override: Optional[float] = None,
+        coupling_eff: float = 1.0,
     ) -> ShotVerdict:
         """Snapshot referee evaluation at bullet firing instant t_k."""
         c = np.asarray(c_cnt, dtype=float)
         p_st = np.asarray(p_stage_cnt, dtype=float)
+        eff_cp = float(np.clip(coupling_eff, 0.0, 1.25))
         h_head = np.asarray(head_true_cnt, dtype=float)
         h_chest = np.asarray(chest_true_cnt, dtype=float)
         v_tgt = np.asarray(v_target_cnt_s, dtype=float)
         v_h = np.asarray(v_hand_cnt_s, dtype=float)
 
-        # Counterfactual hand-only crosshair (what human alone would aim at)
-        c_hand = c - p_st
+        # Counterfactual hand-only crosshair weighted by measured physical stage->sensor coupling
+        c_hand = c - p_st * eff_cp
 
         # Hitbox check & reference point: score against HEAD unless anchor is CHEST and chest is actually closer
         head_dist = float(np.hypot(h_head[0] - c[0], h_head[1] - c[1]))

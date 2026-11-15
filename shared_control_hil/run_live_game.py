@@ -524,6 +524,8 @@ class LiveGameSharedControlRunner:
                 p_stage_phys = self.p_stage_est.copy()
             prev_lmb_1k = False
             prev_wasd = (False, False, False, False)
+            v_usb_lp = np.zeros(2, dtype=float)
+            v_stg_lp = np.zeros(2, dtype=float)
             while self._tracker_running:
                 t_now = time.perf_counter()
                 dt = max(0.0005, t_now - last_t)
@@ -532,7 +534,7 @@ class LiveGameSharedControlRunner:
                 cur_sensor = np.array(self.trainer.sensor.get_position(), dtype=float)
                 with self._hw_lock:
                     cur_stage_cmd = self.p_stage_est.copy()
-                # Track servo first-order physical lag (~35 ms) so cmd jumps don't create phantom hand spikes
+                # Track servo first-order physical lag (~35 ms)
                 phys_alpha = min(1.0, dt / 0.035)
                 p_stage_phys = p_stage_phys + phys_alpha * (cur_stage_cmd - p_stage_phys)
                 dp_usb = cur_sensor - last_sensor
@@ -540,8 +542,20 @@ class LiveGameSharedControlRunner:
                 last_sensor = cur_sensor
                 last_stage_phys = p_stage_phys.copy()
 
-                inst_v = (dp_usb - dp_stage) / dt
                 alpha = min(1.0, dt / 0.025)
+                v_usb_lp = (1.0 - alpha) * v_usb_lp + alpha * (dp_usb / dt)
+                v_stg_lp = (1.0 - alpha) * v_stg_lp + alpha * (dp_stage / dt)
+                stg_spd = float(math.hypot(v_stg_lp[0], v_stg_lp[1]))
+                if stg_spd > 1.0:
+                    # Coupling-invariant projection: subtract only actual USB motion attributable to
+                    # the stage along its command axis [0, 1.25 * stg_spd], so partial palm coupling (<1.0)
+                    # never creates phantom opposite-direction hand-flick spikes that trigger FLICK_WASHOUT.
+                    u_hat = v_stg_lp / stg_spd
+                    proj = float(np.dot(v_usb_lp, u_hat))
+                    stage_attrib = min(max(0.0, proj), 1.25 * stg_spd) * u_hat
+                    v_hand_est = v_usb_lp - stage_attrib
+                else:
+                    v_hand_est = v_usb_lp.copy()
                 lmb_now = bool(self.keys.is_down(VK_LBUTTON))
                 w_d = bool(self.keys.is_down(VK_W))
                 a_d = bool(self.keys.is_down(VK_A))
@@ -557,7 +571,7 @@ class LiveGameSharedControlRunner:
 
                 rec_key = any(self.keys.is_down(vk) for vk in (VK_R, VK_1, VK_2, VK_3, VK_Q))
                 with self._state_lock:
-                    self._v_hand_1k = (1.0 - alpha) * self._v_hand_1k + alpha * inst_v
+                    self._v_hand_1k = v_hand_est.copy()
                     if lmb_now and not prev_lmb_1k:
                         self._lmb_edge_pending = True
                     if cs_trigger:
@@ -727,6 +741,8 @@ class LiveGameSharedControlRunner:
             pass
         self._prev_sensor_xy = np.array(self.trainer.sensor.get_position(), dtype=float)
         self._last_hw_cmd_t = time.perf_counter()
+        if hasattr(self, "eng_logger"):
+            self.eng_logger.clear_pending_probes()
         self.mode = prev_mode
         passed = bool(res.get("pass_time", True) and res.get("pass_recon", True))
         print(
@@ -1241,6 +1257,11 @@ class LiveGameSharedControlRunner:
             float(det_target.vel_px_s[1]),
         )
 
+        eff_cp = (
+            self.eng_logger.get_effective_coupling(default=1.0)
+            if (mode_now == MODE_ASSIST_ON and hasattr(self, "eng_logger"))
+            else 1.0
+        )
         verdict = self.referee.evaluate_shot(
             shot_idx=self.shot_count,
             t_s=t_now,
@@ -1254,6 +1275,7 @@ class LiveGameSharedControlRunner:
             active_target_id=active_target_id,
             intended_target_id=int(det_target.target_id),
             anchor_mode=anchor_mode if anchor_mode != "NONE" else "HEAD",
+            coupling_eff=eff_cp,
         )
         self.shot_modes.append(mode_now)
         self.shot_states.append(short_state)

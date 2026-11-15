@@ -218,66 +218,67 @@
       {
         "trial_idx": 1,
         "initial_err_px": 26.0,
-        "final_err_px": 1.5,
-        "steps": 8,
+        "final_err_px": 1.25,
+        "steps": 5,
         "err_trace_px": [
           26.0,
-          14.39,
-          7.18,
-          4.16,
-          3.67,
-          1.97,
-          1.5,
-          1.5,
-          1.5
+          16.37,
+          8.05,
+          5.13,
+          3.75,
+          1.25
         ],
         "converged": true
       },
       {
         "trial_idx": 2,
         "initial_err_px": 26.0,
-        "final_err_px": 1.38,
-        "steps": 4,
+        "final_err_px": 1.93,
+        "steps": 8,
         "err_trace_px": [
           26.0,
-          12.42,
-          7.2,
-          3.13,
-          1.38
+          12.75,
+          6.33,
+          3.62,
+          2.4,
+          1.93,
+          1.93,
+          1.93,
+          1.93
         ],
         "converged": true
       },
       {
         "trial_idx": 3,
         "initial_err_px": 26.0,
-        "final_err_px": 0.77,
+        "final_err_px": 1.12,
         "steps": 7,
         "err_trace_px": [
           26.0,
-          9.39,
-          3.79,
-          2.17,
-          2.09,
-          1.88,
-          1.54,
-          0.77
+          10.78,
+          5.46,
+          4.56,
+          4.44,
+          3.06,
+          1.69,
+          1.12
         ],
         "converged": true
       },
       {
         "trial_idx": 4,
         "initial_err_px": 42.0,
-        "final_err_px": 0.63,
+        "final_err_px": 0.53,
         "steps": 7,
         "err_trace_px": [
           42.0,
-          32.43,
-          14.97,
-          9.44,
-          11.64,
-          10.2,
-          3.58,
-          0.63
+          31.94,
+          16.15,
+          9.8,
+          11.67,
+          10.63,
+          3.92,
+          0.53
         ],
         "converged": true
       }

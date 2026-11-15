@@ -185,6 +185,25 @@ class EngagementLogger:
         if self._active is not None and len(self._active["trace"]) < 240:
             self._active["trace"].append(entry)
 
+    def clear_pending_probes(self) -> None:
+        """Discard pending coupling samples/recent history (e.g. after F8 calibration sweep)."""
+        self._coupling_queue.clear()
+        self._recent_coupling.clear()
+
+    def get_effective_coupling(self, default: float = 1.0, min_samples: int = 3) -> float:
+        """Return measured physical stage->sensor transfer ratio when sufficient live samples exist."""
+        now_t = time.perf_counter()
+        recent = [(c, m) for t_c, c, m in self._recent_coupling if (now_t - t_c) <= 8.0]
+        if len(recent) >= min_samples:
+            rc_cmd = sum(x[0] for x in recent)
+            if rc_cmd >= 25.0:
+                return float(np.clip(sum(x[1] for x in recent) / rc_cmd, 0.05, 1.0))
+        if len(self._coupling_samples) >= min_samples:
+            all_cmd = sum(x[0] for x in self._coupling_samples)
+            if all_cmd >= 25.0:
+                return float(np.clip(sum(x[1] for x in self._coupling_samples) / all_cmd, 0.05, 1.0))
+        return float(default)
+
     def on_stage_dispatch(self, t_now: float, dp_cmd_cnt: np.ndarray, sensor_xy: np.ndarray) -> None:
         if float(np.hypot(dp_cmd_cnt[0], dp_cmd_cnt[1])) >= 5.0:
             self._coupling_queue.append(

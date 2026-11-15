@@ -1,2 +1,2 @@
 eng_id,t_start_s,t_end_s,n_shots,weapon,gsi_kills,gsi_hs,best_hitbox,shot1_eh_cnt,shot1_ea_cnt,shot1_head_cnt,shot1_dE_cnt,min_ea_cnt,min_head_cnt,sp_pre_norm,sp_max_norm,stage_cmd_cnt,sensor_meas_cnt,coupling_ratio,diag_flags
-1,4.816,7.542,6,unknown,0,0,HEAD_HIT,24.38,3.33,3.33,21.05,2.07,2.07,27.51,37.22,0,0,,OK
+1,4.821,7.421,6,unknown,0,0,HEAD_HIT,24.38,4.09,4.09,20.29,2.4,2.4,26.4,37.48,0,0,,OK
