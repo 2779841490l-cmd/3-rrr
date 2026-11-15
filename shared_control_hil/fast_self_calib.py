@@ -275,6 +275,53 @@ class FastSelfCalibrator:
             return None
         return cls.clamp_servo_pair(float(e1 + du_b[0]), float(e2 + du_b[1]))
 
+    @classmethod
+    def compute_live_ballistic_boost(
+        cls,
+        du_k: np.ndarray,
+        dp_cnt: np.ndarray,
+        e1: float,
+        e2: float,
+        boost_scale: float = 1.55,
+        boost_dur_ms: float = 32.0,
+    ) -> Optional[Tuple[float, float, int]]:
+        """
+        Compute X/Y-asymmetric WS63 B_CMD transient overdrive (b1, b2, dur_us) matched to
+        single-servo X (S1 high stiction/backlash) vs dual-servo short-arm Y (S2/S3 high torque).
+        Returns None for sub-3.0 cnt displacements to keep micro-hold buzz-free.
+        """
+        dx, dy = float(dp_cnt[0]), float(dp_cnt[1])
+        dp_n = math.hypot(dx, dy)
+        if dp_n < 3.0:
+            return None
+
+        d0, d1 = float(du_k[0]), float(du_k[1])
+        bs = max(0.8, float(boost_scale))
+        du_b = np.zeros(2, dtype=float)
+
+        if abs(d0) >= 1.2:
+            # S1 (single MG996R) needs consistent stiction overdrive whenever |d0| >= 1.2 us —
+            # including pure-Y moves where K[0,1] requires S1 co-rotation to cancel X coupling drift!
+            s1_floor = min(20.0, 8.0 + 0.55 * abs(d0))
+            mag0 = min(35.0, max(s1_floor, abs(d0) * 0.65 * bs))
+            du_b[0] = math.copysign(mag0, d0)
+
+        if abs(d1) >= 1.2:
+            # S2/S3 (dual opposed short-arm Y) accelerate cleanly with gentle boost (prevents Y overshoot)
+            y_floor = min(6.5, 2.0 + 0.55 * abs(d1))
+            prop1 = abs(d1) * 0.42 * (bs / 1.35)
+            mag1 = min(14.0, max(y_floor, prop1))
+            du_b[1] = math.copysign(mag1, d1)
+
+        if abs(du_b[0]) < 1.0 and abs(du_b[1]) < 1.0:
+            return None
+
+        dur_base = 22.0 + 0.45 * min(dp_n, 45.0)
+        dur_scaled = dur_base * (float(boost_dur_ms) / 32.0 if float(boost_dur_ms) > 0.0 else 1.0)
+        bst_ms = float(np.clip(dur_scaled, 24.0, 42.0))
+        b1, b2 = cls.clamp_servo_pair(float(e1 + du_b[0]), float(e2 + du_b[1]))
+        return b1, b2, int(round(bst_ms * 1000.0))
+
     @staticmethod
     def _compute_phase_shift_px(img0_rgb: np.ndarray, img1_rgb: np.ndarray) -> Tuple[Tuple[float, float], float]:
         """Compute background optical flow shift (du_px, dv_px) from img0 to img1 using Hann-windowed phaseCorrelate."""

@@ -1,9 +1,9 @@
 {
-  "timestamp": "2026-11-15T20:01:26",
-  "session_duration_s": 11.28,
+  "timestamp": "2026-11-15T20:16:53",
+  "session_duration_s": 193.93,
   "roi_backend": "gdi_bitblt",
-  "measured_roi_fps": 144.1,
-  "decision_p95_ms": 0.2068,
+  "measured_roi_fps": 143.8,
+  "decision_p95_ms": 0.1518,
   "safe_envelope_cnt": 165.0,
   "cooldown_lock_ms": 100.0,
   "controller_params": {
@@ -22,83 +22,49 @@
     "head_radius_cnt": 10.5,
     "chest_radius_cnt": 21.0
   },
-  "mounting_angle_deg": 17.0666,
-  "f8_calibrations": [
-    {
-      "elapsed_s": 2.5625372999929823,
-      "visual_calib_source": "PINHOLE_FALLBACK",
-      "du_x_px": [
-        0.0,
-        0.0
-      ],
-      "du_y_px": [
-        0.0,
-        0.0
-      ],
-      "resp_x": 1.0,
-      "resp_y": 1.0,
-      "J_s2w": [
-        [
-          0.0,
-          0.0
-        ],
-        [
-          0.0,
-          0.0
-        ]
-      ],
-      "J_screen_to_stage": [
-        [
-          -4.019,
-          0.0
-        ],
-        [
-          0.0,
-          -4.019
-        ]
-      ],
-      "mounting_angle_deg": 17.066634137817132,
-      "pass_time": true,
-      "pass_recon": true,
-      "recon_error_pct": 4.0
-    }
-  ],
+  "mounting_angle_deg": -12.1777,
+  "f8_calibrations": [],
   "overall_summary": {
-    "total_shots": 6,
-    "mean_e_actual_cnt": 12.367,
-    "mean_e_hand_cnt": 27.225,
-    "mean_delta_e_cnt": 14.858,
-    "head_hit_rate": 0.5,
-    "effective_hit_rate": 0.6667,
-    "whiff_rate": 0.3333,
-    "conflict_rate": 0.0,
-    "saturation_count": 0,
-    "saturation_rate": 0.0,
-    "max_stage_disp_cnt": 44.0,
+    "total_shots": 143,
+    "mean_e_actual_cnt": 95.776,
+    "mean_e_hand_cnt": 127.162,
+    "mean_delta_e_cnt": 31.387,
+    "head_hit_rate": 0.0909,
+    "effective_hit_rate": 0.1189,
+    "whiff_rate": 0.8811,
+    "conflict_rate": 0.1888,
+    "saturation_count": 4,
+    "saturation_rate": 0.028,
+    "max_stage_disp_cnt": 218.57,
     "fault_counts": {
-      "FAULT_LAG": 0,
-      "FAULT_CONFLICT": 0,
-      "FAULT_SATURATION": 0,
-      "FAULT_HANDOVER_DELAY": 0
+      "FAULT_LAG": 46,
+      "FAULT_CONFLICT": 27,
+      "FAULT_SATURATION": 4,
+      "FAULT_HANDOVER_DELAY": 1
     },
-    "gradient_hints": []
+    "gradient_hints": [
+      "+k_lead (target motion lag detected)",
+      "-sigma_v / same-direction damping (human-stage flick conflict)",
+      "-tau_w (washout decay too slow -> stage hit boundary)",
+      "+beta, -P_switch (slow multi-target handover)"
+    ]
   },
   "mode_comparison": {
     "ASSIST_ON": {
-      "total_shots": 4,
-      "head_hit_rate": 0.75,
-      "effective_hit_rate": 1.0,
-      "mean_e_hand_cnt": 29.835,
-      "mean_e_actual_cnt": 7.548,
-      "mean_delta_e_cnt": 22.287,
-      "conflict_rate": 0.0
+      "total_shots": 143,
+      "head_hit_rate": 0.0909,
+      "effective_hit_rate": 0.1189,
+      "mean_e_hand_cnt": 127.162,
+      "mean_e_actual_cnt": 95.776,
+      "mean_delta_e_cnt": 31.387,
+      "conflict_rate": 0.1888
     },
     "SHADOW_REFEREE_ONLY": {
-      "total_shots": 2,
+      "total_shots": 0,
       "head_hit_rate": 0.0,
       "effective_hit_rate": 0.0,
-      "mean_e_hand_cnt": 22.004,
-      "mean_e_actual_cnt": 22.004,
+      "mean_e_hand_cnt": 0.0,
+      "mean_e_actual_cnt": 0.0,
       "mean_delta_e_cnt": 0.0,
       "conflict_rate": 0.0
     }
@@ -114,113 +80,2581 @@
   "shots": [
     {
       "shot_idx": 1,
-      "t_s": 4.842,
+      "t_s": 58.88,
       "mode": "ASSIST_ON",
-      "state": "COUNTER_STRAFE",
-      "hitbox": "HEAD_HIT",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
       "anchor_mode": "HEAD",
-      "e_hand_cnt": 24.382,
-      "e_actual_cnt": 3.332,
-      "head_dist_cnt": 3.332,
-      "delta_e_cnt": 21.051,
+      "e_hand_cnt": 12.579,
+      "e_actual_cnt": 22.447,
+      "head_dist_cnt": 22.447,
+      "delta_e_cnt": -9.868,
       "stage_pos_cnt": [
-        26.0,
-        -9.0
+        18.13,
+        18.29
       ],
-      "faults": []
+      "faults": [
+        "FAULT_LAG",
+        "FAULT_CONFLICT"
+      ]
     },
     {
       "shot_idx": 2,
-      "t_s": 5.745,
+      "t_s": 58.985,
       "mode": "ASSIST_ON",
-      "state": "COUNTER_STRAFE",
-      "hitbox": "BODY_HIT",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
       "anchor_mode": "HEAD",
-      "e_hand_cnt": 31.918,
-      "e_actual_cnt": 15.865,
-      "head_dist_cnt": 15.865,
-      "delta_e_cnt": 16.053,
+      "e_hand_cnt": 271.993,
+      "e_actual_cnt": 253.399,
+      "head_dist_cnt": 253.399,
+      "delta_e_cnt": 18.594,
       "stage_pos_cnt": [
-        -44.0,
-        18.0
+        18.13,
+        18.29
       ],
       "faults": []
     },
     {
       "shot_idx": 3,
-      "t_s": 6.627,
+      "t_s": 59.083,
       "mode": "ASSIST_ON",
       "state": "SPRAY_TRANSFER",
-      "hitbox": "HEAD_HIT",
-      "anchor_mode": "HEAD",
-      "e_hand_cnt": 34.482,
-      "e_actual_cnt": 4.599,
-      "head_dist_cnt": 4.599,
-      "delta_e_cnt": 29.883,
+      "hitbox": "WHIFF",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 282.136,
+      "e_actual_cnt": 260.864,
+      "head_dist_cnt": 260.864,
+      "delta_e_cnt": 21.273,
       "stage_pos_cnt": [
-        30.0,
-        21.0
+        18.13,
+        18.29
       ],
       "faults": []
     },
     {
       "shot_idx": 4,
-      "t_s": 7.437,
+      "t_s": 60.392,
       "mode": "ASSIST_ON",
       "state": "SPRAY_TRANSFER",
-      "hitbox": "HEAD_HIT",
+      "hitbox": "WHIFF",
       "anchor_mode": "HEAD",
-      "e_hand_cnt": 28.557,
-      "e_actual_cnt": 6.396,
-      "head_dist_cnt": 6.396,
-      "delta_e_cnt": 22.161,
+      "e_hand_cnt": 42.69,
+      "e_actual_cnt": 35.304,
+      "head_dist_cnt": 35.304,
+      "delta_e_cnt": 7.386,
       "stage_pos_cnt": [
-        -17.0,
-        -17.0
+        20.99,
+        10.37
       ],
       "faults": []
     },
     {
       "shot_idx": 5,
-      "t_s": 7.624,
-      "mode": "SHADOW_REFEREE_ONLY",
-      "state": "COUNTER_STRAFE",
+      "t_s": 60.635,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
       "hitbox": "WHIFF",
       "anchor_mode": "HEAD",
-      "e_hand_cnt": 24.382,
-      "e_actual_cnt": 24.382,
-      "head_dist_cnt": 24.382,
-      "delta_e_cnt": 0.0,
+      "e_hand_cnt": 90.555,
+      "e_actual_cnt": 71.725,
+      "head_dist_cnt": 71.725,
+      "delta_e_cnt": 18.83,
       "stage_pos_cnt": [
-        0.0,
-        0.0
+        21.84,
+        53.14
       ],
       "faults": []
     },
     {
       "shot_idx": 6,
-      "t_s": 7.626,
-      "mode": "SHADOW_REFEREE_ONLY",
-      "state": "COUNTER_STRAFE",
+      "t_s": 61.316,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
       "hitbox": "WHIFF",
       "anchor_mode": "HEAD",
-      "e_hand_cnt": 19.626,
-      "e_actual_cnt": 19.626,
-      "head_dist_cnt": 19.626,
-      "delta_e_cnt": 0.0,
+      "e_hand_cnt": 76.119,
+      "e_actual_cnt": 82.28,
+      "head_dist_cnt": 82.28,
+      "delta_e_cnt": -6.161,
       "stage_pos_cnt": [
-        0.0,
-        0.0
+        15.94,
+        -19.02
+      ],
+      "faults": [
+        "FAULT_LAG",
+        "FAULT_CONFLICT"
+      ]
+    },
+    {
+      "shot_idx": 7,
+      "t_s": 61.43,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 20.116,
+      "e_actual_cnt": 22.122,
+      "head_dist_cnt": 22.122,
+      "delta_e_cnt": -2.006,
+      "stage_pos_cnt": [
+        15.73,
+        -10.16
+      ],
+      "faults": [
+        "FAULT_CONFLICT"
+      ]
+    },
+    {
+      "shot_idx": 8,
+      "t_s": 61.554,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "BODY_HIT",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 51.842,
+      "e_actual_cnt": 42.7,
+      "head_dist_cnt": 42.7,
+      "delta_e_cnt": 9.142,
+      "stage_pos_cnt": [
+        16.07,
+        -13.81
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 9,
+      "t_s": 61.691,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 45.505,
+      "e_actual_cnt": 43.48,
+      "head_dist_cnt": 43.48,
+      "delta_e_cnt": 2.025,
+      "stage_pos_cnt": [
+        16.24,
+        -1.73
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 10,
+      "t_s": 61.803,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 38.072,
+      "e_actual_cnt": 30.634,
+      "head_dist_cnt": 30.634,
+      "delta_e_cnt": 7.438,
+      "stage_pos_cnt": [
+        15.44,
+        15.68
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 11,
+      "t_s": 62.022,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 111.611,
+      "e_actual_cnt": 81.707,
+      "head_dist_cnt": 81.707,
+      "delta_e_cnt": 29.904,
+      "stage_pos_cnt": [
+        45.83,
+        36.24
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 12,
+      "t_s": 62.143,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 78.035,
+      "e_actual_cnt": 65.451,
+      "head_dist_cnt": 65.451,
+      "delta_e_cnt": 12.584,
+      "stage_pos_cnt": [
+        68.02,
+        36.49
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 13,
+      "t_s": 64.818,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 26.437,
+      "e_actual_cnt": 34.532,
+      "head_dist_cnt": 34.532,
+      "delta_e_cnt": -8.095,
+      "stage_pos_cnt": [
+        18.91,
+        17.52
+      ],
+      "faults": [
+        "FAULT_CONFLICT"
+      ]
+    },
+    {
+      "shot_idx": 14,
+      "t_s": 64.942,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 197.13,
+      "e_actual_cnt": 204.25,
+      "head_dist_cnt": 204.25,
+      "delta_e_cnt": -7.12,
+      "stage_pos_cnt": [
+        18.91,
+        17.52
+      ],
+      "faults": [
+        "FAULT_LAG",
+        "FAULT_CONFLICT"
+      ]
+    },
+    {
+      "shot_idx": 15,
+      "t_s": 65.756,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 154.277,
+      "e_actual_cnt": 133.568,
+      "head_dist_cnt": 133.568,
+      "delta_e_cnt": 20.709,
+      "stage_pos_cnt": [
+        -24.25,
+        57.84
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 16,
+      "t_s": 65.885,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 167.843,
+      "e_actual_cnt": 127.001,
+      "head_dist_cnt": 127.001,
+      "delta_e_cnt": 40.842,
+      "stage_pos_cnt": [
+        -32.05,
+        116.47
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 17,
+      "t_s": 66.006,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD_CHEST_BLEND",
+      "e_hand_cnt": 199.769,
+      "e_actual_cnt": 155.496,
+      "head_dist_cnt": 155.496,
+      "delta_e_cnt": 44.273,
+      "stage_pos_cnt": [
+        -32.9,
+        122.69
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 18,
+      "t_s": 66.677,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "HEAD_HIT",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 7.032,
+      "e_actual_cnt": 9.286,
+      "head_dist_cnt": 9.286,
+      "delta_e_cnt": -2.254,
+      "stage_pos_cnt": [
+        -5.14,
+        8.61
+      ],
+      "faults": [
+        "FAULT_CONFLICT"
+      ]
+    },
+    {
+      "shot_idx": 19,
+      "t_s": 66.793,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD_CHEST_BLEND",
+      "e_hand_cnt": 24.138,
+      "e_actual_cnt": 17.362,
+      "head_dist_cnt": 17.362,
+      "delta_e_cnt": 6.776,
+      "stage_pos_cnt": [
+        -8.56,
+        14.3
+      ],
+      "faults": [
+        "FAULT_LAG"
+      ]
+    },
+    {
+      "shot_idx": 20,
+      "t_s": 68.02,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 16.307,
+      "e_actual_cnt": 34.619,
+      "head_dist_cnt": 34.619,
+      "delta_e_cnt": -18.312,
+      "stage_pos_cnt": [
+        -37.25,
+        28.68
+      ],
+      "faults": [
+        "FAULT_LAG",
+        "FAULT_CONFLICT"
+      ]
+    },
+    {
+      "shot_idx": 21,
+      "t_s": 68.129,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 42.037,
+      "e_actual_cnt": 19.843,
+      "head_dist_cnt": 19.843,
+      "delta_e_cnt": 22.194,
+      "stage_pos_cnt": [
+        -43.72,
+        23.93
+      ],
+      "faults": [
+        "FAULT_LAG"
+      ]
+    },
+    {
+      "shot_idx": 22,
+      "t_s": 68.259,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 102.147,
+      "e_actual_cnt": 67.001,
+      "head_dist_cnt": 67.001,
+      "delta_e_cnt": 35.146,
+      "stage_pos_cnt": [
+        -55.54,
+        47.99
+      ],
+      "faults": [
+        "FAULT_LAG"
+      ]
+    },
+    {
+      "shot_idx": 23,
+      "t_s": 68.378,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 148.25,
+      "e_actual_cnt": 99.233,
+      "head_dist_cnt": 99.233,
+      "delta_e_cnt": 49.017,
+      "stage_pos_cnt": [
+        -58.86,
+        75.45
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 24,
+      "t_s": 68.489,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 182.092,
+      "e_actual_cnt": 122.142,
+      "head_dist_cnt": 122.142,
+      "delta_e_cnt": 59.95,
+      "stage_pos_cnt": [
+        -62.98,
+        97.48
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 25,
+      "t_s": 68.619,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 199.931,
+      "e_actual_cnt": 117.312,
+      "head_dist_cnt": 117.312,
+      "delta_e_cnt": 82.619,
+      "stage_pos_cnt": [
+        -73.59,
+        167.2
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 26,
+      "t_s": 68.979,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 94.67,
+      "e_actual_cnt": 39.007,
+      "head_dist_cnt": 56.513,
+      "delta_e_cnt": 55.663,
+      "stage_pos_cnt": [
+        -43.55,
+        72.25
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 27,
+      "t_s": 69.087,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 92.764,
+      "e_actual_cnt": 53.794,
+      "head_dist_cnt": 102.237,
+      "delta_e_cnt": 38.97,
+      "stage_pos_cnt": [
+        -62.5,
+        59.63
+      ],
+      "faults": [
+        "FAULT_LAG"
+      ]
+    },
+    {
+      "shot_idx": 28,
+      "t_s": 69.209,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 75.243,
+      "e_actual_cnt": 37.533,
+      "head_dist_cnt": 100.05,
+      "delta_e_cnt": 37.71,
+      "stage_pos_cnt": [
+        -64.35,
+        59.63
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 29,
+      "t_s": 69.348,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 96.349,
+      "e_actual_cnt": 48.404,
+      "head_dist_cnt": 48.404,
+      "delta_e_cnt": 47.945,
+      "stage_pos_cnt": [
+        -58.41,
+        87.6
+      ],
+      "faults": [
+        "FAULT_LAG"
+      ]
+    },
+    {
+      "shot_idx": 30,
+      "t_s": 69.495,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 160.931,
+      "e_actual_cnt": 94.893,
+      "head_dist_cnt": 94.893,
+      "delta_e_cnt": 66.038,
+      "stage_pos_cnt": [
+        -55.38,
+        142.71
+      ],
+      "faults": [
+        "FAULT_LAG"
+      ]
+    },
+    {
+      "shot_idx": 31,
+      "t_s": 69.616,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 127.759,
+      "e_actual_cnt": 29.35,
+      "head_dist_cnt": 29.35,
+      "delta_e_cnt": 98.408,
+      "stage_pos_cnt": [
+        -49.86,
+        170.23
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 32,
+      "t_s": 69.725,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD_CHEST_BLEND",
+      "e_hand_cnt": 154.673,
+      "e_actual_cnt": 94.918,
+      "head_dist_cnt": 94.918,
+      "delta_e_cnt": 59.755,
+      "stage_pos_cnt": [
+        -66.87,
+        154.7
+      ],
+      "faults": [
+        "FAULT_LAG"
+      ]
+    },
+    {
+      "shot_idx": 33,
+      "t_s": 69.825,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "HEAD_HIT",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 136.316,
+      "e_actual_cnt": 5.184,
+      "head_dist_cnt": 5.184,
+      "delta_e_cnt": 131.132,
+      "stage_pos_cnt": [
+        -83.33,
+        155.76
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 34,
+      "t_s": 69.945,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 203.486,
+      "e_actual_cnt": 71.741,
+      "head_dist_cnt": 71.741,
+      "delta_e_cnt": 131.745,
+      "stage_pos_cnt": [
+        -75.35,
+        172.79
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 35,
+      "t_s": 70.071,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 156.012,
+      "e_actual_cnt": 18.917,
+      "head_dist_cnt": 18.917,
+      "delta_e_cnt": 137.096,
+      "stage_pos_cnt": [
+        -86.04,
+        171.8
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 36,
+      "t_s": 70.194,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 216.646,
+      "e_actual_cnt": 80.135,
+      "head_dist_cnt": 81.959,
+      "delta_e_cnt": 136.511,
+      "stage_pos_cnt": [
+        -105.06,
+        151.6
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 37,
+      "t_s": 70.317,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 121.425,
+      "e_actual_cnt": 35.391,
+      "head_dist_cnt": 35.391,
+      "delta_e_cnt": 86.035,
+      "stage_pos_cnt": [
+        -102.84,
+        144.37
+      ],
+      "faults": [
+        "FAULT_LAG"
+      ]
+    },
+    {
+      "shot_idx": 38,
+      "t_s": 71.567,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "HEAD_HIT",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 12.74,
+      "e_actual_cnt": 0.798,
+      "head_dist_cnt": 0.798,
+      "delta_e_cnt": 11.942,
+      "stage_pos_cnt": [
+        -4.86,
+        10.92
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 39,
+      "t_s": 75.585,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 177.881,
+      "e_actual_cnt": 109.438,
+      "head_dist_cnt": 109.438,
+      "delta_e_cnt": 68.443,
+      "stage_pos_cnt": [
+        52.98,
+        52.83
+      ],
+      "faults": [
+        "FAULT_LAG"
+      ]
+    },
+    {
+      "shot_idx": 40,
+      "t_s": 75.691,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD_CHEST_BLEND",
+      "e_hand_cnt": 231.129,
+      "e_actual_cnt": 117.908,
+      "head_dist_cnt": 117.908,
+      "delta_e_cnt": 113.22,
+      "stage_pos_cnt": [
+        87.12,
+        89.69
+      ],
+      "faults": [
+        "FAULT_LAG"
+      ]
+    },
+    {
+      "shot_idx": 41,
+      "t_s": 75.82,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 197.725,
+      "e_actual_cnt": 88.169,
+      "head_dist_cnt": 88.169,
+      "delta_e_cnt": 109.556,
+      "stage_pos_cnt": [
+        87.12,
+        89.69
+      ],
+      "faults": [
+        "FAULT_LAG"
+      ]
+    },
+    {
+      "shot_idx": 42,
+      "t_s": 75.93,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 235.44,
+      "e_actual_cnt": 87.465,
+      "head_dist_cnt": 87.465,
+      "delta_e_cnt": 147.975,
+      "stage_pos_cnt": [
+        116.71,
+        107.74
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 43,
+      "t_s": 76.086,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 248.543,
+      "e_actual_cnt": 79.592,
+      "head_dist_cnt": 79.592,
+      "delta_e_cnt": 168.951,
+      "stage_pos_cnt": [
+        109.07,
+        144.75
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 44,
+      "t_s": 76.22,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 271.475,
+      "e_actual_cnt": 87.723,
+      "head_dist_cnt": 87.723,
+      "delta_e_cnt": 183.752,
+      "stage_pos_cnt": [
+        111.89,
+        163.86
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 45,
+      "t_s": 76.347,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 304.096,
+      "e_actual_cnt": 82.033,
+      "head_dist_cnt": 82.033,
+      "delta_e_cnt": 222.063,
+      "stage_pos_cnt": [
+        136.67,
+        194.3
+      ],
+      "faults": [
+        "FAULT_SATURATION"
+      ]
+    },
+    {
+      "shot_idx": 46,
+      "t_s": 78.414,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 338.103,
+      "e_actual_cnt": 284.142,
+      "head_dist_cnt": 284.142,
+      "delta_e_cnt": 53.961,
+      "stage_pos_cnt": [
+        -67.96,
+        -8.28
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 47,
+      "t_s": 78.551,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD_CHEST_BLEND",
+      "e_hand_cnt": 97.897,
+      "e_actual_cnt": 102.399,
+      "head_dist_cnt": 102.399,
+      "delta_e_cnt": -4.502,
+      "stage_pos_cnt": [
+        -16.67,
+        -15.81
+      ],
+      "faults": [
+        "FAULT_LAG",
+        "FAULT_CONFLICT",
+        "FAULT_HANDOVER_DELAY"
+      ]
+    },
+    {
+      "shot_idx": 48,
+      "t_s": 78.668,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 327.359,
+      "e_actual_cnt": 316.334,
+      "head_dist_cnt": 316.334,
+      "delta_e_cnt": 11.025,
+      "stage_pos_cnt": [
+        -16.67,
+        -15.81
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 49,
+      "t_s": 78.802,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 158.848,
+      "e_actual_cnt": 116.351,
+      "head_dist_cnt": 116.351,
+      "delta_e_cnt": 42.497,
+      "stage_pos_cnt": [
+        -45.85,
+        35.77
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 50,
+      "t_s": 78.945,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 423.321,
+      "e_actual_cnt": 378.618,
+      "head_dist_cnt": 378.618,
+      "delta_e_cnt": 44.702,
+      "stage_pos_cnt": [
+        -46.67,
+        54.17
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 51,
+      "t_s": 79.041,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 130.412,
+      "e_actual_cnt": 89.777,
+      "head_dist_cnt": 89.777,
+      "delta_e_cnt": 40.635,
+      "stage_pos_cnt": [
+        -18.47,
+        90.88
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 52,
+      "t_s": 79.148,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 316.949,
+      "e_actual_cnt": 287.163,
+      "head_dist_cnt": 287.163,
+      "delta_e_cnt": 29.786,
+      "stage_pos_cnt": [
+        -9.61,
+        73.8
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 53,
+      "t_s": 79.303,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 482.483,
+      "e_actual_cnt": 445.868,
+      "head_dist_cnt": 450.008,
+      "delta_e_cnt": 36.615,
+      "stage_pos_cnt": [
+        -23.77,
+        93.03
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 54,
+      "t_s": 79.428,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 527.953,
+      "e_actual_cnt": 494.893,
+      "head_dist_cnt": 508.206,
+      "delta_e_cnt": 33.061,
+      "stage_pos_cnt": [
+        -31.34,
+        87.39
+      ],
+      "faults": [
+        "FAULT_LAG"
+      ]
+    },
+    {
+      "shot_idx": 55,
+      "t_s": 79.55,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 491.891,
+      "e_actual_cnt": 448.333,
+      "head_dist_cnt": 459.655,
+      "delta_e_cnt": 43.559,
+      "stage_pos_cnt": [
+        -45.48,
+        90.48
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 56,
+      "t_s": 79.676,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 543.878,
+      "e_actual_cnt": 505.541,
+      "head_dist_cnt": 505.541,
+      "delta_e_cnt": 38.336,
+      "stage_pos_cnt": [
+        -46.78,
+        89.99
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 57,
+      "t_s": 79.772,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD_CHEST_BLEND",
+      "e_hand_cnt": 600.11,
+      "e_actual_cnt": 562.083,
+      "head_dist_cnt": 562.083,
+      "delta_e_cnt": 38.027,
+      "stage_pos_cnt": [
+        -51.31,
+        91.02
+      ],
+      "faults": [
+        "FAULT_LAG"
+      ]
+    },
+    {
+      "shot_idx": 58,
+      "t_s": 79.885,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 557.633,
+      "e_actual_cnt": 513.331,
+      "head_dist_cnt": 524.214,
+      "delta_e_cnt": 44.302,
+      "stage_pos_cnt": [
+        -51.31,
+        91.02
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 59,
+      "t_s": 80.003,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 465.549,
+      "e_actual_cnt": 424.772,
+      "head_dist_cnt": 439.924,
+      "delta_e_cnt": 40.777,
+      "stage_pos_cnt": [
+        -48.37,
+        85.62
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 60,
+      "t_s": 80.12,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 421.943,
+      "e_actual_cnt": 380.802,
+      "head_dist_cnt": 394.256,
+      "delta_e_cnt": 41.142,
+      "stage_pos_cnt": [
+        -38.97,
+        100.81
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 61,
+      "t_s": 80.255,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 120.139,
+      "e_actual_cnt": 74.45,
+      "head_dist_cnt": 74.45,
+      "delta_e_cnt": 45.69,
+      "stage_pos_cnt": [
+        -63.23,
+        89.51
+      ],
+      "faults": [
+        "FAULT_LAG"
+      ]
+    },
+    {
+      "shot_idx": 62,
+      "t_s": 80.395,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 380.098,
+      "e_actual_cnt": 366.926,
+      "head_dist_cnt": 366.926,
+      "delta_e_cnt": 13.172,
+      "stage_pos_cnt": [
+        -40.78,
+        108.17
+      ],
+      "faults": [
+        "FAULT_LAG"
+      ]
+    },
+    {
+      "shot_idx": 63,
+      "t_s": 80.507,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 374.972,
+      "e_actual_cnt": 356.288,
+      "head_dist_cnt": 377.93,
+      "delta_e_cnt": 18.685,
+      "stage_pos_cnt": [
+        -40.78,
+        108.17
+      ],
+      "faults": [
+        "FAULT_LAG"
+      ]
+    },
+    {
+      "shot_idx": 64,
+      "t_s": 81.771,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 80.411,
+      "e_actual_cnt": 109.563,
+      "head_dist_cnt": 109.563,
+      "delta_e_cnt": -29.152,
+      "stage_pos_cnt": [
+        -50.48,
+        -29.17
+      ],
+      "faults": [
+        "FAULT_LAG",
+        "FAULT_CONFLICT"
+      ]
+    },
+    {
+      "shot_idx": 65,
+      "t_s": 81.9,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD_CHEST_BLEND",
+      "e_hand_cnt": 33.598,
+      "e_actual_cnt": 52.292,
+      "head_dist_cnt": 52.292,
+      "delta_e_cnt": -18.694,
+      "stage_pos_cnt": [
+        -31.42,
+        -20.45
+      ],
+      "faults": [
+        "FAULT_LAG",
+        "FAULT_CONFLICT"
+      ]
+    },
+    {
+      "shot_idx": 66,
+      "t_s": 82.012,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 74.495,
+      "e_actual_cnt": 61.553,
+      "head_dist_cnt": 61.553,
+      "delta_e_cnt": 12.942,
+      "stage_pos_cnt": [
+        -31.42,
+        -20.45
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 67,
+      "t_s": 82.132,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 57.649,
+      "e_actual_cnt": 28.517,
+      "head_dist_cnt": 28.517,
+      "delta_e_cnt": 29.133,
+      "stage_pos_cnt": [
+        -35.59,
+        -45.05
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 68,
+      "t_s": 82.257,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 55.328,
+      "e_actual_cnt": 55.967,
+      "head_dist_cnt": 55.967,
+      "delta_e_cnt": -0.639,
+      "stage_pos_cnt": [
+        -45.99,
+        -17.38
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 69,
+      "t_s": 82.396,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 66.928,
+      "e_actual_cnt": 55.723,
+      "head_dist_cnt": 55.723,
+      "delta_e_cnt": 11.204,
+      "stage_pos_cnt": [
+        -46.94,
+        36.75
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 70,
+      "t_s": 82.505,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 103.237,
+      "e_actual_cnt": 78.804,
+      "head_dist_cnt": 78.804,
+      "delta_e_cnt": 24.432,
+      "stage_pos_cnt": [
+        -30.77,
+        61.14
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 71,
+      "t_s": 82.647,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 113.632,
+      "e_actual_cnt": 70.884,
+      "head_dist_cnt": 70.884,
+      "delta_e_cnt": 42.748,
+      "stage_pos_cnt": [
+        -49.18,
+        80.58
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 72,
+      "t_s": 82.762,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 246.112,
+      "e_actual_cnt": 192.503,
+      "head_dist_cnt": 192.503,
+      "delta_e_cnt": 53.61,
+      "stage_pos_cnt": [
+        -90.41,
+        77.95
+      ],
+      "faults": [
+        "FAULT_LAG"
+      ]
+    },
+    {
+      "shot_idx": 73,
+      "t_s": 82.867,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 200.47,
+      "e_actual_cnt": 144.076,
+      "head_dist_cnt": 144.076,
+      "delta_e_cnt": 56.393,
+      "stage_pos_cnt": [
+        -103.93,
+        64.73
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 74,
+      "t_s": 82.99,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 217.885,
+      "e_actual_cnt": 139.162,
+      "head_dist_cnt": 139.162,
+      "delta_e_cnt": 78.722,
+      "stage_pos_cnt": [
+        -149.01,
+        61.36
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 75,
+      "t_s": 83.1,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 281.569,
+      "e_actual_cnt": 181.708,
+      "head_dist_cnt": 181.708,
+      "delta_e_cnt": 99.861,
+      "stage_pos_cnt": [
+        -182.29,
+        47.02
+      ],
+      "faults": [
+        "FAULT_SATURATION"
+      ]
+    },
+    {
+      "shot_idx": 76,
+      "t_s": 83.196,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 248.039,
+      "e_actual_cnt": 138.025,
+      "head_dist_cnt": 138.025,
+      "delta_e_cnt": 110.014,
+      "stage_pos_cnt": [
+        -215.17,
+        18.45
+      ],
+      "faults": [
+        "FAULT_SATURATION"
+      ]
+    },
+    {
+      "shot_idx": 77,
+      "t_s": 83.292,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 138.289,
+      "e_actual_cnt": 23.389,
+      "head_dist_cnt": 23.389,
+      "delta_e_cnt": 114.899,
+      "stage_pos_cnt": [
+        -218.57,
+        18.45
+      ],
+      "faults": [
+        "FAULT_SATURATION"
+      ]
+    },
+    {
+      "shot_idx": 78,
+      "t_s": 85.08,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 67.886,
+      "e_actual_cnt": 72.751,
+      "head_dist_cnt": 72.751,
+      "delta_e_cnt": -4.865,
+      "stage_pos_cnt": [
+        7.2,
+        -0.36
+      ],
+      "faults": [
+        "FAULT_CONFLICT"
+      ]
+    },
+    {
+      "shot_idx": 79,
+      "t_s": 85.176,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 90.95,
+      "e_actual_cnt": 74.979,
+      "head_dist_cnt": 74.979,
+      "delta_e_cnt": 15.97,
+      "stage_pos_cnt": [
+        -23.79,
+        -2.1
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 80,
+      "t_s": 85.6,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 57.222,
+      "e_actual_cnt": 56.211,
+      "head_dist_cnt": 56.211,
+      "delta_e_cnt": 1.011,
+      "stage_pos_cnt": [
+        -14.84,
+        -23.24
+      ],
+      "faults": [
+        "FAULT_LAG"
+      ]
+    },
+    {
+      "shot_idx": 81,
+      "t_s": 86.706,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 20.381,
+      "e_actual_cnt": 15.569,
+      "head_dist_cnt": 15.569,
+      "delta_e_cnt": 4.812,
+      "stage_pos_cnt": [
+        0.41,
+        -34.36
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 82,
+      "t_s": 88.177,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 41.472,
+      "e_actual_cnt": 28.977,
+      "head_dist_cnt": 28.977,
+      "delta_e_cnt": 12.495,
+      "stage_pos_cnt": [
+        28.89,
+        1.16
+      ],
+      "faults": [
+        "FAULT_LAG"
+      ]
+    },
+    {
+      "shot_idx": 83,
+      "t_s": 90.239,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "HEAD_HIT",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 28.395,
+      "e_actual_cnt": 7.683,
+      "head_dist_cnt": 7.683,
+      "delta_e_cnt": 20.712,
+      "stage_pos_cnt": [
+        -16.41,
+        -39.56
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 84,
+      "t_s": 92.459,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "HEAD_HIT",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 41.985,
+      "e_actual_cnt": 8.121,
+      "head_dist_cnt": 8.121,
+      "delta_e_cnt": 33.864,
+      "stage_pos_cnt": [
+        66.15,
+        -51.71
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 85,
+      "t_s": 92.835,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "HEAD_HIT",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 28.265,
+      "e_actual_cnt": 7.955,
+      "head_dist_cnt": 7.955,
+      "delta_e_cnt": 20.31,
+      "stage_pos_cnt": [
+        54.66,
+        -52.36
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 86,
+      "t_s": 93.209,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "HEAD_HIT",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 29.143,
+      "e_actual_cnt": 1.285,
+      "head_dist_cnt": 1.285,
+      "delta_e_cnt": 27.858,
+      "stage_pos_cnt": [
+        47.87,
+        -46.86
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 87,
+      "t_s": 95.82,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 37.621,
+      "e_actual_cnt": 12.562,
+      "head_dist_cnt": 12.562,
+      "delta_e_cnt": 25.059,
+      "stage_pos_cnt": [
+        -9.78,
+        -46.81
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 88,
+      "t_s": 95.944,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD_CHEST_BLEND",
+      "e_hand_cnt": 11.217,
+      "e_actual_cnt": 12.798,
+      "head_dist_cnt": 12.798,
+      "delta_e_cnt": -1.581,
+      "stage_pos_cnt": [
+        -10.86,
+        -41.89
+      ],
+      "faults": [
+        "FAULT_LAG",
+        "FAULT_CONFLICT"
+      ]
+    },
+    {
+      "shot_idx": 89,
+      "t_s": 96.066,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "HEAD_HIT",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 18.705,
+      "e_actual_cnt": 3.344,
+      "head_dist_cnt": 3.344,
+      "delta_e_cnt": 15.361,
+      "stage_pos_cnt": [
+        -11.4,
+        -39.41
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 90,
+      "t_s": 96.184,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 23.084,
+      "e_actual_cnt": 34.196,
+      "head_dist_cnt": 34.196,
+      "delta_e_cnt": -11.113,
+      "stage_pos_cnt": [
+        -8.55,
+        -28.73
+      ],
+      "faults": [
+        "FAULT_CONFLICT"
+      ]
+    },
+    {
+      "shot_idx": 91,
+      "t_s": 96.29,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 60.475,
+      "e_actual_cnt": 72.36,
+      "head_dist_cnt": 72.36,
+      "delta_e_cnt": -11.885,
+      "stage_pos_cnt": [
+        -3.19,
+        -27.48
+      ],
+      "faults": [
+        "FAULT_CONFLICT"
+      ]
+    },
+    {
+      "shot_idx": 92,
+      "t_s": 98.583,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 57.522,
+      "e_actual_cnt": 37.66,
+      "head_dist_cnt": 37.66,
+      "delta_e_cnt": 19.862,
+      "stage_pos_cnt": [
+        20.38,
+        -22.58
+      ],
+      "faults": [
+        "FAULT_LAG"
+      ]
+    },
+    {
+      "shot_idx": 93,
+      "t_s": 98.93,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 23.942,
+      "e_actual_cnt": 15.02,
+      "head_dist_cnt": 15.02,
+      "delta_e_cnt": 8.921,
+      "stage_pos_cnt": [
+        8.92,
+        -36.91
+      ],
+      "faults": [
+        "FAULT_LAG"
+      ]
+    },
+    {
+      "shot_idx": 94,
+      "t_s": 99.701,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 3.6,
+      "e_actual_cnt": 17.058,
+      "head_dist_cnt": 17.058,
+      "delta_e_cnt": -13.458,
+      "stage_pos_cnt": [
+        -0.3,
+        -28.98
+      ],
+      "faults": [
+        "FAULT_LAG",
+        "FAULT_CONFLICT"
+      ]
+    },
+    {
+      "shot_idx": 95,
+      "t_s": 99.801,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "HEAD_HIT",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 20.624,
+      "e_actual_cnt": 0.826,
+      "head_dist_cnt": 0.826,
+      "delta_e_cnt": 19.798,
+      "stage_pos_cnt": [
+        -0.3,
+        -28.98
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 96,
+      "t_s": 101.332,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "HEAD_HIT",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 25.917,
+      "e_actual_cnt": 3.173,
+      "head_dist_cnt": 3.173,
+      "delta_e_cnt": 22.744,
+      "stage_pos_cnt": [
+        -28.2,
+        -26.48
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 97,
+      "t_s": 101.442,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD_CHEST_BLEND",
+      "e_hand_cnt": 76.368,
+      "e_actual_cnt": 44.818,
+      "head_dist_cnt": 44.818,
+      "delta_e_cnt": 31.549,
+      "stage_pos_cnt": [
+        -24.03,
+        -43.58
+      ],
+      "faults": [
+        "FAULT_LAG"
+      ]
+    },
+    {
+      "shot_idx": 98,
+      "t_s": 103.255,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 75.976,
+      "e_actual_cnt": 11.437,
+      "head_dist_cnt": 11.437,
+      "delta_e_cnt": 64.539,
+      "stage_pos_cnt": [
+        -120.82,
+        -52.44
+      ],
+      "faults": [
+        "FAULT_LAG"
+      ]
+    },
+    {
+      "shot_idx": 99,
+      "t_s": 103.361,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD_CHEST_BLEND",
+      "e_hand_cnt": 40.045,
+      "e_actual_cnt": 45.086,
+      "head_dist_cnt": 45.086,
+      "delta_e_cnt": -5.041,
+      "stage_pos_cnt": [
+        -100.67,
+        -34.41
+      ],
+      "faults": [
+        "FAULT_LAG",
+        "FAULT_CONFLICT"
+      ]
+    },
+    {
+      "shot_idx": 100,
+      "t_s": 105.77,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 27.901,
+      "e_actual_cnt": 17.336,
+      "head_dist_cnt": 17.336,
+      "delta_e_cnt": 10.565,
+      "stage_pos_cnt": [
+        -50.61,
+        -23.24
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 101,
+      "t_s": 107.192,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 75.673,
+      "e_actual_cnt": 57.832,
+      "head_dist_cnt": 57.832,
+      "delta_e_cnt": 17.841,
+      "stage_pos_cnt": [
+        9.01,
+        32.21
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 102,
+      "t_s": 110.061,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 46.412,
+      "e_actual_cnt": 15.003,
+      "head_dist_cnt": 15.003,
+      "delta_e_cnt": 31.409,
+      "stage_pos_cnt": [
+        47.25,
+        17.39
+      ],
+      "faults": [
+        "FAULT_LAG"
+      ]
+    },
+    {
+      "shot_idx": 103,
+      "t_s": 110.163,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD_CHEST_BLEND",
+      "e_hand_cnt": 61.701,
+      "e_actual_cnt": 22.504,
+      "head_dist_cnt": 22.504,
+      "delta_e_cnt": 39.197,
+      "stage_pos_cnt": [
+        55.84,
+        17.43
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 104,
+      "t_s": 111.396,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 19.791,
+      "e_actual_cnt": 25.051,
+      "head_dist_cnt": 25.051,
+      "delta_e_cnt": -5.26,
+      "stage_pos_cnt": [
+        2.16,
+        -8.1
+      ],
+      "faults": [
+        "FAULT_LAG",
+        "FAULT_CONFLICT"
+      ]
+    },
+    {
+      "shot_idx": 105,
+      "t_s": 111.507,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD_CHEST_BLEND",
+      "e_hand_cnt": 30.037,
+      "e_actual_cnt": 25.525,
+      "head_dist_cnt": 25.525,
+      "delta_e_cnt": 4.512,
+      "stage_pos_cnt": [
+        -7.72,
+        -7.72
+      ],
+      "faults": [
+        "FAULT_LAG"
+      ]
+    },
+    {
+      "shot_idx": 106,
+      "t_s": 111.642,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 48.709,
+      "e_actual_cnt": 46.255,
+      "head_dist_cnt": 46.255,
+      "delta_e_cnt": 2.454,
+      "stage_pos_cnt": [
+        -14.65,
+        -4.15
+      ],
+      "faults": [
+        "FAULT_LAG"
+      ]
+    },
+    {
+      "shot_idx": 107,
+      "t_s": 112.521,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "HEAD_HIT",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 28.205,
+      "e_actual_cnt": 4.054,
+      "head_dist_cnt": 4.054,
+      "delta_e_cnt": 24.151,
+      "stage_pos_cnt": [
+        -33.2,
+        -30.76
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 108,
+      "t_s": 112.632,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD_CHEST_BLEND",
+      "e_hand_cnt": 94.173,
+      "e_actual_cnt": 98.7,
+      "head_dist_cnt": 98.7,
+      "delta_e_cnt": -4.527,
+      "stage_pos_cnt": [
+        -24.11,
+        -0.42
+      ],
+      "faults": [
+        "FAULT_LAG",
+        "FAULT_CONFLICT"
+      ]
+    },
+    {
+      "shot_idx": 109,
+      "t_s": 115.396,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "BODY_HIT",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 18.599,
+      "e_actual_cnt": 26.179,
+      "head_dist_cnt": 26.179,
+      "delta_e_cnt": -7.581,
+      "stage_pos_cnt": [
+        -10.35,
+        16.33
+      ],
+      "faults": [
+        "FAULT_LAG",
+        "FAULT_CONFLICT"
+      ]
+    },
+    {
+      "shot_idx": 110,
+      "t_s": 115.506,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "BODY_HIT",
+      "anchor_mode": "HEAD_CHEST_BLEND",
+      "e_hand_cnt": 44.093,
+      "e_actual_cnt": 46.039,
+      "head_dist_cnt": 46.039,
+      "delta_e_cnt": -1.947,
+      "stage_pos_cnt": [
+        -8.09,
+        4.17
+      ],
+      "faults": [
+        "FAULT_CONFLICT"
+      ]
+    },
+    {
+      "shot_idx": 111,
+      "t_s": 115.756,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 18.406,
+      "e_actual_cnt": 20.775,
+      "head_dist_cnt": 20.775,
+      "delta_e_cnt": -2.369,
+      "stage_pos_cnt": [
+        -6.27,
+        2.72
+      ],
+      "faults": [
+        "FAULT_CONFLICT"
+      ]
+    },
+    {
+      "shot_idx": 112,
+      "t_s": 118.156,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 51.939,
+      "e_actual_cnt": 29.524,
+      "head_dist_cnt": 29.524,
+      "delta_e_cnt": 22.416,
+      "stage_pos_cnt": [
+        -15.08,
+        -54.02
+      ],
+      "faults": [
+        "FAULT_LAG"
+      ]
+    },
+    {
+      "shot_idx": 113,
+      "t_s": 118.269,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD_CHEST_BLEND",
+      "e_hand_cnt": 46.702,
+      "e_actual_cnt": 22.034,
+      "head_dist_cnt": 22.034,
+      "delta_e_cnt": 24.668,
+      "stage_pos_cnt": [
+        -23.1,
+        -57.46
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 114,
+      "t_s": 118.385,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 27.55,
+      "e_actual_cnt": 18.083,
+      "head_dist_cnt": 18.083,
+      "delta_e_cnt": 9.466,
+      "stage_pos_cnt": [
+        -28.32,
+        -49.42
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 115,
+      "t_s": 118.507,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 28.336,
+      "e_actual_cnt": 22.611,
+      "head_dist_cnt": 37.273,
+      "delta_e_cnt": 5.725,
+      "stage_pos_cnt": [
+        -29.32,
+        -56.36
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 116,
+      "t_s": 118.63,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "BODY_HIT",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 65.209,
+      "e_actual_cnt": 33.476,
+      "head_dist_cnt": 33.476,
+      "delta_e_cnt": 31.733,
+      "stage_pos_cnt": [
+        -36.39,
+        -56.36
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 117,
+      "t_s": 118.762,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 8.092,
+      "e_actual_cnt": 22.67,
+      "head_dist_cnt": 22.67,
+      "delta_e_cnt": -14.578,
+      "stage_pos_cnt": [
+        -43.74,
+        -48.78
+      ],
+      "faults": [
+        "FAULT_CONFLICT"
+      ]
+    },
+    {
+      "shot_idx": 118,
+      "t_s": 118.865,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 74.383,
+      "e_actual_cnt": 98.395,
+      "head_dist_cnt": 98.395,
+      "delta_e_cnt": -24.012,
+      "stage_pos_cnt": [
+        -27.88,
+        -51.86
+      ],
+      "faults": [
+        "FAULT_CONFLICT"
+      ]
+    },
+    {
+      "shot_idx": 119,
+      "t_s": 118.961,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 71.34,
+      "e_actual_cnt": 81.787,
+      "head_dist_cnt": 81.787,
+      "delta_e_cnt": -10.447,
+      "stage_pos_cnt": [
+        -6.25,
+        -34.94
+      ],
+      "faults": [
+        "FAULT_CONFLICT"
+      ]
+    },
+    {
+      "shot_idx": 120,
+      "t_s": 119.081,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 50.97,
+      "e_actual_cnt": 52.348,
+      "head_dist_cnt": 52.348,
+      "delta_e_cnt": -1.377,
+      "stage_pos_cnt": [
+        -8.8,
+        20.22
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 121,
+      "t_s": 119.18,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 30.139,
+      "e_actual_cnt": 31.276,
+      "head_dist_cnt": 33.709,
+      "delta_e_cnt": -1.137,
+      "stage_pos_cnt": [
+        -34.0,
+        21.64
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 122,
+      "t_s": 119.285,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 103.249,
+      "e_actual_cnt": 105.521,
+      "head_dist_cnt": 106.184,
+      "delta_e_cnt": -2.272,
+      "stage_pos_cnt": [
+        -7.92,
+        15.69
+      ],
+      "faults": [
+        "FAULT_LAG",
+        "FAULT_CONFLICT"
+      ]
+    },
+    {
+      "shot_idx": 123,
+      "t_s": 120.565,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 98.191,
+      "e_actual_cnt": 95.976,
+      "head_dist_cnt": 95.976,
+      "delta_e_cnt": 2.216,
+      "stage_pos_cnt": [
+        3.14,
+        -5.95
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 124,
+      "t_s": 120.693,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD_CHEST_BLEND",
+      "e_hand_cnt": 94.215,
+      "e_actual_cnt": 79.422,
+      "head_dist_cnt": 79.422,
+      "delta_e_cnt": 14.793,
+      "stage_pos_cnt": [
+        -10.05,
+        -29.51
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 125,
+      "t_s": 120.817,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 63.106,
+      "e_actual_cnt": 36.77,
+      "head_dist_cnt": 77.633,
+      "delta_e_cnt": 26.335,
+      "stage_pos_cnt": [
+        -14.16,
+        -63.12
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 126,
+      "t_s": 120.941,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 35.534,
+      "e_actual_cnt": 25.947,
+      "head_dist_cnt": 29.167,
+      "delta_e_cnt": 9.587,
+      "stage_pos_cnt": [
+        -17.6,
+        -69.43
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 127,
+      "t_s": 121.068,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 20.361,
+      "e_actual_cnt": 12.432,
+      "head_dist_cnt": 12.432,
+      "delta_e_cnt": 7.928,
+      "stage_pos_cnt": [
+        -21.7,
+        -36.93
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 128,
+      "t_s": 123.442,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 94.503,
+      "e_actual_cnt": 75.662,
+      "head_dist_cnt": 75.662,
+      "delta_e_cnt": 18.842,
+      "stage_pos_cnt": [
+        32.78,
+        -38.5
+      ],
+      "faults": [
+        "FAULT_LAG"
+      ]
+    },
+    {
+      "shot_idx": 129,
+      "t_s": 123.538,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "HEAD_HIT",
+      "anchor_mode": "HEAD_CHEST_BLEND",
+      "e_hand_cnt": 17.651,
+      "e_actual_cnt": 5.175,
+      "head_dist_cnt": 5.175,
+      "delta_e_cnt": 12.476,
+      "stage_pos_cnt": [
+        32.78,
+        -38.5
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 130,
+      "t_s": 123.643,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 76.518,
+      "e_actual_cnt": 85.803,
+      "head_dist_cnt": 85.803,
+      "delta_e_cnt": -9.285,
+      "stage_pos_cnt": [
+        49.57,
+        -44.73
+      ],
+      "faults": [
+        "FAULT_LAG",
+        "FAULT_CONFLICT"
+      ]
+    },
+    {
+      "shot_idx": 131,
+      "t_s": 123.846,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 177.409,
+      "e_actual_cnt": 162.834,
+      "head_dist_cnt": 162.834,
+      "delta_e_cnt": 14.575,
+      "stage_pos_cnt": [
+        49.48,
+        31.87
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 132,
+      "t_s": 124.754,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 35.928,
+      "e_actual_cnt": 26.284,
+      "head_dist_cnt": 26.284,
+      "delta_e_cnt": 9.644,
+      "stage_pos_cnt": [
+        10.9,
+        -19.92
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 133,
+      "t_s": 124.781,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 47.116,
+      "e_actual_cnt": 36.584,
+      "head_dist_cnt": 36.584,
+      "delta_e_cnt": 10.532,
+      "stage_pos_cnt": [
+        10.9,
+        -19.92
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 134,
+      "t_s": 124.897,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 45.214,
+      "e_actual_cnt": 33.271,
+      "head_dist_cnt": 33.271,
+      "delta_e_cnt": 11.943,
+      "stage_pos_cnt": [
+        18.83,
+        -16.35
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 135,
+      "t_s": 127.053,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 117.626,
+      "e_actual_cnt": 91.794,
+      "head_dist_cnt": 91.794,
+      "delta_e_cnt": 25.833,
+      "stage_pos_cnt": [
+        -64.44,
+        -3.41
+      ],
+      "faults": [
+        "FAULT_LAG"
+      ]
+    },
+    {
+      "shot_idx": 136,
+      "t_s": 127.162,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD_CHEST_BLEND",
+      "e_hand_cnt": 77.178,
+      "e_actual_cnt": 43.344,
+      "head_dist_cnt": 43.344,
+      "delta_e_cnt": 33.834,
+      "stage_pos_cnt": [
+        -80.72,
+        -1.47
+      ],
+      "faults": [
+        "FAULT_LAG"
+      ]
+    },
+    {
+      "shot_idx": 137,
+      "t_s": 127.287,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 5.891,
+      "e_actual_cnt": 35.107,
+      "head_dist_cnt": 35.107,
+      "delta_e_cnt": -29.216,
+      "stage_pos_cnt": [
+        -71.59,
+        -0.29
+      ],
+      "faults": [
+        "FAULT_LAG",
+        "FAULT_CONFLICT"
+      ]
+    },
+    {
+      "shot_idx": 138,
+      "t_s": 127.399,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 50.091,
+      "e_actual_cnt": 50.27,
+      "head_dist_cnt": 50.27,
+      "delta_e_cnt": -0.179,
+      "stage_pos_cnt": [
+        -66.21,
+        23.77
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 139,
+      "t_s": 127.522,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 211.805,
+      "e_actual_cnt": 174.838,
+      "head_dist_cnt": 174.838,
+      "delta_e_cnt": 36.966,
+      "stage_pos_cnt": [
+        -70.88,
+        37.54
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 140,
+      "t_s": 127.618,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 243.725,
+      "e_actual_cnt": 168.59,
+      "head_dist_cnt": 168.59,
+      "delta_e_cnt": 75.135,
+      "stage_pos_cnt": [
+        -136.89,
+        59.77
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 141,
+      "t_s": 128.537,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD",
+      "e_hand_cnt": 42.116,
+      "e_actual_cnt": 25.168,
+      "head_dist_cnt": 25.168,
+      "delta_e_cnt": 16.948,
+      "stage_pos_cnt": [
+        -49.4,
+        -38.08
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 142,
+      "t_s": 128.649,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "WHIFF",
+      "anchor_mode": "HEAD_CHEST_BLEND",
+      "e_hand_cnt": 52.41,
+      "e_actual_cnt": 18.881,
+      "head_dist_cnt": 18.881,
+      "delta_e_cnt": 33.528,
+      "stage_pos_cnt": [
+        -56.51,
+        -37.34
+      ],
+      "faults": []
+    },
+    {
+      "shot_idx": 143,
+      "t_s": 128.78,
+      "mode": "ASSIST_ON",
+      "state": "SPRAY_TRANSFER",
+      "hitbox": "HEAD_HIT",
+      "anchor_mode": "CHEST",
+      "e_hand_cnt": 44.065,
+      "e_actual_cnt": 8.517,
+      "head_dist_cnt": 8.517,
+      "delta_e_cnt": 35.548,
+      "stage_pos_cnt": [
+        -53.78,
+        -40.7
       ],
       "faults": []
     }
   ],
   "engagement_summary": {
-    "total_engagements": 1,
+    "total_engagements": 33,
     "total_gsi_kills": 0,
     "total_gsi_hs": 0,
-    "mean_coupling_ratio": null,
-    "coupling_samples": 0,
+    "mean_coupling_ratio": 0.583,
+    "coupling_samples": 312,
     "jsonl_path": "C:\\Users\\27798\\Desktop\\3-rrr\\shared_control_hil\\logs\\live_engagements.jsonl",
     "csv_path": "C:\\Users\\27798\\Desktop\\3-rrr\\shared_control_hil\\logs\\live_kill_report.csv"
   }
