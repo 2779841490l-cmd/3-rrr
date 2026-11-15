@@ -68,7 +68,7 @@
         -0.565682
       ]
     ],
-    "mounting_angle_deg": -14.7813,
+    "mounting_angle_deg": -16.8389,
     "calib_elapsed_s": 1.5888,
     "recon_error_pct": 4.504,
     "safe_envelope_counts": 165.0,
@@ -79,12 +79,12 @@
     "spray_max_y_counts": 340.0,
     "J_screen_to_stage": [
       [
-        -2.832248,
-        0.608378
+        -3.138896,
+        0.648392
       ],
       [
-        -1.044048,
-        -3.430231
+        -1.253176,
+        -3.14399
       ]
     ],
     "visual_calib_source": "YOLO_HEAD_FLOW",

@@ -338,6 +338,8 @@ class LiveGameSharedControlRunner:
         self._lmb_down_since_t: float = 0.0
         self._last_lmb_release_t: float = 0.0
         self._snap_done_tid: Optional[int] = None
+        self._last_snap_t: float = 0.0
+        self._flick_hi_cnt: int = 0
         self._yolo_miss_since_t: Optional[float] = None
         self._cmd_history: deque = deque(maxlen=64)
         self._reload_live_control_params()
@@ -520,12 +522,17 @@ class LiveGameSharedControlRunner:
             last_t = time.perf_counter()
             last_sensor = np.array(self.trainer.sensor.get_position(), dtype=float)
             with self._hw_lock:
+                prev_stage_cmd = self.p_stage_est.copy()
+                p_stage_d1 = self.p_stage_est.copy()
                 last_stage_phys = self.p_stage_est.copy()
                 p_stage_phys = self.p_stage_est.copy()
             prev_lmb_1k = False
             prev_wasd = (False, False, False, False)
             v_usb_lp = np.zeros(2, dtype=float)
             v_stg_lp = np.zeros(2, dtype=float)
+            cone_dir = np.array([1.0, 0.0], dtype=float)
+            cone_budget = 0.0
+            last_cmd_1k_t = 0.0
             while self._tracker_running:
                 t_now = time.perf_counter()
                 dt = max(0.0005, t_now - last_t)
@@ -534,9 +541,20 @@ class LiveGameSharedControlRunner:
                 cur_sensor = np.array(self.trainer.sensor.get_position(), dtype=float)
                 with self._hw_lock:
                     cur_stage_cmd = self.p_stage_est.copy()
-                # Track servo first-order physical lag (~35 ms)
-                phys_alpha = min(1.0, dt / 0.035)
-                p_stage_phys = p_stage_phys + phys_alpha * (cur_stage_cmd - p_stage_phys)
+
+                # Track 2-pole servo deadtime+settling (18 ms + 45 ms) plus 115 ms held + 30 ms tail directional cone
+                d_cmd = cur_stage_cmd - prev_stage_cmd
+                prev_stage_cmd = cur_stage_cmd.copy()
+                d_cmd_n = float(math.hypot(d_cmd[0], d_cmd[1]))
+                if d_cmd_n >= 3.0:
+                    cone_dir = d_cmd / d_cmd_n
+                    cone_budget = max(cone_budget, d_cmd_n / 0.065)
+                    last_cmd_1k_t = t_now
+                elif (t_now - last_cmd_1k_t) > 0.115:
+                    cone_budget = cone_budget * math.exp(-dt / 0.030)
+
+                p_stage_d1 = p_stage_d1 + min(1.0, dt / 0.018) * (cur_stage_cmd - p_stage_d1)
+                p_stage_phys = p_stage_phys + min(1.0, dt / 0.045) * (p_stage_d1 - p_stage_phys)
                 dp_usb = cur_sensor - last_sensor
                 dp_stage = p_stage_phys - last_stage_phys
                 last_sensor = cur_sensor
@@ -546,13 +564,15 @@ class LiveGameSharedControlRunner:
                 v_usb_lp = (1.0 - alpha) * v_usb_lp + alpha * (dp_usb / dt)
                 v_stg_lp = (1.0 - alpha) * v_stg_lp + alpha * (dp_stage / dt)
                 stg_spd = float(math.hypot(v_stg_lp[0], v_stg_lp[1]))
-                if stg_spd > 1.0:
-                    # Coupling-invariant projection: subtract only actual USB motion attributable to
-                    # the stage along its command axis [0, 1.25 * stg_spd], so partial palm coupling (<1.0)
-                    # never creates phantom opposite-direction hand-flick spikes that trigger FLICK_WASHOUT.
-                    u_hat = v_stg_lp / stg_spd
+                cone_active = (t_now - last_cmd_1k_t) <= 0.145 and cone_budget > 20.0
+                if stg_spd > 1.0 or cone_active:
+                    # Coupling-invariant projection across full 0..130 ms physical settle window:
+                    # absorbs partial-coupling & late-settling stage motion along command axis,
+                    # leaving sideways/opposite human flicks unmasked.
+                    u_hat = (v_stg_lp / stg_spd) if (stg_spd >= cone_budget and stg_spd > 1.0) else cone_dir
+                    allow_spd = max(stg_spd, cone_budget if cone_active else 0.0)
                     proj = float(np.dot(v_usb_lp, u_hat))
-                    stage_attrib = min(max(0.0, proj), 1.25 * stg_spd) * u_hat
+                    stage_attrib = min(max(0.0, proj), 1.30 * allow_spd) * u_hat
                     v_hand_est = v_usb_lp - stage_attrib
                 else:
                     v_hand_est = v_usb_lp.copy()
@@ -1553,9 +1573,17 @@ class LiveGameSharedControlRunner:
             if float(np.hypot(c_px[0] - roi_c, c_px[1] - roi_c)) > 2.5:
                 c_eff_px = roi_center_arr
 
-        # Active washout during rapid user flicks (even if passing bots cross the ROI)
-        # so bursts never start pre-saturated from an earlier bot.
-        if (not lmb_down) and v_hand_norm > 250.0:
+        # Active washout during sustained/large rapid user flicks (guarded 120 ms post-snap against settle ringing)
+        in_snap_guard = (t_now - self._last_snap_t) <= 0.120
+        if (not lmb_down) and v_hand_norm > 280.0:
+            self._flick_hi_cnt += 1
+        else:
+            self._flick_hi_cnt = 0
+        flick_trigger = (not lmb_down) and (
+            (v_hand_norm > (520.0 if in_snap_guard else 420.0))
+            or ((not in_snap_guard) and v_hand_norm > 300.0 and self._flick_hi_cnt >= 3)
+        )
+        if flick_trigger:
             self._lock_target_id = None
             self._snap_done_tid = None
             self._lock_dir_sign[:] = 0.0
@@ -1680,6 +1708,10 @@ class LiveGameSharedControlRunner:
                 and v_hand_norm < 320.0
             )
             if aim_due:
+                eta_cp = self.eng_logger.get_effective_coupling(default=1.0, min_samples=6) if hasattr(self, "eng_logger") else 1.0
+                # Safe bounded visual-loop coupling feedforward: remains < 1.0 even if hand is lifted (eta->1.0)
+                ff_snap = float(np.clip(1.0 / max(0.78, eta_cp), 1.0, 1.28))
+                ff_trim = float(np.clip(1.0 / max(0.57, eta_cp), 1.0, 1.75))
                 fine_trim_px = min(float(self.small_error_px), 7.5)
                 is_initial_snap = (
                     (not lmb_down)
@@ -1688,18 +1720,19 @@ class LiveGameSharedControlRunner:
                     and (float(np.hypot(dp_in_flight[0], dp_in_flight[1])) < 12.0)
                 )
                 if is_initial_snap:
-                    gain = self.kp_snap
-                    step_cap = 155.0
+                    gain = self.kp_snap * ff_snap
+                    step_cap = 175.0
                     use_boost_aim = True
                     b_scale_aim = self.boost_scale
                     b_dur_aim = self.boost_dur_ms
                 else:
                     is_fine = e_pred_norm <= fine_trim_px
-                    gain = (min(0.58, self.kp_small_head + 0.08) if (is_fine and not lmb_down) else self.kp_small_head) if e_pred_norm <= self.small_error_px else self.kp_large_error
-                    step_cap = 135.0
+                    base_gain = (min(0.58, self.kp_small_head + 0.08) if (is_fine and not lmb_down) else self.kp_small_head) if e_pred_norm <= self.small_error_px else self.kp_large_error
+                    gain = base_gain * (1.0 if lmb_down else ff_trim)
+                    step_cap = 145.0
                     use_boost_aim = not lmb_down
-                    b_scale_aim = 1.15 if is_fine else self.boost_scale
-                    b_dur_aim = 14.0 if is_fine else self.boost_dur_ms
+                    b_scale_aim = max(self.boost_scale, 1.25) if is_fine else self.boost_scale
+                    b_dur_aim = 16.0 if is_fine else self.boost_dur_ms
 
                 dp_stage = self.calibrator.aim_error_to_stage_delta(float(e_pred_px[0]), float(e_pred_px[1])) * gain
                 dp_n = float(np.hypot(dp_stage[0], dp_stage[1]))
@@ -1711,7 +1744,7 @@ class LiveGameSharedControlRunner:
                     dp_stage = dp_stage * 0.68
                     dp_n = float(np.hypot(dp_stage[0], dp_stage[1]))
 
-                use_boost_final = bool(use_boost_aim and dp_n >= 4.5)
+                use_boost_final = bool(use_boost_aim and dp_n >= 3.0)
                 if dp_n >= 0.8:
                     p_aim_cand = np.clip(self.p_aim_cnt + dp_stage, -aim_env, aim_env)
                     p_cmd_cand = np.clip(p_aim_cand + p_rec_cand, -limits, limits)
@@ -1731,6 +1764,7 @@ class LiveGameSharedControlRunner:
                         aim_sent = True
                         if is_initial_snap:
                             self._snap_done_tid = tid_cur
+                            self._last_snap_t = t_now
                         if recoil_due or not lmb_down:
                             self.p_recoil_cnt = p_rec_cand
                             self._last_recoil_cmd_t = t_now
