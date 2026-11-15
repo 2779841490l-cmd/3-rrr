@@ -201,7 +201,7 @@ class FastSelfCalibrator:
         dy: float = 0.0,
         freeze_play_g: bool = False,
         locked_play_g: Optional[np.ndarray] = None,
-        play_deadband_cnt: float = 6.0,
+        play_deadband_cnt: float = 12.0,
     ) -> Tuple[float, float, np.ndarray, np.ndarray]:
         """
         Map desired rectangular stage position (x_cmd, y_cmd) -> (u1, u2, u_lin, play_g).
@@ -236,19 +236,19 @@ class FastSelfCalibrator:
         du_k: np.ndarray,
         e1: float,
         e2: float,
-        boost_scale: float = 1.35,
-        min_kick_us: float = 10.5,
-        max_kick_us: float = 26.0,
+        boost_scale: float = 1.25,
+        min_kick_us: float = 5.5,
+        max_kick_us: float = 22.0,
     ) -> Optional[Tuple[float, float]]:
         """
         Compute WS63 B_CMD transient stiction-breaker pulse pair (b1, b2) around (e1, e2).
-        Returns None when incremental kinematic change is below 0.25 us on both axes.
+        Returns None when incremental kinematic change is below 0.35 us on both axes.
         """
         du_b = np.zeros(2, dtype=float)
         for ax in (0, 1):
             d_ax = float(du_k[ax])
-            if abs(d_ax) >= 0.25:
-                mag = max(float(min_kick_us), abs(d_ax) * 0.50 * float(boost_scale))
+            if abs(d_ax) >= 0.35:
+                mag = max(float(min_kick_us), abs(d_ax) * 0.38 * float(boost_scale))
                 du_b[ax] = float(np.clip(math.copysign(mag, d_ax), -float(max_kick_us), float(max_kick_us)))
         if abs(du_b[0]) <= 0.0 and abs(du_b[1]) <= 0.0:
             return None

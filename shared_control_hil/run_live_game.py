@@ -335,15 +335,7 @@ class LiveGameSharedControlRunner:
             calibrator=self.calibrator,
             vision=self.vision,
             trainer=self.trainer,
-            dispatch_fn=lambda p, cooldown_s=COOLDOWN_LOCK_S, freeze_play_g=False, use_boost=True, boost_scale=None, boost_dur_ms=None: self._dispatch_stage_manifold_open_loop(
-                p,
-                is_recenter=False,
-                cooldown_s=cooldown_s,
-                freeze_play_g=freeze_play_g,
-                use_boost=use_boost,
-                boost_scale=boost_scale,
-                boost_dur_ms=boost_dur_ms,
-            ),
+            dispatch_fn=self._trainer_dispatch,
             recenter_fn=self._smooth_recenter_3step,
             detect_fn=self._detect_for_auto_trainer,
             roi_size_px=(float(self.vision.roi_size), float(self.vision.roi_size)),
@@ -420,6 +412,28 @@ class LiveGameSharedControlRunner:
             min_wh = 2.0 * float(det.head_radius_px)
         return float(np.clip(self.in_box_deadband_ratio * min_wh, self.min_deadband_px, self.max_deadband_px))
 
+    def _trainer_dispatch(
+        self,
+        p: np.ndarray,
+        cooldown_s: float = COOLDOWN_LOCK_S,
+        freeze_play_g: bool = False,
+        use_boost: bool = True,
+        boost_scale: Optional[float] = None,
+        boost_dur_ms: Optional[float] = None,
+    ) -> bool:
+        """Blocking dispatch wrapper for InGameAutoTrainer so F5/F8 never drop steps or skip frame-lag settle."""
+        sent = self._dispatch_stage_manifold_open_loop(
+            p,
+            is_recenter=False,
+            cooldown_s=0.0,
+            freeze_play_g=freeze_play_g,
+            use_boost=use_boost,
+            boost_scale=boost_scale,
+            boost_dur_ms=boost_dur_ms,
+        )
+        time.sleep(max(0.085, float(cooldown_s)))
+        return bool(sent)
+
     def _smooth_recenter_3step(self, duration_s: float = 0.12) -> None:
         """3-step non-jarring manifold return to (0, 0) mechanical neutral (~120ms)."""
         with self._hw_lock:
@@ -430,14 +444,16 @@ class LiveGameSharedControlRunner:
         step_sleep = max(0.015, float(duration_s) / 3.0)
         for alpha in (2.0 / 3.0, 1.0 / 3.0, 0.0):
             p_step = p_cur * alpha
-            is_final = alpha == 0.0
             try:
-                u1, u2 = self.trainer.manifold.evaluate_pulse(
+                u1_c, u2_c, _, _ = self.calibrator.stage_pos_to_pulses(
+                    self.trainer.manifold,
                     float(p_step[0]),
                     float(p_step[1]),
-                    dir_hint=(-float(p_cur[0]), -float(p_cur[1])),
+                    dx=-float(p_cur[0]),
+                    dy=-float(p_cur[1]),
+                    freeze_play_g=False,
+                    play_deadband_cnt=0.0,
                 )
-                u1_c, u2_c = _clamp_servo_pair(u1, u2)
                 self.trainer.driver.send_raw_pulses(u1_c, u2_c)
             except Exception:
                 pass
@@ -675,9 +691,9 @@ class LiveGameSharedControlRunner:
         self.ctrl.reset_episode()
         self.vision.reset_filters()
         try:
-            u_kin0 = self.trainer.manifold.evaluate_kinematic_pulse(0.0, 0.0)
+            u_kin0 = self.calibrator.u0_neutral.copy()
             self.trainer.manifold.pi_net.reset_play_state(u_kin0, (1.0, 1.0))
-            self._last_u_kin_live = np.asarray(u_kin0, dtype=float)
+            self._last_u_kin_live = u_kin0.copy()
         except Exception:
             pass
         self._prev_sensor_xy = np.array(self.trainer.sensor.get_position(), dtype=float)
@@ -820,7 +836,7 @@ class LiveGameSharedControlRunner:
                 dy=dy,
                 freeze_play_g=(freeze_play_g and (not is_recenter)),
                 locked_play_g=self._locked_play_g,
-                play_deadband_cnt=0.0 if is_recenter else 6.0,
+                play_deadband_cnt=0.0 if is_recenter else 12.0,
             )
             if not (freeze_play_g and (not is_recenter)):
                 self._locked_play_g = play_g
@@ -840,8 +856,6 @@ class LiveGameSharedControlRunner:
                     e1,
                     e2,
                     boost_scale=b_scale,
-                    min_kick_us=10.5,
-                    max_kick_us=26.0,
                 )
             if boost_pair is not None:
                 b1, b2 = boost_pair
@@ -1596,26 +1610,26 @@ class LiveGameSharedControlRunner:
                             self._mono_cmd_t = 0.0
                             self._mono_tripped = False
 
-                        # Live Monotonicity Feedback Gate: if 90-240ms after commanding aim step
-                        # with hand nearly still error GREW by > +4.5 px, trip & back off!
+                        # Live Monotonicity Feedback Gate: trip only on true positive-feedback divergence (> +12 px)
                         if (
                             self._mono_cmd_t > 0.0
                             and self._mono_target_id == tid_cur
-                            and 0.090 <= (t_now - self._mono_cmd_t) <= 0.250
+                            and 0.110 <= (t_now - self._mono_cmd_t) <= 0.280
                             and float(np.hypot(v_hand_raw[0], v_hand_raw[1])) < 80.0
-                            and e_norm > (self._mono_e0_norm + 4.5)
+                            and e_norm > max(15.0, self._mono_e0_norm + 12.0)
                         ):
                             self._mono_tripped = True
                             self.p_aim_cnt = self.p_aim_cnt * 0.5
                             self._mono_cmd_t = 0.0
+                            print(f"\n[MONO_TRIP] target#{tid_cur} diverged {self._mono_e0_norm:.1f}->{e_norm:.1f}px; pausing aim lock.")
 
                         if (not self._mono_tripped) and e_norm > r_lock and locked_dist_px >= min(self.min_aim_dist_px, r_lock):
                             gain = self.kp_small_head if e_norm <= self.small_error_px else self.kp_large_error
                             dp_stage = self.calibrator.aim_error_to_stage_delta(float(e_px[0]), float(e_px[1])) * gain
-                            # Cap single-step aim jump to <= 55 cnt to avoid large jumps on noisy frame
+                            # Cap single-step aim jump to <= 95 cnt (~24 px) for crisp flick responsiveness
                             dp_n = float(np.hypot(dp_stage[0], dp_stage[1]))
-                            if dp_n > 55.0:
-                                dp_stage = dp_stage * (55.0 / dp_n)
+                            if dp_n > 95.0:
+                                dp_stage = dp_stage * (95.0 / dp_n)
                             # Soft radial overshoot damping without stranding cross-coupled minor axes
                             if float(np.dot(dp_stage, self._lock_dir_sign)) < 0.0 and e_norm < 8.0:
                                 dp_stage = dp_stage * 0.72

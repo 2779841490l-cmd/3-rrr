@@ -291,8 +291,8 @@ def run_audit_2_com4_sensor_loop(
     calibrator.J_screen_to_stage = np.linalg.inv(M_real)
     calibrator.visual_calib_source = "YOLO_HEAD_FLOW"
 
-    kp_s = max(0.56, float(lc.get("kp_small_head", 0.42)))
-    kp_l = max(0.70, float(lc.get("kp_large_error", 0.68)))
+    kp_s = float(lc.get("kp_small_head", 0.42))
+    kp_l = float(lc.get("kp_large_error", 0.68))
     small_px = float(lc.get("small_error_px", 14.0))
     # Far small head (~6 px) => r_lock = min_deadband_px (2.2 px <= 2.5 px convergence target)
     r_lock = float(
@@ -369,15 +369,12 @@ def run_audit_2_com4_sensor_loop(
                 dx=float(dp[0]),
                 dy=float(dp[1]),
                 freeze_play_g=False,
-                play_deadband_cnt=6.0,
             )
             boost_pair = calibrator.compute_stiction_boost(
                 u_lin - last_u_lin,
                 e1,
                 e2,
                 boost_scale=boost_scale,
-                min_kick_us=10.5,
-                max_kick_us=26.0,
             )
             if getattr(driver, "b_cmd_supported", False) and boost_pair is not None:
                 b1, b2 = boost_pair

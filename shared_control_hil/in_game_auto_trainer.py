@@ -314,7 +314,6 @@ class InGameAutoTrainer:
             dy=dy,
             freeze_play_g=freeze_play_g,
             locked_play_g=self._locked_play_g,
-            play_deadband_cnt=6.0,
         )
         if not freeze_play_g:
             self._locked_play_g = play_g
@@ -326,8 +325,6 @@ class InGameAutoTrainer:
                 ux_t,
                 uy_t,
                 boost_scale=float(boost_scale),
-                min_kick_us=10.5,
-                max_kick_us=26.0,
             )
         if boost_pair is not None:
             b1, b2 = boost_pair
@@ -368,6 +365,7 @@ class InGameAutoTrainer:
 
         def _measure_axis(axis_idx: int) -> Tuple[Optional[np.ndarray], Dict[str, Any]]:
             deltas = []
+            errs = []
             for sgn in (+1.0, -1.0):
                 p = np.zeros(2, dtype=np.float64)
                 p[axis_idx] = sgn * float(step_cnt)
@@ -387,9 +385,11 @@ class InGameAutoTrainer:
                 if obs is None:
                     return None, {"ok": False, "reason": f"lost_head_axis_{axis_idx}"}
                 # Delta in error_px caused by +sgn * step_cnt stage move
+                errs.append(obs["error_px"].copy())
                 shift = (obs["error_px"] - base["error_px"]) * sgn
                 deltas.append(shift / float(step_cnt))
-            avg_col = 0.5 * (deltas[0] + deltas[1])
+            # Symmetric (+step - (-step)) / (2*step) cancels slow hand drift during probe
+            avg_col = (errs[0] - errs[1]) / (2.0 * float(step_cnt))
             return avg_col, {
                 "pos_px_per_cnt": deltas[0].round(4).tolist(),
                 "neg_px_per_cnt": deltas[1].round(4).tolist(),
@@ -513,13 +513,13 @@ class InGameAutoTrainer:
             # Offset stage under loaded palm, wait past visual pipeline lag, read initial e0_px
             self._dispatch(
                 off,
-                cooldown_s=0.10,
+                cooldown_s=0.11,
                 freeze_play_g=False,
                 use_boost=True,
                 boost_scale=params["boost_scale"],
                 boost_dur_ms=params["boost_dur_ms"],
             )
-            self._sleep(0.04)
+            self._sleep(0.07)
 
             obs0 = self._sample_head_obs(n_frames=2, require_head_box=True)
             if obs0 is None:

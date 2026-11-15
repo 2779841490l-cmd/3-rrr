@@ -218,57 +218,58 @@
       {
         "trial_idx": 1,
         "initial_err_px": 26.0,
-        "final_err_px": 1.81,
-        "steps": 3,
+        "final_err_px": 2.1,
+        "steps": 7,
         "err_trace_px": [
           26.0,
-          12.65,
-          2.42,
-          1.81
+          11.41,
+          4.05,
+          3.53,
+          3.32,
+          3.18,
+          2.98,
+          2.1
         ],
         "converged": true
       },
       {
         "trial_idx": 2,
         "initial_err_px": 26.0,
-        "final_err_px": 1.78,
-        "steps": 4,
+        "final_err_px": 1.32,
+        "steps": 2,
         "err_trace_px": [
           26.0,
-          11.64,
-          3.66,
-          3.59,
-          1.78
+          7.52,
+          1.32
         ],
         "converged": true
       },
       {
         "trial_idx": 3,
         "initial_err_px": 26.0,
-        "final_err_px": 1.69,
-        "steps": 4,
+        "final_err_px": 1.02,
+        "steps": 6,
         "err_trace_px": [
           26.0,
-          9.15,
-          5.6,
-          2.88,
-          1.69
+          6.92,
+          3.41,
+          5.0,
+          3.58,
+          2.36,
+          1.02
         ],
         "converged": true
       },
       {
         "trial_idx": 4,
         "initial_err_px": 42.0,
-        "final_err_px": 1.92,
-        "steps": 6,
+        "final_err_px": 1.98,
+        "steps": 3,
         "err_trace_px": [
           42.0,
-          29.3,
-          14.19,
-          7.67,
-          2.95,
-          2.27,
-          1.92
+          25.82,
+          6.65,
+          1.98
         ],
         "converged": true
       }
