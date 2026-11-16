@@ -712,25 +712,27 @@ class VisionROITracker:
         t_det: float,
         k_lead_s: float = 0.085,
     ) -> List[TargetDetection]:
-        """Fast KF constant-velocity propagation between async YOLO detections (without corrupting KF vel)."""
+        """Return latest async YOLO boxes without camera-whip KF extrapolation (prevents phantom overshoot)."""
         if not detections:
             return []
-        dt_ext = float(np.clip(float(t_now) - float(t_det), 0.0, 0.060))
+        _ = (t_now, t_det)
         out: List[TargetDetection] = []
         with self._kf_lock:
             for det in detections:
                 tid = int(det.target_id)
                 kf = self.target_kfs.get(tid)
+                # Always anchor on actual observed YOLO head/chest coordinates (camera motion
+                # during whips injects large screen-space velocity into kf.x[2:]).
+                pos = np.asarray(det.head_px, dtype=float).copy()
+                chest_now = np.asarray(det.chest_px, dtype=float).copy()
                 if kf is not None:
-                    pos = kf.x[:2].copy() + kf.x[2:].copy() * dt_ext
-                    vel = kf.x[2:].copy()
+                    vel_raw = kf.x[2:].copy()
+                    spd = float(np.hypot(vel_raw[0], vel_raw[1]))
+                    vel = vel_raw * (min(spd, 140.0) / spd) if spd > 140.0 else vel_raw
                     seen = self.track_hits.get(tid, det.seen_frames)
                 else:
-                    pos = np.asarray(det.head_px, dtype=float).copy()
                     vel = np.asarray(det.vel_px_s, dtype=float).copy()
                     seen = det.seen_frames
-                chest_shift = np.asarray(det.chest_px, dtype=float) - np.asarray(det.head_px, dtype=float)
-                chest_now = pos + chest_shift
                 out.append(
                     TargetDetection(
                         target_id=tid,

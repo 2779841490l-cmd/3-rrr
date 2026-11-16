@@ -183,8 +183,8 @@ class FastSelfCalibrator:
         self.axis_x_neg_px_per_cnt = neg_v
         if pos_v >= 0.05 and neg_v >= 0.05:
             avg_v = 0.5 * (pos_v + neg_v)
-            self._x_pos_asym_scale = float(np.clip(avg_v / pos_v, 0.68, 1.48))
-            self._x_neg_asym_scale = float(np.clip(avg_v / neg_v, 0.68, 1.48))
+            self._x_pos_asym_scale = float(np.clip(avg_v / pos_v, 0.75, 1.32))
+            self._x_neg_asym_scale = float(np.clip(avg_v / neg_v, 0.75, 1.32))
         else:
             self._x_pos_asym_scale = 1.0
             self._x_neg_asym_scale = 1.0

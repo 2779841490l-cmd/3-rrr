@@ -342,8 +342,8 @@ class InGameAutoTrainer:
     # ------------------------------------------------------------------
     def calibrate_yolo_head_jacobian(
         self,
-        step_cnt: float = 80.0,
-        settle_s: float = 0.095,
+        step_cnt: float = 70.0,
+        settle_s: float = 0.135,
         require_head_box: bool = True,
     ) -> Dict[str, Any]:
         """Measure loaded screen-to-stage Jacobian from live YOLO `head` detections."""
@@ -377,17 +377,20 @@ class InGameAutoTrainer:
                     boost_scale=boost_scale,
                     boost_dur_ms=boost_dur_ms,
                 )
-                # Allow 80-95ms screen/capture latency to flush completely before sampling
-                self._sleep(max(0.06, settle_s))
+                # Allow 135ms screen/capture/servo latency to flush completely before sampling
+                self._sleep(max(0.11, settle_s))
                 obs = self._sample_head_obs(n_frames=3, require_head_box=require_head_box)
-                self._recenter(0.11)
-                self._sleep(max(0.09, settle_s))
+                self._recenter(0.12)
+                self._sleep(max(0.14, settle_s))
                 if obs is None:
                     return None, {"ok": False, "reason": f"lost_head_axis_{axis_idx}"}
                 # Delta in error_px caused by +sgn * step_cnt stage move
                 errs.append(obs["error_px"].copy())
                 shift = (obs["error_px"] - base["error_px"]) * sgn
                 deltas.append(shift / float(step_cnt))
+            # Reject probes where + and - disagree in dominant axis sign (bot/hand twitched mid-probe)
+            if float(deltas[0][axis_idx]) * float(deltas[1][axis_idx]) <= 0.0:
+                return None, {"ok": False, "reason": f"unstable_probe_sign_axis_{axis_idx}"}
             # Symmetric (+step - (-step)) / (2*step) cancels slow hand drift during probe
             avg_col = (errs[0] - errs[1]) / (2.0 * float(step_cnt))
             return avg_col, {
@@ -416,7 +419,7 @@ class InGameAutoTrainer:
             }
 
         cond_m = float(np.linalg.cond(M))
-        if cond_m > 12.0:
+        if cond_m > 4.5:
             return {
                 "ok": False,
                 "reason": f"ill_conditioned_yolo_jacobian(cond={cond_m:.2f})",

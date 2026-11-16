@@ -364,6 +364,9 @@ class LiveGameSharedControlRunner:
         self._last_pulse_dir: np.ndarray = np.zeros(2, dtype=float)
         self._pulse_immunity_active: bool = False
         self._pulse_opp_turn_confirmed: bool = False
+        self._last_bcmd_t: float = 0.0
+        self._prev_trim_dp: np.ndarray = np.zeros(2, dtype=float)
+        self._prev_trim_t: float = 0.0
         self._live_anchor_mode: str = "HEAD"
         self._live_anchor_px: Optional[np.ndarray] = None
         self._spray_anchor_latched: Optional[str] = None
@@ -408,9 +411,9 @@ class LiveGameSharedControlRunner:
         self.max_deadband_px = float(lc.get("max_deadband_px", 2.4))
         self.cooldown_lock_s = float(lc.get("cooldown_ms", 45.0)) / 1000.0
         self.recoil_cooldown_s = max(0.025, float(lc.get("recoil_cooldown_ms", 35.0)) / 1000.0)
-        self.aim_cooldown_s = max(0.040, float(lc.get("aim_cooldown_ms", 46.0)) / 1000.0)
+        self.aim_cooldown_s = max(0.042, float(lc.get("aim_cooldown_ms", 50.0)) / 1000.0)
         self.tap_guard_s = max(0.0, float(lc.get("tap_guard_ms", 30.0)) / 1000.0)
-        self.visual_lag_s = max(0.020, float(lc.get("visual_lag_ms", 92.0)) / 1000.0)
+        self.visual_lag_s = max(0.040, float(lc.get("visual_lag_ms", 95.0)) / 1000.0)
         self.boost_scale = float(lc.get("boost_scale", 1.35))
         self.boost_dur_ms = float(lc.get("boost_dur_ms", 30.0))
         self.recenter_idle_s = float(lc.get("recenter_idle_ms", 150.0)) / 1000.0
@@ -461,6 +464,9 @@ class LiveGameSharedControlRunner:
         self._last_pulse_dir = np.zeros(2, dtype=float)
         self._pulse_immunity_active = False
         self._pulse_opp_turn_confirmed = False
+        self._last_bcmd_t = 0.0
+        self._prev_trim_dp = np.zeros(2, dtype=float)
+        self._prev_trim_t = 0.0
         self._live_anchor_mode = "HEAD"
         self._live_anchor_px = None
         self._spray_anchor_latched = None
@@ -649,17 +655,17 @@ class LiveGameSharedControlRunner:
                 usb_spd = float(math.hypot(v_usb_lp[0], v_usb_lp[1]))
                 stg_spd = float(math.hypot(v_stg_lp[0], v_stg_lp[1]))
 
-                # 85 ms In-Pulse Immunity Window: never misattribute coupled B_CMD surge (< 75 deg) to human flicks.
+                # 75 ms In-Pulse Immunity Window (boosted B_CMD only): break fast on genuine opposite turns (>350 cnt/s for 20ms).
                 p_dir_n = float(math.hypot(pulse_dir[0], pulse_dir[1]))
-                in_pulse_win = (pulse_t > 0.0) and ((t_now - pulse_t) <= 0.085) and (p_dir_n > 0.5)
+                in_pulse_win = (pulse_t > 0.0) and ((t_now - pulse_t) <= 0.075) and (p_dir_n > 0.5)
                 if in_pulse_win:
                     p_hat = pulse_dir / p_dir_n
                     v_par = float(np.dot(v_usb_lp, p_hat))
-                    if (-v_par) > 500.0:
+                    if (-v_par) > 350.0:
                         opp_turn_dur_s += dt
                     else:
                         opp_turn_dur_s = 0.0
-                    opp_confirmed = opp_turn_dur_s >= 0.025
+                    opp_confirmed = opp_turn_dur_s >= 0.020
                     self._pulse_opp_turn_confirmed = bool(opp_confirmed)
                     self._pulse_immunity_active = not opp_confirmed
                     if v_par >= 0.0 and (usb_spd <= 1e-3 or v_par > (usb_spd * cos75)):
@@ -877,7 +883,7 @@ class LiveGameSharedControlRunner:
         self._wait_hw_idle()
         self._reset_live_lock_and_stage_state()
         print("\n[F8] Trying YOLO Head-Box Visual Polarity & Jacobian calibration...")
-        res_yolo = self.in_game_trainer.calibrate_yolo_head_jacobian(step_cnt=70.0, settle_s=0.105)
+        res_yolo = self.in_game_trainer.calibrate_yolo_head_jacobian(step_cnt=70.0, settle_s=0.135)
         if res_yolo.get("ok"):
             self.config = self.calibrator.config
             res = {
@@ -1102,11 +1108,13 @@ class LiveGameSharedControlRunner:
                 else:
                     self._active_bcmd = None
                 self.trainer.driver.send_ballistic_pulse(b1, b2, e1, e2, bst_us)
+                if not is_recenter:
+                    self._last_bcmd_t = time.perf_counter()
             else:
                 self._active_bcmd = None
                 self.trainer.driver.send_raw_pulses(e1, e2)
 
-            if (not is_recenter) and dp_len >= 1.2:
+            if (not is_recenter) and (live_boost is not None) and dp_len >= 6.0:
                 self._last_pulse_cmd_t = time.perf_counter()
                 self._last_pulse_dir = dp_vec / max(dp_len, 1e-6)
                 self._pulse_opp_turn_confirmed = False
@@ -1827,6 +1835,7 @@ class LiveGameSharedControlRunner:
         v_hand_raw: np.ndarray,
         p_stage_now: np.ndarray,
         dispatch_fn: Optional[Callable[..., bool]] = None,
+        det_age_s: float = 0.0,
     ) -> Tuple[Optional[TargetDetection], float]:
         """
         Execute one 144 Hz tick of Two-Stage (Fast Ballistic Snap + Smooth Fine Trim)
@@ -1845,10 +1854,10 @@ class LiveGameSharedControlRunner:
         roi_c = 0.5 * float(roi_rgb.shape[0])
         roi_center_arr = np.array([roi_c, roi_c], dtype=float)
 
-        # 85 ms In-Pulse Immunity Window: never blame coupled B_CMD surge on user flicks
+        # 75 ms In-Pulse Immunity Window: never blame coupled B_CMD surge on user flicks
         last_pulse_t = float(getattr(self, "_last_pulse_cmd_t", 0.0))
         pulse_age_s = t_now - last_pulse_t
-        in_pulse_immunity = (last_pulse_t > 0.0) and (pulse_age_s <= 0.085) and (
+        in_pulse_immunity = (last_pulse_t > 0.0) and (pulse_age_s <= 0.075) and (
             not getattr(self, "_pulse_opp_turn_confirmed", False)
         )
         if in_pulse_immunity and (not getattr(self, "_tracker_running", False)):
@@ -1857,7 +1866,7 @@ class LiveGameSharedControlRunner:
             if p_dir_n > 0.5 and v_hand_norm > 1e-3:
                 p_hat = p_dir / p_dir_n
                 v_par = float(np.dot(v_hand_raw, p_hat))
-                if (-v_par) > 500.0 and pulse_age_s >= 0.025:
+                if (-v_par) > 350.0 and pulse_age_s >= 0.020:
                     in_pulse_immunity = False
                 elif v_par >= 0.0 and v_par > (v_hand_norm * 0.258819):
                     v_hand_raw = np.zeros(2, dtype=float)
@@ -2071,7 +2080,8 @@ class LiveGameSharedControlRunner:
             )
             # PURE aim Smith predictor: exclude p_rec_goal / p_recoil_cnt so horizontal recoil steps
             # NEVER generate phantom aim errors or horizontal ping-pong oscillation!
-            p_aim_at_frame_capture = self._get_visible_aim_pos(t_now)
+            eff_lag_s = self.visual_lag_s + float(np.clip(det_age_s, 0.0, 0.060))
+            p_aim_at_frame_capture = self._get_visible_aim_pos(t_now, lag_s=eff_lag_s)
             dp_in_flight = eta_flight * (self.p_aim_cnt - p_aim_at_frame_capture)
             e_pred_px = e_raw_px + (M_stage_to_err @ dp_in_flight)
             e_pred_norm = float(np.hypot(e_pred_px[0], e_pred_px[1]))
@@ -2142,7 +2152,7 @@ class LiveGameSharedControlRunner:
             if aim_due:
                 eta_cp = self.eng_logger.get_effective_coupling(default=1.0, min_samples=3) if hasattr(self, "eng_logger") else 1.0
                 ff_snap = float(np.clip(1.0 / max(0.76, eta_cp), 1.0, 1.24))
-                ff_trim = float(np.clip(1.0 / max(0.68, eta_cp), 1.0, 1.38))
+                ff_trim = float(np.clip(1.0 / max(0.84, eta_cp), 1.0, 1.15))
                 fine_trim_px = min(float(self.small_error_px), 8.5)
                 is_initial_snap = (
                     (not lmb_down)
@@ -2154,17 +2164,17 @@ class LiveGameSharedControlRunner:
                 )
                 if is_initial_snap:
                     gain = min(self.kp_snap, 0.88) * ff_snap
-                    step_cap = 125.0
+                    step_cap = 95.0
                     use_boost_aim = True
                     b_scale_aim = self.boost_scale
                     b_dur_aim = self.boost_dur_ms
                 else:
                     is_fine = e_pred_norm <= fine_trim_px
                     base_gain = min(0.76, max(self.kp_small_head, 0.42)) if is_fine else max(self.kp_large_error, 0.52)
-                    gain = min(0.86, base_gain * ff_trim)
+                    gain = min(0.72, base_gain * ff_trim)
                     if (not in_pulse_immunity) and v_hand_norm > 130.0:
                         gain *= 0.78
-                    step_cap = 120.0
+                    step_cap = 55.0
                     use_boost_aim = True
                     b_scale_aim = self.boost_scale
                     b_dur_aim = self.boost_dur_ms
@@ -2177,17 +2187,31 @@ class LiveGameSharedControlRunner:
                     p_rec_goal[1] = p_rec_cand[1]
                     recoil_due = True
                     dp_stage[1] = 0.0
+                # Anti-reversal damping: if an axis flips direction soon after a >=10 cnt step, halve gain & block boost
+                is_rev_step = False
+                if (not is_initial_snap) and (t_now - getattr(self, "_prev_trim_t", 0.0)) <= 0.28:
+                    prev_dp = getattr(self, "_prev_trim_dp", np.zeros(2, dtype=float))
+                    for ax in (0, 1):
+                        if abs(float(prev_dp[ax])) >= 10.0 and (float(dp_stage[ax]) * float(prev_dp[ax])) < 0.0:
+                            dp_stage[ax] *= 0.48
+                            is_rev_step = True
                 dp_n = float(np.hypot(dp_stage[0], dp_stage[1]))
                 if dp_n > step_cap:
                     dp_stage = dp_stage * (step_cap / dp_n)
                     dp_n = step_cap
                 # Keep full inter-bullet authority within 9px; mild damp on wide reversals
                 if e_pred_norm > 9.0 and float(np.dot(dp_stage, self._lock_dir_sign)) < 0.0:
-                    dp_stage = dp_stage * 0.78
+                    dp_stage = dp_stage * 0.72
                     dp_n = float(np.hypot(dp_stage[0], dp_stage[1]))
 
-                use_boost_final = bool(use_boost_aim and dp_n >= 3.5)
-                if dp_n >= 0.8:
+                rev_cd_ok = (not is_rev_step) or ((t_now - self._last_aim_cmd_t) >= max(self.aim_cooldown_s, 0.088))
+                use_boost_final = bool(
+                    use_boost_aim
+                    and dp_n >= 10.0
+                    and (not is_rev_step)
+                    and (t_now - getattr(self, "_last_bcmd_t", 0.0)) >= 0.115
+                )
+                if dp_n >= 0.8 and rev_cd_ok:
                     if (
                         lmb_down
                         and (float(self.p_aim_cnt[1]) + float(dp_stage[1])) > float(aim_env_hi[1]) + 1.0
@@ -2220,6 +2244,10 @@ class LiveGameSharedControlRunner:
                     if sent:
                         self.p_aim_cnt = p_aim_cand
                         self._last_aim_cmd_t = t_now
+                        self._prev_trim_dp = dp_stage.copy()
+                        self._prev_trim_t = t_now
+                        if use_boost_final:
+                            self._last_bcmd_t = t_now
                         aim_sent = True
                         if is_initial_snap:
                             self._snap_done_tid = tid_cur
@@ -2516,6 +2544,7 @@ class LiveGameSharedControlRunner:
                         lmb_down=lmb_down,
                         v_hand_raw=v_hand_raw,
                         p_stage_now=p_stage_now,
+                        det_age_s=(max(0.0, t_step - last_det_t) if det_gen > 0 else 0.0),
                     )
                 else:
                     locked_det, _ = self._select_locked_target(dets_px, c_px)
