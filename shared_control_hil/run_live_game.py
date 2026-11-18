@@ -1117,7 +1117,7 @@ class LiveGameSharedControlRunner:
                 self._active_bcmd = None
                 self.trainer.driver.send_raw_pulses(e1, e2)
 
-            if (not is_recenter) and (live_boost is not None) and dp_len >= 3.5:
+            if (not is_recenter) and ((live_boost is not None and dp_len >= 3.5) or dp_len >= 4.5):
                 self._last_pulse_cmd_t = time.perf_counter()
                 self._last_pulse_dir = dp_vec / max(dp_len, 1e-6)
                 self._pulse_opp_turn_confirmed = False
@@ -2103,12 +2103,16 @@ class LiveGameSharedControlRunner:
 
             tid_cur = int(locked_det.target_id)
             if tid_cur != self._lock_target_id:
-                if (
-                    (not lmb_down)
+                recent_burst = lmb_down or ((t_now - self._last_lmb_release_t) <= 0.250)
+                if recent_burst and self._snap_done_tid is not None:
+                    # Preserve snap completion across transient track ID flicker during bursts
+                    self._snap_done_tid = tid_cur
+                elif (
+                    (not recent_burst)
                     and float(np.hypot(self.p_aim_cnt[0], self.p_aim_cnt[1])) > 25.0
-                    and e_norm > max(r_lock * 2.5, 6.0)
+                    and e_norm > max(r_lock * 2.5, 22.0)
                 ):
-                    self.p_aim_cnt = self.p_aim_cnt * 0.50
+                    self.p_aim_cnt = self.p_aim_cnt * 0.72
                 dp_init = self.calibrator.aim_error_to_stage_delta(float(e_pred_px[0]), float(e_pred_px[1]))
                 self._lock_target_id = tid_cur
                 self._lock_start_t = t_now
@@ -2216,6 +2220,25 @@ class LiveGameSharedControlRunner:
                     b_dur_aim = self.boost_dur_ms
 
                 dp_stage = self.calibrator.aim_error_to_stage_delta(float(e_pred_px[0]), float(e_pred_px[1])) * gain
+                # Early AK-47 vertical feedforward (Bullets 1-4, 25..420ms): proactively pre-pull ~38%
+                # of deterministic initial climb before visual lag sees it, ONLY while error >= 0 (not below head).
+                if (
+                    lmb_down
+                    and float(e_raw_px[1]) >= -1.0
+                    and float(e_pred_px[1]) >= 0.0
+                    and hasattr(self, "ak_calibrator")
+                ):
+                    lmb_hold_s_ff = max(0.0, t_now - self._lmb_down_since_t)
+                    if 0.025 <= lmb_hold_s_ff <= 0.420:
+                        shot_f = lmb_hold_s_ff / 0.100
+                        idx_k = int(min(4, max(0, int(shot_f))))
+                        pts_ak = getattr(self.ak_calibrator, "pull_waypoints_cnt", None)
+                        if pts_ak is not None and len(pts_ak) > idx_k + 1:
+                            y_cur = float(pts_ak[idx_k, 1]) if idx_k > 0 else 0.0
+                            y_nxt = float(pts_ak[idx_k + 1, 1])
+                            dy_bullet = max(0.0, y_nxt - y_cur)
+                            ff_y = float(np.clip(0.38 * dy_bullet * (min(0.055, eff_aim_cd) / 0.100), 0.0, 10.0))
+                            dp_stage[1] += ff_y
                 # Spray X-corridor anti-shake: when crosshair X is already inside head/neck width (<=2.2 px),
                 # keep vertical spray pull laser-straight instead of micro-chasing 1 px X jitter sideways.
                 if lmb_down and abs(float(e_pred_px[0])) <= max(2.2, 0.75 * r_lock) and abs(float(e_raw_px[0])) <= 3.8:

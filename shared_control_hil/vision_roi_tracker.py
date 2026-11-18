@@ -297,6 +297,7 @@ class VisionROITracker:
         self.crosshair_tracker = DynamicCrosshairTracker(roi_size=roi_size)
         self.target_kfs: Dict[int, ConstantVelocityKF] = {}
         self.track_hits: Dict[int, int] = {}
+        self.track_miss_s: Dict[int, float] = {}
         self.last_capture_ms = 0.0
         self.last_infer_ms = 0.0
         self.last_yolo_ms = 0.0
@@ -687,16 +688,22 @@ class VisionROITracker:
                 det.head_pred_px = pos + float(k_lead_s) * vel
                 det.chest_pred_px = det.chest_px + float(k_lead_s) * vel
                 self.track_hits[tid] = self.track_hits.get(tid, 0) + 1
+                self.track_miss_s[tid] = 0.0
                 det.seen_frames = self.track_hits[tid]
 
-            # Decay missing tracks immediately so consecutive-frame gate strictly enforces continuous visibility
+            # Hold track_kfs across brief <=220ms muzzle-flash/blood dropouts so track IDs do NOT churn mid-spray!
             missing = [tid for tid in list(self.target_kfs.keys()) if tid not in active_ids]
             for tid in missing:
-                self.track_hits.pop(tid, None)
-                if len(active_ids) > 0:
-                    self.target_kfs[tid].step(None, dt_s=dt_s)
-                else:
+                miss_s = self.track_miss_s.get(tid, 0.0) + max(0.002, float(dt_s))
+                self.track_miss_s[tid] = miss_s
+                if miss_s > 0.060:
+                    self.track_hits.pop(tid, None)
+                if miss_s > 0.220:
                     self.target_kfs.pop(tid, None)
+                    self.track_miss_s.pop(tid, None)
+                    self.track_hits.pop(tid, None)
+                elif len(active_ids) > 0:
+                    self.target_kfs[tid].step(None, dt_s=dt_s)
 
         if det_t_s is not None:
             self._last_det_t = float(det_t_s)
@@ -839,6 +846,7 @@ class VisionROITracker:
         with self._kf_lock:
             self.target_kfs.clear()
             self.track_hits.clear()
+            self.track_miss_s.clear()
         c0 = 0.5 * self.roi_size
         self.crosshair_tracker.kf = ConstantVelocityKF(x0=c0, y0=c0, q_acc=20000.0, r_pos=0.4)
 
