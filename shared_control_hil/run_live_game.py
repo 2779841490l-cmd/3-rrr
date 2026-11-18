@@ -477,7 +477,7 @@ class LiveGameSharedControlRunner:
         self._last_engage_t = time.perf_counter()
 
     def _compute_deadband_px(self, det: Optional[TargetDetection]) -> float:
-        """Compute bounded In-Box Deadband Freeze radius in pixels (strictly <= max_deadband_px)."""
+        """Compute bounded In-Box Deadband Freeze radius in pixels; tighter on far small heads."""
         if det is None:
             return float(self.min_deadband_px)
         if det.head_bbox_px is not None:
@@ -485,6 +485,8 @@ class LiveGameSharedControlRunner:
             min_wh = min(abs(float(bx2) - float(bx1)), abs(float(by2) - float(by1)))
         else:
             min_wh = 2.0 * float(det.head_radius_px)
+        if min_wh <= 11.0:
+            return float(np.clip(self.in_box_deadband_ratio * min_wh, 0.90, min(1.5, float(self.max_deadband_px))))
         return float(np.clip(self.in_box_deadband_ratio * min_wh, self.min_deadband_px, self.max_deadband_px))
 
     def _trainer_dispatch(
@@ -655,13 +657,14 @@ class LiveGameSharedControlRunner:
                 usb_spd = float(math.hypot(v_usb_lp[0], v_usb_lp[1]))
                 stg_spd = float(math.hypot(v_stg_lp[0], v_stg_lp[1]))
 
-                # 75 ms In-Pulse Immunity Window (boosted B_CMD only): break fast on genuine opposite turns (>350 cnt/s for 20ms).
+                # 98 ms In-Pulse Immunity Window (covers full MG996R travel + 25ms LPF tail so servo settling
+                # never dumps a ~1000 cnt/s spike into v_hand_est); breaks fast on opposite turns (>380 cnt/s).
                 p_dir_n = float(math.hypot(pulse_dir[0], pulse_dir[1]))
-                in_pulse_win = (pulse_t > 0.0) and ((t_now - pulse_t) <= 0.075) and (p_dir_n > 0.5)
+                in_pulse_win = (pulse_t > 0.0) and ((t_now - pulse_t) <= 0.098) and (p_dir_n > 0.5)
                 if in_pulse_win:
                     p_hat = pulse_dir / p_dir_n
                     v_par = float(np.dot(v_usb_lp, p_hat))
-                    if (-v_par) > 350.0:
+                    if (-v_par) > 380.0:
                         opp_turn_dur_s += dt
                     else:
                         opp_turn_dur_s = 0.0
@@ -1729,13 +1732,18 @@ class LiveGameSharedControlRunner:
         return vis_pos.copy()
 
     @staticmethod
-    def _soft_saturate_stage_cmd(p_total: np.ndarray, limits: np.ndarray, soft_cap: float = 260.0) -> np.ndarray:
-        """Smooth tanh soft-knee saturation approaching +-260 cnt (below mechanical 300 cnt wall)."""
+    def _soft_saturate_stage_cmd(p_total: np.ndarray, limits: np.ndarray, soft_cap: Any = (250.0, 285.0)) -> np.ndarray:
+        """Smooth tanh soft-knee saturation (default 250 X / 285 Y cnt below mechanical 300 cnt wall)."""
         out = np.asarray(p_total, dtype=float).copy()
+        caps = (
+            (float(soft_cap), float(soft_cap))
+            if isinstance(soft_cap, (int, float))
+            else (float(soft_cap[0]), float(soft_cap[1]))
+        )
         for ax in (0, 1):
             lim = float(limits[ax])
-            ceil = min(float(soft_cap), lim)
-            knee = min(220.0, 0.85 * ceil)
+            ceil = min(caps[ax], lim)
+            knee = min(0.86 * ceil, ceil - 32.0)
             val = float(out[ax])
             aval = abs(val)
             if aval > knee and ceil > knee + 1e-3:
@@ -1854,10 +1862,10 @@ class LiveGameSharedControlRunner:
         roi_c = 0.5 * float(roi_rgb.shape[0])
         roi_center_arr = np.array([roi_c, roi_c], dtype=float)
 
-        # 75 ms In-Pulse Immunity Window: never blame coupled B_CMD surge on user flicks
+        # 98 ms In-Pulse Immunity Window: never blame coupled B_CMD surge + servo tail on user flicks
         last_pulse_t = float(getattr(self, "_last_pulse_cmd_t", 0.0))
         pulse_age_s = t_now - last_pulse_t
-        in_pulse_immunity = (last_pulse_t > 0.0) and (pulse_age_s <= 0.075) and (
+        in_pulse_immunity = (last_pulse_t > 0.0) and (pulse_age_s <= 0.098) and (
             not getattr(self, "_pulse_opp_turn_confirmed", False)
         )
         if in_pulse_immunity and (not getattr(self, "_tracker_running", False)):
@@ -1866,7 +1874,7 @@ class LiveGameSharedControlRunner:
             if p_dir_n > 0.5 and v_hand_norm > 1e-3:
                 p_hat = p_dir / p_dir_n
                 v_par = float(np.dot(v_hand_raw, p_hat))
-                if (-v_par) > 350.0 and pulse_age_s >= 0.020:
+                if (-v_par) > 380.0 and pulse_age_s >= 0.020:
                     in_pulse_immunity = False
                 elif v_par >= 0.0 and v_par > (v_hand_norm * 0.258819):
                     v_hand_raw = np.zeros(2, dtype=float)
@@ -1905,15 +1913,21 @@ class LiveGameSharedControlRunner:
         else:
             self._settled_low_vh_ticks = max(getattr(self, "_settled_low_vh_ticks", 0), 2)
 
-        # Active washout ONLY on true wide target-switch flicks (never wipe stage during slow wrist micro-aiming)
+        # Active washout ONLY when target is actually swiped off crosshair OR extreme turn (never wipe mid-lock!)
         in_snap_guard = (t_now - self._last_snap_t) <= 0.120
-        if (not in_pulse_immunity) and (not lmb_down) and v_hand_norm > 480.0:
+        has_near_tgt = any(
+            float(np.hypot(float(d.head_px[0]) - float(c_eff_px[0]), float(d.head_px[1]) - float(c_eff_px[1])))
+            <= float(self.max_aim_dist_px)
+            for d in dets_px
+        )
+        recent_burst_tail = (t_now - self._last_lmb_release_t) <= 0.180
+        if (not in_pulse_immunity) and (not lmb_down) and (not recent_burst_tail) and v_hand_norm > 520.0:
             self._flick_hi_cnt += 1
         else:
             self._flick_hi_cnt = 0
-        flick_trigger = (not in_pulse_immunity) and (not lmb_down) and (
-            (v_hand_norm > (780.0 if in_snap_guard else 660.0))
-            or ((not in_snap_guard) and v_hand_norm > 480.0 and self._flick_hi_cnt >= 3)
+        flick_trigger = (not in_pulse_immunity) and (not lmb_down) and (not recent_burst_tail) and (
+            (v_hand_norm > (880.0 if in_snap_guard else 820.0))
+            or ((not has_near_tgt) and v_hand_norm > 520.0 and self._flick_hi_cnt >= 3)
         )
         if flick_trigger:
             self._lock_target_id = None
@@ -2024,10 +2038,10 @@ class LiveGameSharedControlRunner:
                 p_rec_cand[:] = 0.0
                 recoil_due = True
 
-        # Smooth aim washout during moderate-to-fast manual panning between targets (reduces PRE_SAT carry-over)
-        pan_bleed_active = (not lmb_down) and (v_hand_norm >= 140.0)
+        # Smooth aim washout ONLY when target is NOT locked (never bleed aim backward while centering a far head)
+        pan_bleed_active = (not lmb_down) and (locked_det is None) and (v_hand_norm >= 220.0)
         if pan_bleed_active and float(np.hypot(self.p_aim_cnt[0], self.p_aim_cnt[1])) >= 2.0:
-            tau_bleed = 0.15 if v_hand_norm >= 260.0 else 0.24
+            tau_bleed = 0.15 if v_hand_norm >= 360.0 else 0.24
             self.p_aim_cnt = self.p_aim_cnt * math.exp(-max(0.002, dt_s) / tau_bleed)
 
         def _dispatch_recoil_only(cd_s: float) -> bool:
@@ -2038,12 +2052,13 @@ class LiveGameSharedControlRunner:
                 and (t_now - float(act_b["t0"])) < float(act_b["dur_s"])
             ):
                 return False
-            # Soft-washout p_aim_cnt when total aim+recoil approaches +-260 cnt headroom
+            # Per-axis soft-washout p_aim_cnt only when that axis approaches ceiling
             p_sum_pre = self.p_aim_cnt + p_rec_cand
+            axis_ceil = (225.0, 255.0)
             for ax in (0, 1):
-                if abs(float(p_sum_pre[ax])) > 220.0:
+                if abs(float(p_sum_pre[ax])) > axis_ceil[ax]:
                     self.p_aim_cnt[ax] *= math.exp(-max(0.002, dt_s) / 0.14)
-            p_cmd_rec = self._soft_saturate_stage_cmd(self.p_aim_cnt + p_rec_cand, limits, soft_cap=260.0)
+            p_cmd_rec = self._soft_saturate_stage_cmd(self.p_aim_cnt + p_rec_cand, limits, soft_cap=(250.0, 285.0))
             ok_rec = disp(
                 p_cmd_rec,
                 is_recenter=False,
@@ -2165,11 +2180,11 @@ class LiveGameSharedControlRunner:
             )
             if aim_due:
                 eta_cp = self.eng_logger.get_effective_coupling(default=0.88, min_samples=2) if hasattr(self, "eng_logger") else 1.0
-                ff_snap = float(np.clip(1.0 / max(0.76, eta_cp), 1.0, 1.24))
+                ff_snap = float(np.clip(1.0 / max(0.70, eta_cp), 1.0, 1.32))
                 ff_trim = (
                     float(np.clip(1.0 / max(0.62, eta_cp), 1.0, 1.32))
                     if lmb_down
-                    else float(np.clip(1.0 / max(0.84, eta_cp), 1.0, 1.15))
+                    else float(np.clip(1.0 / max(0.72, eta_cp), 1.0, 1.28))
                 )
                 fine_trim_px = min(float(self.small_error_px), 8.5)
                 is_initial_snap = (
@@ -2181,9 +2196,9 @@ class LiveGameSharedControlRunner:
                     and (float(np.hypot(dp_in_flight[0], dp_in_flight[1])) < 14.0)
                 )
                 if is_initial_snap:
-                    gain = min(self.kp_snap, 0.88) * ff_snap
+                    gain = min(self.kp_snap, 0.90) * ff_snap
                     if (not in_pulse_immunity) and v_hand_norm > 160.0:
-                        gain *= 0.75
+                        gain *= 0.78
                     step_cap = 95.0
                     use_boost_aim = True
                     b_scale_aim = self.boost_scale
@@ -2191,16 +2206,20 @@ class LiveGameSharedControlRunner:
                 else:
                     is_fine = e_pred_norm <= fine_trim_px
                     base_gain = min(0.76, max(self.kp_small_head, 0.42)) if is_fine else max(self.kp_large_error, 0.52)
-                    gain = min((0.82 if lmb_down else 0.72), base_gain * ff_trim)
-                    co_assist_vh = 380.0 if lmb_down else 210.0
+                    gain = min((0.82 if lmb_down else 0.78), base_gain * ff_trim)
+                    co_assist_vh = 380.0 if lmb_down else 220.0
                     if (not in_pulse_immunity) and v_hand_norm > co_assist_vh:
-                        gain *= 0.65
-                    step_cap = 75.0 if lmb_down else 55.0
+                        gain *= 0.68
+                    step_cap = 75.0 if lmb_down else 60.0
                     use_boost_aim = True
                     b_scale_aim = self.boost_scale
                     b_dur_aim = self.boost_dur_ms
 
                 dp_stage = self.calibrator.aim_error_to_stage_delta(float(e_pred_px[0]), float(e_pred_px[1])) * gain
+                # Spray X-corridor anti-shake: when crosshair X is already inside head/neck width (<=2.2 px),
+                # keep vertical spray pull laser-straight instead of micro-chasing 1 px X jitter sideways.
+                if lmb_down and abs(float(e_pred_px[0])) <= max(2.2, 0.75 * r_lock) and abs(float(e_raw_px[0])) <= 3.8:
+                    dp_stage[0] = 0.0
                 # During spray, peel opposing vertical delta off p_recoil_cnt first instead of fighting via -Y p_aim_cnt
                 if lmb_down and abs(self.p_recoil_cnt[1]) >= 10.0 and (dp_stage[1] * self.p_recoil_cnt[1]) < 0.0:
                     recoil_peel = min(abs(float(self.p_recoil_cnt[1])), abs(float(dp_stage[1])))
@@ -2229,10 +2248,10 @@ class LiveGameSharedControlRunner:
                     dp_n = float(np.hypot(dp_stage[0], dp_stage[1]))
 
                 rev_cd_ok = (not is_rev_step) or ((t_now - self._last_aim_cmd_t) >= max(self.aim_cooldown_s, 0.088))
-                bcmd_min_gap = 0.045 if lmb_down else 0.085
+                bcmd_min_gap = 0.045 if lmb_down else 0.070
                 use_boost_final = bool(
                     use_boost_aim
-                    and dp_n >= (3.8 if lmb_down else 6.0)
+                    and dp_n >= (3.8 if lmb_down else 4.5)
                     and (not is_rev_step)
                     and (t_now - getattr(self, "_last_bcmd_t", 0.0)) >= bcmd_min_gap
                 )
@@ -2250,11 +2269,11 @@ class LiveGameSharedControlRunner:
                             p_rec_goal[1] = new_rec_y
                             recoil_due = True
                     p_aim_cand = np.clip(self.p_aim_cnt + dp_stage, aim_env_lo, aim_env_hi)
-                    # Gentle washout bleed if combined aim+recoil enters >220 cnt zone approaching +-260 cnt
-                    for ax in (0, 1):
-                        if abs(float(p_aim_cand[ax] + p_rec_cand[ax])) > 220.0:
+                    # Gentle per-axis washout bleed only when that axis approaches ceiling
+                    for ax, ceil_ax in ((0, 225.0), (1, 255.0)):
+                        if abs(float(p_aim_cand[ax] + p_rec_cand[ax])) > ceil_ax:
                             p_aim_cand[ax] *= math.exp(-max(0.002, dt_s) / 0.14)
-                    p_cmd_cand = self._soft_saturate_stage_cmd(p_aim_cand + p_rec_cand, limits, soft_cap=260.0)
+                    p_cmd_cand = self._soft_saturate_stage_cmd(p_aim_cand + p_rec_cand, limits, soft_cap=(250.0, 285.0))
                     cd_req = self.recoil_cooldown_s if (lmb_down and recoil_due) else self.aim_cooldown_s
                     hw_cd_req = min(float(cd_req), 0.018)
                     sent = disp(

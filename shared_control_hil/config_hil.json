@@ -15,7 +15,7 @@
   },
   "vision": {
     "yolo_weights_path": "shared_control_hil/weights/cs2_head_yolov8n.pt",
-    "yolo_conf": 0.5,
+    "yolo_conf": 0.42,
     "yolo_imgsz": 256,
     "max_box_w": 90.0,
     "max_box_h": 140.0,
@@ -68,7 +68,7 @@
         -0.592012
       ]
     ],
-    "mounting_angle_deg": -10.2261,
+    "mounting_angle_deg": -14.0699,
     "calib_elapsed_s": 1.5883,
     "recon_error_pct": 4.143,
     "safe_envelope_counts": 165.0,
@@ -79,16 +79,16 @@
     "spray_max_y_counts": 340.0,
     "J_screen_to_stage": [
       [
-        -3.839383,
-        0.819595
+        -3.597409,
+        1.021814
       ],
       [
-        -0.522012,
-        -3.597501
+        -0.71976,
+        -3.351538
       ]
     ],
-    "axis_x_pos_px_per_cnt": 0.1858,
-    "axis_x_neg_px_per_cnt": 0.3195,
+    "axis_x_pos_px_per_cnt": 0.2544,
+    "axis_x_neg_px_per_cnt": 0.2696,
     "visual_calib_source": "YOLO_HEAD_FLOW",
     "recenter_trigger_counts": 15.0,
     "recenter_v_hand_min": 120.0,
@@ -100,8 +100,8 @@
     "kp_snap": 0.9,
     "small_error_px": 14.0,
     "in_box_deadband_ratio": 0.18,
-    "min_deadband_px": 1.5,
-    "max_deadband_px": 3.0,
+    "min_deadband_px": 1.1,
+    "max_deadband_px": 2.6,
     "cooldown_ms": 42.0,
     "aim_cooldown_ms": 50.0,
     "recoil_cooldown_ms": 35.0,

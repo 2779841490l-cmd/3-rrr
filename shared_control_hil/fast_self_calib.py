@@ -329,11 +329,15 @@ class FastSelfCalibrator:
         du_b = np.zeros(2, dtype=float)
 
         if abs(d0) >= 1.2:
-            # S1 (single MG996R) needs consistent stiction overdrive whenever |d0| >= 1.2 us —
-            # including pure-Y moves where K[0,1] requires S1 co-rotation to cancel X coupling drift!
-            s1_floor = min(20.0, 8.0 + 0.55 * abs(d0))
-            mag0 = min(35.0, max(s1_floor, abs(d0) * 0.65 * bs))
-            du_b[0] = math.copysign(mag0, d0)
+            # S1 (single MG996R): scale stiction kick with actual X count demand so pure vertical pulls
+            # or tiny <4 cnt trims never slam S1 sideways with a huge lateral pulse.
+            if abs(dx) >= 4.0:
+                s1_floor = min(18.0, 4.0 + 1.15 * min(abs(dx), 12.0))
+                mag0 = min(32.0, max(s1_floor, abs(d0) * 0.62 * bs))
+            else:
+                mag0 = min(10.0, abs(d0) * 0.50 * bs)
+            if mag0 >= 1.5:
+                du_b[0] = math.copysign(mag0, d0)
 
         if abs(d1) >= 1.2:
             # S2/S3 (dual opposed short-arm Y) accelerate cleanly with gentle boost (prevents Y overshoot)

@@ -540,7 +540,7 @@ class VisionROITracker:
             # Filter out weapon viewmodels, walls, and malformed aspect ratios
             if w > self.max_box_w or h > self.max_box_h:
                 continue
-            if w < 5.0 or h < 5.0:
+            if w < 4.0 or h < 4.0:
                 continue
             ar = w / h
             if cls_id == 0:
