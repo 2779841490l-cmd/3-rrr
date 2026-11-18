@@ -1,0 +1,192 @@
+{
+  "screen": {
+    "width": 1920,
+    "height": 1080,
+    "fov_x_deg": 106.26,
+    "s_game": 0.9,
+    "m_yaw": 0.022,
+    "roi_size": 256,
+    "alpha_x": 1.0,
+    "alpha_y": 1.0,
+    "sensor_to_screen_polarity": [
+      1,
+      1
+    ]
+  },
+  "vision": {
+    "yolo_weights_path": "shared_control_hil/weights/cs2_head_yolov8n.pt",
+    "yolo_conf": 0.42,
+    "yolo_imgsz": 256,
+    "max_box_w": 90.0,
+    "max_box_h": 140.0,
+    "min_track_frames": 1,
+    "min_aim_dist_px": 2.5,
+    "max_aim_dist_px": 48.0
+  },
+  "stage_kinematics": {
+    "u0_neutral_us": [
+      1496.0,
+      1466.0
+    ],
+    "J_stage_ref": [
+      [
+        2.0222,
+        -1.6941
+      ],
+      [
+        -0.2595,
+        -1.376
+      ]
+    ],
+    "K_stage_ref": [
+      [
+        0.42704,
+        -0.52575
+      ],
+      [
+        -0.08052,
+        -0.6276
+      ]
+    ],
+    "J_stage": [
+      [
+        1.38511,
+        -0.955444
+      ],
+      [
+        0.111889,
+        -1.766336
+      ]
+    ],
+    "K_stage": [
+      [
+        0.754952,
+        -0.408368
+      ],
+      [
+        0.047823,
+        -0.592012
+      ]
+    ],
+    "mounting_angle_deg": -15.0253,
+    "calib_elapsed_s": 1.5883,
+    "recon_error_pct": 4.143,
+    "safe_envelope_counts": 165.0,
+    "hard_limit_counts": 180.0,
+    "live_max_x_counts": 240.0,
+    "live_max_y_counts": 300.0,
+    "spray_max_x_counts": 280.0,
+    "spray_max_y_counts": 340.0,
+    "J_screen_to_stage": [
+      [
+        -3.672159,
+        0.971823
+      ],
+      [
+        -0.930376,
+        -3.414436
+      ]
+    ],
+    "axis_x_pos_px_per_cnt": 0.233,
+    "axis_x_neg_px_per_cnt": 0.275,
+    "visual_calib_source": "YOLO_HEAD_FLOW",
+    "recenter_trigger_counts": 15.0,
+    "recenter_v_hand_min": 120.0,
+    "recenter_ramp_ms": 300.0
+  },
+  "live_control": {
+    "kp_small_head": 0.42,
+    "kp_large_error": 0.58,
+    "kp_snap": 0.9,
+    "small_error_px": 14.0,
+    "in_box_deadband_ratio": 0.18,
+    "min_deadband_px": 1.1,
+    "max_deadband_px": 2.6,
+    "cooldown_ms": 42.0,
+    "aim_cooldown_ms": 50.0,
+    "recoil_cooldown_ms": 35.0,
+    "tap_guard_ms": 30.0,
+    "visual_lag_ms": 85.3,
+    "boost_scale": 1.22,
+    "boost_dur_ms": 30.0,
+    "recenter_idle_ms": 140.0,
+    "aim_washout_tau_s": 0.2,
+    "no_reversal_window_ms": 250.0,
+    "auto_recenter_threshold_cnt": 190.0
+  },
+  "weapons": {
+    "AK47": {
+      "rpm": 600,
+      "shot_interval_ms": 100.0,
+      "recoil_read_delay_ms": 10.0,
+      "ballistic_budget_ms": 85.0
+    },
+    "M4A1": {
+      "rpm": 666,
+      "shot_interval_ms": 90.0,
+      "recoil_read_delay_ms": 10.0,
+      "ballistic_budget_ms": 80.0
+    }
+  },
+  "controller_params_baseline": {
+    "k_lead": 0.005,
+    "lambda_0": 0.55,
+    "sigma_v": 480.0,
+    "beta": 0.02,
+    "P_switch": 35.0,
+    "tau_w": 2.4
+  },
+  "controller_params": {
+    "k_lead": 0.07914,
+    "lambda_0": 0.98011,
+    "sigma_v": 233.84277,
+    "beta": 0.24985,
+    "P_switch": 9.77784,
+    "tau_w": 0.37846
+  },
+  "param_bounds": {
+    "k_lead": [
+      0.0,
+      0.14
+    ],
+    "lambda_0": [
+      0.55,
+      1.0
+    ],
+    "sigma_v": [
+      110.0,
+      480.0
+    ],
+    "beta": [
+      0.02,
+      0.4
+    ],
+    "P_switch": [
+      4.0,
+      28.0
+    ],
+    "tau_w": [
+      0.25,
+      1.8
+    ]
+  },
+  "thresholds": {
+    "v_flick_cnt_s": 302.76,
+    "v_stop_cnt_s": 63.75,
+    "micro_flick_min_cnt": 3.0,
+    "micro_flick_max_cnt": 48.0,
+    "head_radius_cnt": 10.5,
+    "chest_radius_cnt": 21.0
+  },
+  "personal_profile": {
+    "n_whiff_clips": 41,
+    "n_highlight_clips": 3,
+    "flick_peak_median_cnt_s": 210.08,
+    "flick_peak_p90_cnt_s": 296.82,
+    "highlight_shot_v_median_cnt_s": 29.79,
+    "highlight_shot_v_p75_cnt_s": 55.44,
+    "v_stop_personal_cnt_s": 63.75,
+    "v_flick_personal_cnt_s": 302.76,
+    "sigma_v_center_cnt_s": 198.26
+  }
+}

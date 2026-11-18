@@ -210,6 +210,7 @@ def run_loaded_wall_sweep(config_path: str = DEFAULT_CONFIG_PATH, out_path: str 
         for sx, sy, tag in axes:
             for amp in amps:
                 trainer.driver.move_smooth_raw(u0x, u0y, duration_s=0.14, rate_hz=50.0)
+                last_u_lin = cal.u0_neutral.copy()
                 time.sleep(0.11)
                 p_tgt = np.array([sx * amp, sy * amp], dtype=float)
                 s0 = np.array(trainer.sensor.get_position(), dtype=float)

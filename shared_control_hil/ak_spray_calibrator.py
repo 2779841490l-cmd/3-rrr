@@ -1049,46 +1049,89 @@ class AK47SprayCalibrator:
         best_boost = boost_sc
         history = []
 
-        print("\n[F6 Loaded AK-ILC] Rest your hand naturally on the mouse (steady wrist) for 5 short bursts...")
+        print("\n[F6 Loaded AK-ILC] Hold LMB against any CS2 wall when prompted for each burst (ESC/F10 cancels)...")
+        vk_f10 = 0x79
+        completed_rounds = 0
+        aborted = False
         for it in range(1, int(ilc_iters) + 1):
+            # Ensure player released LMB from any previous burst first
+            t_rel_wait = time.perf_counter()
+            while _is_vk_down(VK_LBUTTON) and (time.perf_counter() - t_rel_wait) < 4.0:
+                if _is_vk_down(VK_ESCAPE) or _is_vk_down(vk_f10):
+                    aborted = True
+                    break
+                time.sleep(0.01)
+            if aborted:
+                break
+
+            print(
+                f"\n[F6 第 {it}/{ilc_iters} 轮准备] 对准空墙、手正常握鼠标："
+                "准备好后【按住鼠标左键开火】，底座会同步下压（松开左键即停，按 ESC/F10 退出）..."
+            )
+            t_wait0 = time.perf_counter()
+            pressed = False
+            while (time.perf_counter() - t_wait0) < 25.0:
+                if _is_vk_down(VK_ESCAPE) or _is_vk_down(vk_f10):
+                    aborted = True
+                    break
+                if _is_vk_down(VK_LBUTTON):
+                    pressed = True
+                    break
+                time.sleep(0.005)
+            if aborted or (not pressed):
+                print(f"[F6] {'用户取消' if aborted else '等待左键超时(25s)'}，结束 F6 标定。")
+                aborted = True
+                break
+
             res = self.execute_ak_spray_closed_loop(
                 trainer,
                 n_shots=n_shots,
                 use_feedback=False,
                 rate_hz=250.0,
                 reset_origin=True,
+                check_lmb=True,
                 use_ilc=True,
                 boost_scale=boost_sc,
                 use_b_cmd=True,
             )
+            dur_s = float(res.get("duration_s", 0.0))
+            if dur_s < 0.35:
+                print(f"[F6 第 {it}/{ilc_iters} 轮] 左键按住时间过短 ({dur_s:.2f}s < 0.35s)，跳过本轮 ILC 更新。")
+                continue
+
+            completed_rounds += 1
             mean_e = float(res["mean_bullet_err_cnt"])
             history.append({"iter": it, "mean_err_cnt": round(mean_e, 2), "boost_scale": round(boost_sc, 3)})
-            print(f"[F6 Loaded AK-ILC {it}/{ilc_iters}] mean_err={mean_e:.2f} cnt | boost_scale={boost_sc:.2f}")
+            print(f"[F6 Loaded AK-ILC {it}/{ilc_iters}] mean_err={mean_e:.2f} cnt | dur={dur_s:.2f}s | boost_scale={boost_sc:.2f}")
             if mean_e < best_err:
                 best_err = mean_e
                 best_ilc = self.ilc_du_table.copy()
                 best_boost = boost_sc
 
-            # ILC update across bullets under hand load
+            # ILC update across bullets under hand load (only for shots actually fired)
+            n_fired = min(n_shots, max(2, int(dur_s / max(0.05, self.shot_interval_s)) + 1))
             next_tbl = self.ilc_du_table[:n_shots].copy()
             y_undershoot = 0.0
-            for b in range(1, n_shots):
+            for b in range(1, n_fired):
                 ev = np.asarray(res["bullet_table"][b]["err_cnt"], dtype=float)
-                du_upd = np.clip(0.58 * (K_fb @ ev), -18.0, 18.0)
-                next_tbl[b] = np.clip(next_tbl[b] + du_upd, -145.0, 145.0)
+                du_upd = np.clip(0.52 * (K_fb @ ev), -16.0, 16.0)
+                next_tbl[b] = np.clip(next_tbl[b] + du_upd, -135.0, 135.0)
                 y_undershoot += float(ev[1])
             self.ilc_du_table[:n_shots] = next_tbl
-            if y_undershoot / max(1, n_shots - 1) > 15.0:
-                boost_sc = min(2.4, boost_sc + 0.18)
+            if (n_fired > 3) and (y_undershoot / max(1, n_fired - 1) > 15.0):
+                boost_sc = min(1.45, boost_sc + 0.10)
 
-        self.ilc_du_table = best_ilc
-        self.profile_source = "loaded_hand_ilc"
-        self.save_profile()
-        if "live_control" in self.calibrator.config:
-            self.calibrator.config["live_control"]["boost_scale"] = round(float(best_boost), 3)
-            self.calibrator.save_config()
         trainer.move_to_rect_origin(settle_s=0.30)
-        return {"best_mean_err_cnt": best_err, "boost_scale": best_boost, "history": history}
+        if completed_rounds > 0:
+            self.ilc_du_table = best_ilc
+            self.profile_source = "loaded_hand_ilc"
+            self.save_profile()
+            if (not aborted) and ("live_control" in self.calibrator.config):
+                self.calibrator.config["live_control"]["boost_scale"] = round(float(np.clip(best_boost, 1.0, 1.45)), 3)
+                self.calibrator.save_config()
+        else:
+            print("[F6] 未完成有效连射轮次，保留原有 AK 参数不变。")
+        return {"best_mean_err_cnt": best_err, "boost_scale": best_boost, "completed_rounds": completed_rounds, "aborted": aborted, "history": history}
 
 
 def main() -> int:

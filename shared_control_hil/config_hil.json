@@ -68,7 +68,7 @@
         -0.592012
       ]
     ],
-    "mounting_angle_deg": -15.0253,
+    "mounting_angle_deg": -13.0362,
     "calib_elapsed_s": 1.5883,
     "recon_error_pct": 4.143,
     "safe_envelope_counts": 165.0,
@@ -79,16 +79,16 @@
     "spray_max_y_counts": 340.0,
     "J_screen_to_stage": [
       [
-        -3.672159,
-        0.971823
+        -3.886448,
+        0.866189
       ],
       [
-        -0.930376,
-        -3.414436
+        -0.806326,
+        -3.337189
       ]
     ],
-    "axis_x_pos_px_per_cnt": 0.233,
-    "axis_x_neg_px_per_cnt": 0.275,
+    "axis_x_pos_px_per_cnt": 0.1912,
+    "axis_x_neg_px_per_cnt": 0.2971,
     "visual_calib_source": "YOLO_HEAD_FLOW",
     "recenter_trigger_counts": 15.0,
     "recenter_v_hand_min": 120.0,
@@ -106,7 +106,7 @@
     "aim_cooldown_ms": 50.0,
     "recoil_cooldown_ms": 35.0,
     "tap_guard_ms": 30.0,
-    "visual_lag_ms": 95.0,
+    "visual_lag_ms": 85.3,
     "boost_scale": 1.22,
     "boost_dur_ms": 30.0,
     "recenter_idle_ms": 140.0,
