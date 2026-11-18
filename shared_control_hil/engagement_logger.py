@@ -38,6 +38,7 @@ class CS2GSIListener:
         self.total_kills = 0
         self.total_hs = 0
         self._last_round_kills: Optional[int] = None
+        self._last_match_kills: Optional[int] = None
         self._last_round_killhs: Optional[int] = None
         self._pending_kills = 0
         self._pending_hs = 0
@@ -81,15 +82,15 @@ class CS2GSIListener:
             if not isinstance(player, dict):
                 return
             state = player.get("state", {})
+            dk_round = 0
+            dk_match = 0
             if isinstance(state, dict):
                 rk = state.get("round_kills")
                 rhs = state.get("round_killhs")
                 if rk is not None:
                     rk_i = int(rk)
                     if self._last_round_kills is not None and rk_i > self._last_round_kills:
-                        dk = rk_i - self._last_round_kills
-                        self.total_kills += dk
-                        self._pending_kills += dk
+                        dk_round = rk_i - self._last_round_kills
                     self._last_round_kills = rk_i
                 if rhs is not None:
                     rhs_i = int(rhs)
@@ -98,6 +99,16 @@ class CS2GSIListener:
                         self.total_hs += dhs
                         self._pending_hs += dhs
                     self._last_round_killhs = rhs_i
+            mstats = player.get("match_stats", {})
+            if isinstance(mstats, dict) and mstats.get("kills") is not None:
+                mk_i = int(mstats["kills"])
+                if self._last_match_kills is not None and mk_i > self._last_match_kills:
+                    dk_match = mk_i - self._last_match_kills
+                self._last_match_kills = mk_i
+            dk = max(dk_round, dk_match)
+            if dk > 0:
+                self.total_kills += dk
+                self._pending_kills += dk
             weapons = player.get("weapons", {})
             if isinstance(weapons, dict):
                 for w in weapons.values():
@@ -132,6 +143,45 @@ class CS2GSIListener:
             except Exception:
                 pass
             self._server = None
+
+
+def ensure_cs2_gsi_config(port: int = 30001) -> Optional[str]:
+    """Locate Steam CS2 game/csgo/cfg directory and install gamestate_integration_3rrr.cfg if missing."""
+    candidates = [
+        r"C:\Program Files (x86)\Steam\steamapps\common\Counter-Strike Global Offensive\game\csgo\cfg",
+        r"D:\SteamLibrary\steamapps\common\Counter-Strike Global Offensive\game\csgo\cfg",
+        r"D:\Steam\steamapps\common\Counter-Strike Global Offensive\game\csgo\cfg",
+        r"E:\SteamLibrary\steamapps\common\Counter-Strike Global Offensive\game\csgo\cfg",
+        r"F:\SteamLibrary\steamapps\common\Counter-Strike Global Offensive\game\csgo\cfg",
+    ]
+    cfg_dir = next((p for p in candidates if os.path.isdir(p)), None)
+    if cfg_dir is None:
+        return None
+    out_path = os.path.join(cfg_dir, "gamestate_integration_3rrr.cfg")
+    content = (
+        '"3-RRR HIL Kill Telemetry v.1"\n'
+        '{\n'
+        f'  "uri" "http://127.0.0.1:{int(port)}"\n'
+        '  "timeout" "5.0"\n'
+        '  "buffer" "0.0"\n'
+        '  "throttle" "0.05"\n'
+        '  "heartbeat" "5.0"\n'
+        '  "data"\n'
+        '  {\n'
+        '    "provider" "1"\n'
+        '    "map" "1"\n'
+        '    "round" "1"\n'
+        '    "player_id" "1"\n'
+        '    "player_state" "1"\n'
+        '    "player_weapons" "1"\n'
+        '    "player_match_stats" "1"\n'
+        '  }\n'
+        '}\n'
+    )
+    if not os.path.isfile(out_path):
+        with open(out_path, "w", encoding="utf-8") as f:
+            f.write(content)
+    return out_path
 
 
 class EngagementLogger:

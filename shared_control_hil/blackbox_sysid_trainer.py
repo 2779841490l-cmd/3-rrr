@@ -68,6 +68,10 @@ def _estimate_empirical_step_response(engs: List[Dict[str, Any]], px_per_cnt: fl
             for j in range(i + 1, min(len(tr), i + 36)):
                 if float(tr[j].get("vh", 0.0)) > 400.0:
                     break
+                dp_j = tr[j].get("dp")
+                if dp_j is not None and (abs(float(dp_j[0])) >= 8.0 or abs(float(dp_j[1])) >= 12.0):
+                    # Isolate single-step dynamics cleanly without confounding subsequent commands
+                    break
                 ej = tr[j].get("e_px")
                 if ej is None:
                     continue
@@ -94,8 +98,18 @@ def _estimate_empirical_step_response(engs: List[Dict[str, Any]], px_per_cnt: fl
     return {"n_isolated_steps": n_steps, "curve": curve, "tau_50_ms": round(tau_50_ms, 1)}
 
 
+def _eng_mode(e: Dict[str, Any]) -> str:
+    sh = e.get("shots", [])
+    if sh and all(s.get("mode") == "SHADOW_REFEREE_ONLY" for s in sh):
+        return "SHADOW_REFEREE_ONLY"
+    if any(s.get("mode") == "ASSIST_ON" for s in sh):
+        return "ASSIST_ON"
+    return "UNKNOWN"
+
+
 def _summarize_mode_split(engs: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-    def _agg(sub: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def _agg(mode_name: str) -> Dict[str, Any]:
+        sub = [e for e in engs if _eng_mode(e) == mode_name]
         if not sub:
             return {"n": 0}
         ttks = [float(e["t_end_s"]) - float(e["t_start_s"]) for e in sub]
@@ -105,21 +119,59 @@ def _summarize_mode_split(engs: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any
         min_ea = [float(e["min_ea_cnt"]) for e in sub if e.get("min_ea_cnt") is not None]
         hs = sum(1 for e in sub if e.get("best_hitbox") == "HEAD_HIT")
         bh = sum(1 for e in sub if e.get("best_hitbox") == "BODY_HIT")
+        pre_sat = sum(1 for e in sub if "PRE_SAT" in e.get("diag_flags", []))
+        confl = sum(1 for e in sub if "CONFLICT" in e.get("diag_flags", []))
+
+        gaps: List[float] = []
+        cycles: List[float] = []
+        for e0, e1 in zip(engs, engs[1:]):
+            if _eng_mode(e0) == mode_name and _eng_mode(e1) == mode_name:
+                g = float(e1["t_start_s"]) - float(e0["t_end_s"])
+                if 0.05 < g < 3.5:
+                    gaps.append(g)
+                    cycles.append(float(e1["t_end_s"]) - float(e0["t_end_s"]))
+
+        s_1_2 = sum(1 for n_s in shots if n_s <= 2)
+        s_3_4 = sum(1 for n_s in shots if 3 <= n_s <= 4)
+        s_5p = sum(1 for n_s in shots if n_s >= 5)
+
+        per_shot_ea: Dict[str, Optional[float]] = {}
+        for k in range(4):
+            vals = [float(e["shots"][k]["e_actual_cnt"]) for e in sub if len(e.get("shots", [])) > k and e["shots"][k].get("e_actual_cnt") is not None]
+            per_shot_ea[f"shot{k+1}"] = round(float(np.median(vals)), 1) if vals else None
+
+        gsi_kills = sum(int(e.get("gsi_kills", 0)) for e in sub)
+        gsi_hs = sum(int(e.get("gsi_hs", 0)) for e in sub)
+        total_active_s = sum(cycles) if cycles else (sum(ttks) + 0.6 * len(sub))
+        med_cycle = float(np.median(cycles)) if cycles else None
+
         return {
             "n": len(sub),
             "med_ttk_s": round(float(np.median(ttks)), 3),
             "mean_ttk_s": round(float(np.mean(ttks)), 3),
+            "med_gap_s": round(float(np.median(gaps)), 3) if gaps else None,
+            "med_cycle_s": round(med_cycle, 3) if med_cycle else None,
+            "est_bursts_per_min": round(60.0 / med_cycle, 1) if med_cycle and med_cycle > 0.05 else None,
             "med_shots": round(float(np.median(shots)), 1),
+            "shot_dist_pct": {
+                "1_2_shots": round(100.0 * s_1_2 / len(sub), 1),
+                "3_4_shots": round(100.0 * s_3_4 / len(sub), 1),
+                "5plus_shots": round(100.0 * s_5p / len(sub), 1),
+            },
+            "per_shot_ea_med_cnt": per_shot_ea,
+            "gsi_kills": gsi_kills,
+            "gsi_hs": gsi_hs,
+            "true_gsi_kpm": round(60.0 * gsi_kills / max(1.0, total_active_s), 1) if gsi_kills > 0 else None,
             "hs_eng_rate": round(hs / len(sub), 4),
             "hit_eng_rate": round((hs + bh) / len(sub), 4),
             "shot1_eh_med_cnt": round(float(np.median(s1_eh)), 1) if s1_eh else None,
             "shot1_ea_med_cnt": round(float(np.median(s1_ea)), 1) if s1_ea else None,
             "min_ea_med_cnt": round(float(np.median(min_ea)), 1) if min_ea else None,
+            "pre_sat_pct": round(100.0 * pre_sat / len(sub), 1),
+            "conflict_pct": round(100.0 * confl / len(sub), 1),
         }
 
-    assist = [e for e in engs if any(s.get("mode") == "ASSIST_ON" for s in e.get("shots", []))]
-    shadow = [e for e in engs if e.get("shots") and all(s.get("mode") == "SHADOW_REFEREE_ONLY" for s in e.get("shots", []))]
-    return {"ASSIST_ON": _agg(assist), "SHADOW_REFEREE_ONLY": _agg(shadow)}
+    return {"ASSIST_ON": _agg("ASSIST_ON"), "SHADOW_REFEREE_ONLY": _agg("SHADOW_REFEREE_ONLY")}
 
 
 def analyze_blackbox(jsonl_path: str = DEFAULT_JSONL_PATH, config_path: str = DEFAULT_CONFIG_PATH) -> Dict[str, Any]:
@@ -242,13 +294,43 @@ def run_loaded_wall_sweep(config_path: str = DEFAULT_CONFIG_PATH, out_path: str 
     return payload
 
 
+def print_kill_efficiency_summary(rep: Dict[str, Any]) -> None:
+    """Print concise Chinese Aim-Botz KPM & per-shot convergence A/B comparison."""
+    ms = rep.get("mode_split", {})
+    cp = rep.get("coupling_summary", {})
+    print("\n=== 实战击杀效率 A/B 简报 ===")
+    for tag, label in (("ASSIST_ON", "开启机械辅助"), ("SHADOW_REFEREE_ONLY", "纯手打对照")):
+        d = ms.get(tag, {})
+        if not d.get("n"):
+            continue
+        sd = d.get("shot_dist_pct", {})
+        ps = d.get("per_shot_ea_med_cnt", {})
+        kpm_str = f"真GSI KPM={d['true_gsi_kpm']} ({d['gsi_kills']}杀/{d['gsi_hs']}爆头)" if d.get("true_gsi_kpm") else f"等效交火={d.get('est_bursts_per_min')}/分"
+        print(
+            f"[{label} n={d['n']}] {kpm_str} | 切人={d.get('med_gap_s')}s + 开火={d.get('med_ttk_s')}s -> 单只周期={d.get('med_cycle_s')}s | "
+            f"发数分布 1-2发:{sd.get('1_2_shots')}% 3-4发:{sd.get('3_4_shots')}% 5+发:{sd.get('5plus_shots')}%"
+        )
+        print(
+            f"    Shot1~4 实际误差(cnt): {ps.get('shot1')} -> {ps.get('shot2')} -> {ps.get('shot3')} -> {ps.get('shot4')} | "
+            f"PRE_SAT={d.get('pre_sat_pct')}% | 冲突={d.get('conflict_pct')}%"
+        )
+    print(f"[物理耦合效率] median={cp.get('median')} (p10={cp.get('p10')}, p90={cp.get('p90')}) | 推荐 visual_lag_ms={rep.get('recommended_live_control', {}).get('visual_lag_ms')}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Blackbox System-ID & Loaded-Palm Sweep Trainer")
     parser.add_argument("--jsonl", type=str, default=DEFAULT_JSONL_PATH)
     parser.add_argument("--config", type=str, default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--apply", action="store_true", help="Apply identified visual_lag_ms cleanly with backup")
     parser.add_argument("--collect-sweep", action="store_true", help="Run 15s live COM4 loaded-hand wall sweep")
+    parser.add_argument("--install-gsi", action="store_true", help="Install CS2 gamestate_integration_3rrr.cfg into Steam csgo/cfg")
     args = parser.parse_args()
+
+    if args.install_gsi:
+        from shared_control_hil.engagement_logger import ensure_cs2_gsi_config
+        p = ensure_cs2_gsi_config(port=30001)
+        print(f"[CS2 GSI] Installed -> {p}" if p else "[CS2 GSI] CS2 csgo/cfg folder not found.")
+        return 0 if p else 1
 
     if args.collect_sweep:
         run_loaded_wall_sweep(config_path=args.config)
@@ -257,6 +339,7 @@ def main() -> int:
     rep = analyze_blackbox(jsonl_path=args.jsonl, config_path=args.config)
     print("=== Blackbox System-ID Report ===")
     print(json.dumps(rep, indent=2, ensure_ascii=False))
+    print_kill_efficiency_summary(rep)
     if args.apply:
         bak = apply_sysid_to_config(rep, config_path=args.config)
         print(f"[Applied] Backed up old config -> {bak}")

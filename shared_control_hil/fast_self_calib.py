@@ -329,21 +329,22 @@ class FastSelfCalibrator:
         du_b = np.zeros(2, dtype=float)
 
         if abs(d0) >= 1.2:
-            # S1 (single MG996R): scale stiction kick with actual X count demand so pure vertical pulls
-            # or tiny <4 cnt trims never slam S1 sideways with a huge lateral pulse.
+            # S1 (single MG996R): scale stiction kick cleanly with X count demand + +X palm asymmetry (+X transfers ~2x harder)
+            pos_x_mul = 1.24 if dx > 2.5 else 1.0
             if abs(dx) >= 4.0:
-                s1_floor = min(18.0, 4.0 + 1.15 * min(abs(dx), 12.0))
-                mag0 = min(32.0, max(s1_floor, abs(d0) * 0.62 * bs))
+                s1_floor = min(22.0, (4.5 + 1.25 * min(abs(dx), 14.0)) * pos_x_mul)
+                mag0 = min(34.0, max(s1_floor, abs(d0) * 0.68 * bs * pos_x_mul))
             else:
-                mag0 = min(10.0, abs(d0) * 0.50 * bs)
+                mag0 = min(13.0, max(3.5 if dx > 2.0 else 2.2, abs(d0) * 0.60 * bs * pos_x_mul))
             if mag0 >= 1.5:
                 du_b[0] = math.copysign(mag0, d0)
 
         if abs(d1) >= 1.2:
-            # S2/S3 (dual opposed short-arm Y) accelerate cleanly with gentle boost (prevents Y overshoot)
-            y_floor = min(6.5, 2.0 + 0.55 * abs(d1))
-            prop1 = abs(d1) * 0.42 * (bs / 1.35)
-            mag1 = min(14.0, max(y_floor, prop1))
+            # S2/S3 (dual opposed short-arm Y): firmer +Y pull-down kick under palm friction while staying gentle upward
+            pull_dn_mul = 1.18 if dy > 2.5 else 0.95
+            y_floor = min(9.5, (2.6 + 0.68 * abs(d1)) * pull_dn_mul)
+            prop1 = abs(d1) * 0.48 * (bs / 1.30) * pull_dn_mul
+            mag1 = min(16.0, max(y_floor, prop1))
             du_b[1] = math.copysign(mag1, d1)
 
         if abs(du_b[0]) < 1.0 and abs(du_b[1]) < 1.0:
