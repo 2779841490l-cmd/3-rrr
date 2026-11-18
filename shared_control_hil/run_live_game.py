@@ -1894,7 +1894,8 @@ class LiveGameSharedControlRunner:
             self._mono_tripped = False
             self._spray_anchor_latched = None
             self._live_anchor_mode = "HEAD"
-            if float(np.hypot(self.p_aim_cnt[0], self.p_aim_cnt[1])) >= 12.0:
+            p_tot_rel = self.p_aim_cnt + self.p_recoil_cnt
+            if float(np.hypot(p_tot_rel[0], p_tot_rel[1])) >= 10.0:
                 self._need_switch_recenter = True
 
         # When idle and CS2 recoil has recovered, keep c_eff anchored at screen center
@@ -2031,29 +2032,37 @@ class LiveGameSharedControlRunner:
         else:
             self._prev_recoil_off_px = None
             rec_norm = float(np.hypot(self.p_recoil_cnt[0], self.p_recoil_cnt[1]))
+            is_fast_switch = (v_hand_norm >= 165.0) or bool(getattr(self, "_need_switch_recenter", False))
+            tau_rec = 0.055 if v_hand_norm >= 165.0 else (0.075 if is_fast_switch else 0.13)
             if rec_norm >= 3.0:
-                # Exponential decay matching CS2's ~0.25s post-burst recoil recovery (zero upward whip)
-                p_rec_cand = self.p_recoil_cnt * math.exp(-max(0.002, dt_s) / 0.16)
+                p_rec_cand = self.p_recoil_cnt * math.exp(-max(0.002, dt_s) / tau_rec)
                 if float(np.hypot(p_rec_cand[0] - self.p_recoil_cnt[0], p_rec_cand[1] - self.p_recoil_cnt[1])) >= 1.5:
                     recoil_due = True
             elif rec_norm >= 0.5:
                 p_rec_cand[:] = 0.0
                 recoil_due = True
 
-        # Smooth aim washout during target switches or after burst release (eliminates PRE_SAT bleed!)
+        # Synchronized aim + recoil washout during target switches or after burst release (kills shot-1 CONFLICT!)
         need_sw_reset = bool(getattr(self, "_need_switch_recenter", False))
+        p_tot_now = self.p_aim_cnt + p_rec_cand
+        p_tot_norm_now = float(np.hypot(p_tot_now[0], p_tot_now[1]))
         p_aim_norm_now = float(np.hypot(self.p_aim_cnt[0], self.p_aim_cnt[1]))
-        if need_sw_reset and p_aim_norm_now < 10.0:
+        if need_sw_reset and p_tot_norm_now < 8.0:
             need_sw_reset = False
             self._need_switch_recenter = False
         pan_bleed_active = (not lmb_down) and (
-            ((locked_det is None) and (v_hand_norm >= 140.0 or need_sw_reset))
-            or ((not in_pulse_immunity) and (v_hand_norm >= 175.0))
-            or (need_sw_reset and (t_now - self._last_lmb_release_t) >= 0.085 and p_aim_norm_now >= 10.0)
+            ((locked_det is None) and (v_hand_norm >= 130.0 or need_sw_reset))
+            or ((not in_pulse_immunity) and (v_hand_norm >= 165.0))
+            or (need_sw_reset and (t_now - self._last_lmb_release_t) >= 0.065 and p_tot_norm_now >= 8.0)
         )
-        if pan_bleed_active and p_aim_norm_now >= 2.0:
-            tau_bleed = 0.055 if v_hand_norm >= 175.0 else 0.090
-            self.p_aim_cnt = self.p_aim_cnt * math.exp(-max(0.002, dt_s) / tau_bleed)
+        if pan_bleed_active and p_tot_norm_now >= 2.0:
+            tau_bleed = 0.050 if v_hand_norm >= 165.0 else 0.075
+            decay_f = math.exp(-max(0.002, dt_s) / tau_bleed)
+            if p_aim_norm_now >= 2.0:
+                self.p_aim_cnt = self.p_aim_cnt * decay_f
+            if float(np.hypot(p_rec_cand[0], p_rec_cand[1])) >= 2.0:
+                p_rec_cand = p_rec_cand * decay_f
+                recoil_due = True
 
         def _dispatch_recoil_only(cd_s: float) -> bool:
             act_b = getattr(self, "_active_bcmd", None)
@@ -2120,13 +2129,16 @@ class LiveGameSharedControlRunner:
 
             tid_cur = int(locked_det.target_id)
             if tid_cur != self._lock_target_id:
-                recent_burst = lmb_down or ((t_now - self._last_lmb_release_t) <= 0.250)
+                recent_burst = lmb_down or ((t_now - self._last_lmb_release_t) <= 0.200)
                 if recent_burst and self._snap_done_tid is not None:
                     # Preserve snap completion across transient track ID flicker during bursts
                     self._snap_done_tid = tid_cur
-                elif (not lmb_down) and float(np.hypot(self.p_aim_cnt[0], self.p_aim_cnt[1])) > 18.0:
-                    # Switching to a new Bot before firing: cut leftover aim offset cleanly toward neutral
-                    self.p_aim_cnt = self.p_aim_cnt * 0.30
+                elif (not lmb_down) and float(np.hypot(self.p_aim_cnt[0] + p_rec_cand[0], self.p_aim_cnt[1] + p_rec_cand[1])) > 16.0:
+                    # Switching to a new Bot before firing: cut BOTH leftover aim & recoil offsets cleanly toward neutral
+                    self.p_aim_cnt = self.p_aim_cnt * 0.25
+                    p_rec_cand = p_rec_cand * 0.25
+                    self.p_recoil_cnt = p_rec_cand.copy()
+                    recoil_due = True
                     self._need_switch_recenter = True
                     pan_bleed_active = True
                 dp_init = self.calibrator.aim_error_to_stage_delta(float(e_pred_px[0]), float(e_pred_px[1]))
@@ -2135,28 +2147,29 @@ class LiveGameSharedControlRunner:
                 self._lock_dir_sign = np.sign(dp_init)
                 self._mono_target_id = tid_cur
                 self._mono_e0_norm = e_norm
+                self._mono_e0_x = abs(float(e_raw_px[0]))
                 self._mono_cmd_t = 0.0
                 self._mono_tripped = False
                 self._mono_trip_t = 0.0
 
             if not lmb_down:
-                # Never self-lock PRE micro-docking via MONO_TRIP (eliminates 336 false PRE lockouts)
                 self._mono_tripped = False
             elif self._mono_tripped and (t_now - self._mono_trip_t) >= 0.22:
                 self._mono_tripped = False
 
+            # Guard ONLY catastrophic horizontal polarity divergence while hand is idle (NEVER trip on vertical AK recoil climb!)
             if (
                 lmb_down
                 and self._mono_cmd_t > 0.0
                 and self._mono_target_id == tid_cur
                 and 0.120 <= (t_now - self._mono_cmd_t) <= 0.300
-                and v_hand_norm < 120.0
-                and e_norm > max(30.0, self._mono_e0_norm + 24.0)
+                and v_hand_norm < 85.0
+                and abs(float(e_raw_px[0])) > max(38.0, float(getattr(self, "_mono_e0_x", 0.0)) + 28.0)
             ):
                 self._mono_tripped = True
                 self._mono_trip_t = t_now
                 self._mono_cmd_t = 0.0
-                print(f"\n[MONO_TRIP] target#{tid_cur} diverged {self._mono_e0_norm:.1f}->{e_norm:.1f}px; brief 0.22s cooldown.")
+                print(f"\n[MONO_TRIP_X] target#{tid_cur} X diverged -> {abs(float(e_raw_px[0])):.1f}px; brief 0.22s cooldown.")
 
             if in_pulse_immunity:
                 hand_settled = True
@@ -2168,16 +2181,16 @@ class LiveGameSharedControlRunner:
             elif getattr(self, "_tracker_running", False):
                 # Pre-shot: NEVER hijack while human hand is still actively flicking/micro-adjusting!
                 settled_1k_t = getattr(self, "_hand_settled_1k_since_t", 0.0)
-                hand_settled = (v_hand_norm <= 115.0) and (
-                    (settled_1k_t > 0.0 and (t_now - settled_1k_t) >= 0.018) or v_hand_norm <= 75.0
+                hand_settled = (v_hand_norm <= 135.0) and (
+                    (settled_1k_t > 0.0 and (t_now - settled_1k_t) >= 0.012) or v_hand_norm <= 85.0
                 )
                 last_flick_t = max(
                     getattr(self, "_last_high_flick_t", 0.0),
                     getattr(self, "_last_high_flick_1k_t", 0.0),
                 )
             else:
-                hand_settled = (v_hand_norm <= 115.0) and (
-                    getattr(self, "_settled_low_vh_ticks", 0) >= 2 or v_hand_norm <= 75.0
+                hand_settled = (v_hand_norm <= 135.0) and (
+                    getattr(self, "_settled_low_vh_ticks", 0) >= 1 or v_hand_norm <= 85.0
                 )
                 last_flick_t = getattr(self, "_last_high_flick_t", 0.0)
             since_flick_s = t_now - last_flick_t
@@ -2187,10 +2200,11 @@ class LiveGameSharedControlRunner:
             if lmb_down:
                 eff_aim_cd = 0.088 if in_flight_n >= 16.0 else max(self.aim_cooldown_s, 0.068)
             else:
-                eff_aim_cd = max(self.aim_cooldown_s, 0.100)
-            # Pre-shot: hands off wide human flicks (>18 px) and let target-switch washout finish draining first
-            pre_wash_blocking = (not lmb_down) and pan_bleed_active and float(np.hypot(self.p_aim_cnt[0], self.p_aim_cnt[1])) >= 22.0
-            pre_range_ok = lmb_down or ((not pre_wash_blocking) and e_norm <= 18.0 and e_pred_norm <= 18.0)
+                eff_aim_cd = max(self.aim_cooldown_s, 0.095)
+            # Pre-shot: hands off wide human flicks (>22 px) and let target-switch washout finish draining first
+            p_tot_wash = self.p_aim_cnt + p_rec_cand
+            pre_wash_blocking = (not lmb_down) and pan_bleed_active and float(np.hypot(p_tot_wash[0], p_tot_wash[1])) >= 20.0
+            pre_range_ok = lmb_down or ((not pre_wash_blocking) and e_norm <= 22.0 and e_pred_norm <= 22.0)
             aim_due = (
                 (not self._mono_tripped)
                 and pre_range_ok
@@ -2203,20 +2217,20 @@ class LiveGameSharedControlRunner:
             )
             if aim_due:
                 eta_cp = self.eng_logger.get_effective_coupling(default=0.85, min_samples=2) if hasattr(self, "eng_logger") else 1.0
-                ff_snap = float(np.clip(1.0 / max(0.84, eta_cp), 1.0, 1.15))
+                ff_snap = float(np.clip(1.0 / max(0.82, eta_cp), 1.0, 1.18))
                 ff_trim = float(np.clip(1.0 / max(0.82, eta_cp), 1.0, 1.18))
                 fine_trim_px = min(float(self.small_error_px), 8.5)
                 is_initial_snap = (
                     (not lmb_down)
-                    and (v_hand_norm <= 115.0)
+                    and (v_hand_norm <= 135.0)
                     and (self._snap_done_tid != tid_cur)
-                    and (in_pulse_immunity or since_flick_s >= 0.035)
+                    and (in_pulse_immunity or since_flick_s >= 0.025)
                     and (e_pred_norm > fine_trim_px)
                     and (in_flight_n < 12.0)
                 )
                 if is_initial_snap:
-                    gain = min(0.58, min(self.kp_snap, 0.65) * ff_snap)
-                    step_cap = 50.0
+                    gain = min(0.65, min(self.kp_snap, 0.72) * ff_snap)
+                    step_cap = 54.0
                     use_boost_aim = True
                     b_scale_aim = min(self.boost_scale, 1.25)
                     b_dur_aim = self.boost_dur_ms
@@ -2346,6 +2360,7 @@ class LiveGameSharedControlRunner:
                         self._aim_cmd_history.append((float(t_now), self.p_aim_cnt.copy()))
                         if self._mono_cmd_t == 0.0:
                             self._mono_e0_norm = e_norm
+                            self._mono_e0_x = abs(float(e_raw_px[0]))
                             self._mono_cmd_t = t_now
                         if hasattr(self, "eng_logger"):
                             self.eng_logger.record_frame(
