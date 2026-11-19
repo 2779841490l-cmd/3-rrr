@@ -56,7 +56,7 @@ def _estimate_empirical_step_response(engs: List[Dict[str, Any]], px_per_cnt: fl
         for i, fr in enumerate(tr):
             dp = fr.get("dp")
             e0 = fr.get("e_px")
-            if dp is None or e0 is None or fr.get("gate") not in ("LOCK_TRIM", "LOCK_SNAP"):
+            if dp is None or e0 is None or fr.get("gate") not in ("LOCK_TRIM", "LOCK_SNAP", "SHOT1_RESCUE"):
                 continue
             if abs(float(dp[0])) < 22.0:
                 continue
@@ -184,13 +184,12 @@ def _extract_mode_blocks(
     return blocks_out, matched
 
 
-def _stratify_by_shot1_eh(engs: List[Dict[str, Any]]) -> Dict[str, Dict[str, Dict[str, Any]]]:
-    """Causal Aiming Stratification: separate Do-No-Harm (<=30 cnt) vs Whiff-Rescue (30..80 cnt) vs Wide (>80 cnt)."""
-    tiers = [
-        ("on_target_<=30cnt", lambda v: v <= 30.0),
-        ("rescue_30_80cnt", lambda v: 30.0 < v <= 80.0),
-        ("wide_>80cnt", lambda v: v > 80.0),
-    ]
+def _stratify_by_field(
+    engs: List[Dict[str, Any]],
+    field_name: str,
+    tiers: List[Tuple[str, Any]],
+) -> Dict[str, Dict[str, Dict[str, Any]]]:
+    """Stratify engagement efficiency by initial error (`shot1_eh_cnt` or visual `shot1_ea_cnt`)."""
     out: Dict[str, Dict[str, Dict[str, Any]]] = {}
     for t_name, pred in tiers:
         out[t_name] = {}
@@ -198,8 +197,8 @@ def _stratify_by_shot1_eh(engs: List[Dict[str, Any]]) -> Dict[str, Dict[str, Dic
             sub = [
                 e for e in engs
                 if _eng_mode(e) == mode_name
-                and e.get("shot1_eh_cnt") is not None
-                and pred(float(e["shot1_eh_cnt"]))
+                and e.get(field_name) is not None
+                and pred(float(e[field_name]))
             ]
             if not sub:
                 out[t_name][mode_name] = {"n": 0}
@@ -223,6 +222,26 @@ def _stratify_by_shot1_eh(engs: List[Dict[str, Any]]) -> Dict[str, Dict[str, Dic
                 "conflict_pct": round(100.0 * confl / len(sub), 1),
             }
     return out
+
+
+def _stratify_by_shot1_eh(engs: List[Dict[str, Any]]) -> Dict[str, Dict[str, Dict[str, Any]]]:
+    """Causal Aiming Stratification: separate Do-No-Harm (<=30 cnt) vs Whiff-Rescue (30..80 cnt) vs Wide (>80 cnt)."""
+    tiers = [
+        ("on_target_<=30cnt", lambda v: v <= 30.0),
+        ("rescue_30_80cnt", lambda v: 30.0 < v <= 80.0),
+        ("wide_>80cnt", lambda v: v > 80.0),
+    ]
+    return _stratify_by_field(engs, "shot1_eh_cnt", tiers)
+
+
+def _stratify_by_shot1_ea(engs: List[Dict[str, Any]]) -> Dict[str, Dict[str, Dict[str, Any]]]:
+    """Direct Visual Shot-1 Error Stratification (`shot1_ea_cnt`, zero e_hand reconstruction bias)."""
+    tiers = [
+        ("vis_<=25cnt", lambda v: v <= 25.0),
+        ("vis_25_60cnt", lambda v: 25.0 < v <= 60.0),
+        ("vis_>60cnt", lambda v: v > 60.0),
+    ]
+    return _stratify_by_field(engs, "shot1_ea_cnt", tiers)
 
 
 def _summarize_mode_split(
@@ -360,7 +379,8 @@ def analyze_blackbox(jsonl_path: str = DEFAULT_JSONL_PATH, config_path: str = DE
     step_id = _estimate_empirical_step_response(engs, px_per_cnt=px_per_cnt)
     alt_blocks, matched_stats = _extract_mode_blocks(engs)
     mode_split = _summarize_mode_split(engs, matched_stats=matched_stats)
-    stratified = _stratify_by_shot1_eh(engs)
+    stratified_eh = _stratify_by_shot1_eh(engs)
+    stratified_ea = _stratify_by_shot1_ea(engs)
     cps = [float(e["coupling_ratio"]) for e in engs if e.get("coupling_ratio") is not None]
     pre_g: Counter = Counter()
     lmb_g: Counter = Counter()
@@ -375,7 +395,8 @@ def analyze_blackbox(jsonl_path: str = DEFAULT_JSONL_PATH, config_path: str = DE
         "n_engagements": len(engs),
         "mode_split": mode_split,
         "alternating_blocks": alt_blocks,
-        "stratified_by_shot1_eh": stratified,
+        "stratified_by_shot1_eh": stratified_eh,
+        "stratified_by_shot1_ea": stratified_ea,
         "coupling_summary": {
             "n": len(cps),
             "p10": round(float(np.percentile(cps, 10)), 3) if cps else None,
@@ -528,6 +549,27 @@ def print_kill_efficiency_summary(rep: Dict[str, Any]) -> None:
                 f"    SHADOW (n={s_d['n']:3d}): med={s_d['med_shots']}发 | 每杀={s_d['shots_per_kill']}发 | "
                 f"0杀={s_d['zero_kill_pct']}% | S1->S2={s_d['s1_to_s2_ea']}"
             )
+
+    strat_ea = rep.get("stratified_by_shot1_ea", {})
+    if strat_ea:
+        print("\n  [实际视觉首枪分层 shot1_ea (零推算偏差)]")
+        ea_labels = (
+            ("vis_<=25cnt", "视觉 <=25 cnt"),
+            ("vis_25_60cnt", "视觉 25~60 cnt"),
+            ("vis_>60cnt", "视觉 >60 cnt"),
+        )
+        for t_key, t_title in ea_labels:
+            td = strat_ea.get(t_key, {})
+            a_d = td.get("ASSIST_ON", {})
+            s_d = td.get("SHADOW_REFEREE_ONLY", {})
+            if not (a_d.get("n") or s_d.get("n")):
+                continue
+            parts = []
+            if a_d.get("n"):
+                parts.append(f"ASSIST(n={a_d['n']:3d}): 每杀={a_d['shots_per_kill']}发 空枪={a_d['zero_kill_pct']}% S1->S2={a_d['s1_to_s2_ea']}")
+            if s_d.get("n"):
+                parts.append(f"SHADOW(n={s_d['n']:3d}): 每杀={s_d['shots_per_kill']}发 空枪={s_d['zero_kill_pct']}% S1->S2={s_d['s1_to_s2_ea']}")
+            print(f"    {t_title:14s} | " + " || ".join(parts))
 
     a_ms = ms.get("ASSIST_ON", {})
     print(

@@ -1888,6 +1888,8 @@ class LiveGameSharedControlRunner:
         self._prev_lmb_live = lmb_down
         if lmb_pressed:
             self._lmb_down_since_t = t_now
+            self._shot1_rescue_sent = False
+            self._need_switch_recenter = False
         if lmb_released:
             self._last_lmb_release_t = t_now
             self._prev_recoil_off_px = None
@@ -1895,7 +1897,7 @@ class LiveGameSharedControlRunner:
             self._spray_anchor_latched = None
             self._live_anchor_mode = "HEAD"
             p_tot_rel = self.p_aim_cnt + self.p_recoil_cnt
-            if float(np.hypot(p_tot_rel[0], p_tot_rel[1])) >= 10.0:
+            if float(np.hypot(p_tot_rel[0], p_tot_rel[1])) >= 2.0:
                 self._need_switch_recenter = True
 
         # When idle and CS2 recoil has recovered, keep c_eff anchored at screen center
@@ -2042,27 +2044,32 @@ class LiveGameSharedControlRunner:
                 p_rec_cand[:] = 0.0
                 recoil_due = True
 
-        # Synchronized aim + recoil washout during target switches or after burst release (kills shot-1 CONFLICT!)
+        # Full [0, 0] washout during not-lmb_down without stealing LMB cooldown
         need_sw_reset = bool(getattr(self, "_need_switch_recenter", False))
         p_tot_now = self.p_aim_cnt + p_rec_cand
         p_tot_norm_now = float(np.hypot(p_tot_now[0], p_tot_now[1]))
         p_aim_norm_now = float(np.hypot(self.p_aim_cnt[0], self.p_aim_cnt[1]))
-        if need_sw_reset and p_tot_norm_now < 8.0:
+        if need_sw_reset and p_tot_norm_now < 1.5:
             need_sw_reset = False
             self._need_switch_recenter = False
-        pan_bleed_active = (not lmb_down) and (
-            ((locked_det is None) and (v_hand_norm >= 130.0 or need_sw_reset))
-            or ((not in_pulse_immunity) and (v_hand_norm >= 165.0))
-            or (need_sw_reset and (t_now - self._last_lmb_release_t) >= 0.065 and p_tot_norm_now >= 8.0)
+        pan_bleed_active = (not lmb_down) and (p_tot_norm_now >= 1.5) and (
+            (locked_det is None)
+            or (v_hand_norm >= 140.0)
+            or ((t_now - self._last_lmb_release_t) >= 0.050)
         )
-        if pan_bleed_active and p_tot_norm_now >= 2.0:
-            tau_bleed = 0.050 if v_hand_norm >= 165.0 else 0.075
-            decay_f = math.exp(-max(0.002, dt_s) / tau_bleed)
-            if p_aim_norm_now >= 2.0:
-                self.p_aim_cnt = self.p_aim_cnt * decay_f
-            if float(np.hypot(p_rec_cand[0], p_rec_cand[1])) >= 2.0:
-                p_rec_cand = p_rec_cand * decay_f
+        if pan_bleed_active:
+            if p_tot_norm_now < 4.0:
+                self.p_aim_cnt[:] = 0.0
+                p_rec_cand[:] = 0.0
                 recoil_due = True
+            else:
+                tau_bleed = 0.045 if v_hand_norm >= 140.0 else 0.065
+                decay_f = math.exp(-max(0.002, dt_s) / tau_bleed)
+                if p_aim_norm_now >= 0.5:
+                    self.p_aim_cnt = self.p_aim_cnt * decay_f
+                if float(np.hypot(p_rec_cand[0], p_rec_cand[1])) >= 0.5:
+                    p_rec_cand = p_rec_cand * decay_f
+                    recoil_due = True
 
         def _dispatch_recoil_only(cd_s: float) -> bool:
             act_b = getattr(self, "_active_bcmd", None)
@@ -2194,17 +2201,25 @@ class LiveGameSharedControlRunner:
                 )
                 last_flick_t = getattr(self, "_last_high_flick_t", 0.0)
             since_flick_s = t_now - last_flick_t
-            tap_guard_pass = (not in_tap_guard) or (e_pred_norm > max(r_lock, 4.5))
-            # Respect servo settle while fitting 1 crisp inter-bullet pull-back inside AK's 100 ms gap
+            lmb_hold_s_now = max(0.0, t_now - self._lmb_down_since_t) if lmb_down else 0.0
+            is_shot1_rescue = (
+                lmb_down
+                and (not getattr(self, "_shot1_rescue_sent", False))
+                and (lmb_hold_s_now <= 0.025)
+                and (e_norm > max(r_lock, 4.0))
+                and (e_pred_norm > max(r_lock, 4.0))
+            )
+            tap_guard_pass = is_shot1_rescue or (not in_tap_guard) or (e_pred_norm > max(r_lock, 4.5))
+            # Respect servo settle while firing Shot-1 rescue at t=0ms so it lands <100ms before Bullet #2
             in_flight_n = float(np.hypot(dp_in_flight[0], dp_in_flight[1]))
-            if lmb_down:
+            if is_shot1_rescue:
+                eff_aim_cd = 0.0
+            elif lmb_down:
                 eff_aim_cd = 0.095 if in_flight_n >= 14.0 else max(self.aim_cooldown_s, 0.085)
             else:
                 eff_aim_cd = max(self.aim_cooldown_s, 0.130)
-            # Pre-shot: strictly protect clean human 1-2 taps; only assist small residual inside 14 px when dead-stopped
-            p_tot_wash = self.p_aim_cnt + p_rec_cand
-            pre_wash_blocking = (not lmb_down) and pan_bleed_active and float(np.hypot(p_tot_wash[0], p_tot_wash[1])) >= 20.0
-            pre_range_ok = lmb_down or ((not pre_wash_blocking) and e_norm <= 14.0 and e_pred_norm <= 14.0)
+            # 100% hands-off PRE: zero pre-shot aim moves (recenter washout only); all aim assist runs under LMB
+            pre_range_ok = bool(lmb_down)
             aim_due = (
                 (not self._mono_tripped)
                 and pre_range_ok
@@ -2219,15 +2234,12 @@ class LiveGameSharedControlRunner:
                 eta_cp = self.eng_logger.get_effective_coupling(default=0.90, min_samples=3) if hasattr(self, "eng_logger") else 1.0
                 ff_trim = float(np.clip(1.0 / max(0.88, eta_cp), 1.0, 1.10))
                 fine_trim_px = min(float(self.small_error_px), 8.5)
-                # Disable aggressive PRE LOCK_SNAP jolts that ruined Shot-1 1-2 tap acquisitions
                 is_initial_snap = False
-                if not lmb_down:
-                    is_fine = e_pred_norm <= fine_trim_px
-                    base_gain = min(0.36, self.kp_small_head) if is_fine else min(0.36, self.kp_large_error)
-                    gain = min(0.36, base_gain)
-                    step_cap = 26.0
-                    use_boost_aim = False
-                    b_scale_aim = 1.0
+                if is_shot1_rescue:
+                    gain = min(0.88, max(self.kp_large_error, 0.84) * ff_trim)
+                    step_cap = 72.0
+                    use_boost_aim = True
+                    b_scale_aim = min(self.boost_scale, 1.20)
                     b_dur_aim = self.boost_dur_ms
                 else:
                     is_fine = e_pred_norm <= fine_trim_px
@@ -2241,8 +2253,7 @@ class LiveGameSharedControlRunner:
                     b_dur_aim = self.boost_dur_ms
 
                 dp_stage = self.calibrator.aim_error_to_stage_delta(float(e_pred_px[0]), float(e_pred_px[1])) * gain
-                # Early AK-47 vertical feedforward (Bullets 1-4, 25..420ms): proactively pre-pull ~38%
-                # of deterministic initial climb before visual lag sees it, ONLY while error >= 0 (not below head).
+                # Early AK-47 vertical feedforward (Bullets 1-4, 30..420ms; skipped during t=0ms is_shot1_rescue)
                 if (
                     lmb_down
                     and float(e_raw_px[1]) >= -1.0
@@ -2250,7 +2261,7 @@ class LiveGameSharedControlRunner:
                     and hasattr(self, "ak_calibrator")
                 ):
                     lmb_hold_s_ff = max(0.0, t_now - self._lmb_down_since_t)
-                    if 0.025 <= lmb_hold_s_ff <= 0.420:
+                    if 0.030 <= lmb_hold_s_ff <= 0.420:
                         shot_f = lmb_hold_s_ff / 0.100
                         idx_k = int(min(4, max(0, int(shot_f))))
                         pts_ak = getattr(self.ak_calibrator, "pull_waypoints_cnt", None)
@@ -2292,13 +2303,14 @@ class LiveGameSharedControlRunner:
                     dp_n = float(np.hypot(dp_stage[0], dp_stage[1]))
 
                 rev_cd_ok = (not is_rev_step) or ((t_now - self._last_aim_cmd_t) >= max(self.aim_cooldown_s, 0.120))
-                bcmd_min_gap = 0.075
+                boost_min_dp = 4.5 if is_shot1_rescue else 6.0
+                bcmd_ok = is_shot1_rescue or ((t_now - getattr(self, "_last_bcmd_t", 0.0)) >= 0.075)
                 use_boost_final = bool(
                     use_boost_aim
                     and lmb_down
-                    and dp_n >= 6.0
+                    and dp_n >= boost_min_dp
                     and (not is_rev_step)
-                    and (t_now - getattr(self, "_last_bcmd_t", 0.0)) >= bcmd_min_gap
+                    and bcmd_ok
                 )
                 if dp_n >= 2.2 and rev_cd_ok:
                     if (
@@ -2325,7 +2337,7 @@ class LiveGameSharedControlRunner:
                             p_aim_cand[ax] *= math.exp(-max(0.002, dt_s) / 0.14)
                     p_cmd_cand = self._soft_saturate_stage_cmd(p_aim_cand + p_rec_cand, limits, soft_cap=(250.0, 285.0))
                     cd_req = self.recoil_cooldown_s if (lmb_down and recoil_due) else self.aim_cooldown_s
-                    hw_cd_req = min(float(cd_req), 0.018)
+                    hw_cd_req = 0.0 if is_shot1_rescue else min(float(cd_req), 0.018)
                     sent = disp(
                         p_cmd_cand,
                         is_recenter=False,
@@ -2340,6 +2352,8 @@ class LiveGameSharedControlRunner:
                         self._last_aim_cmd_t = t_now
                         self._last_engage_t = t_now
                         self._need_switch_recenter = False
+                        if is_shot1_rescue:
+                            self._shot1_rescue_sent = True
                         self._prev_trim_dp = dp_stage.copy()
                         self._prev_trim_t = t_now
                         if use_boost_final:
@@ -2360,10 +2374,13 @@ class LiveGameSharedControlRunner:
                         if hasattr(self, "eng_logger"):
                             self.eng_logger.record_frame(
                                 t_now, e_raw_px, v_hand_raw, self.p_aim_cnt, self.p_recoil_cnt,
-                                "LOCK_SNAP" if is_initial_snap else "LOCK_TRIM", dp_stage,
+                                "SHOT1_RESCUE" if is_shot1_rescue else ("LOCK_SNAP" if is_initial_snap else "LOCK_TRIM"),
+                                dp_stage,
                             )
             elif hasattr(self, "eng_logger"):
-                if self._mono_tripped:
+                if not lmb_down:
+                    g_reason = "PRE_HANDS_OFF"
+                elif self._mono_tripped:
                     g_reason = "MONO_TRIP"
                 elif not tap_guard_pass:
                     g_reason = "TAP_GUARD"
@@ -2378,18 +2395,18 @@ class LiveGameSharedControlRunner:
             if (not aim_sent) and pan_bleed_active:
                 p_cmd_cand = self._soft_saturate_stage_cmd(self.p_aim_cnt + p_rec_cand, limits, soft_cap=260.0)
                 if (
-                    float(np.hypot(p_stage_now[0] - p_cmd_cand[0], p_stage_now[1] - p_cmd_cand[1])) >= 4.0
-                    and (t_now - self._last_aim_cmd_t) >= 0.042
+                    float(np.hypot(p_stage_now[0] - p_cmd_cand[0], p_stage_now[1] - p_cmd_cand[1])) >= 1.5
+                    and (t_now - getattr(self, "_last_wash_cmd_t", 0.0)) >= 0.040
                 ):
                     sent = disp(
                         p_cmd_cand,
                         is_recenter=float(np.hypot(p_cmd_cand[0], p_cmd_cand[1])) < 4.0,
-                        cooldown_s=0.042,
+                        cooldown_s=0.040,
                         freeze_play_g=False,
                         use_boost=False,
                     )
                     if sent:
-                        self._last_aim_cmd_t = t_now
+                        self._last_wash_cmd_t = t_now
                         aim_sent = True
                         if recoil_due or not lmb_down:
                             self.p_recoil_cnt = p_rec_cand
