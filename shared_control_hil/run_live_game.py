@@ -1890,6 +1890,8 @@ class LiveGameSharedControlRunner:
             self._lmb_down_since_t = t_now
             self._shot1_rescue_sent = False
             self._need_switch_recenter = False
+            if float(np.hypot(self.p_aim_cnt[0], self.p_aim_cnt[1])) < 5.0:
+                self._aim_cmd_history = [(float(t_now) - 1.0, self.p_aim_cnt.copy())]
         if lmb_released:
             self._last_lmb_release_t = t_now
             self._prev_recoil_off_px = None
@@ -2061,6 +2063,7 @@ class LiveGameSharedControlRunner:
             if p_tot_norm_now < 4.0:
                 self.p_aim_cnt[:] = 0.0
                 p_rec_cand[:] = 0.0
+                self._aim_cmd_history = [(float(t_now) - 1.0, np.zeros(2, dtype=float))]
                 recoil_due = True
             else:
                 tau_bleed = 0.045 if v_hand_norm >= 140.0 else 0.065
@@ -2123,9 +2126,18 @@ class LiveGameSharedControlRunner:
             )
             # PURE aim Smith predictor: exclude p_rec_goal / p_recoil_cnt so horizontal recoil steps
             # NEVER generate phantom aim errors or horizontal ping-pong oscillation!
-            eff_lag_s = self.visual_lag_s + float(np.clip(det_age_s, 0.0, 0.060))
-            p_aim_at_frame_capture = self._get_visible_aim_pos(t_now, lag_s=eff_lag_s)
-            dp_in_flight = eta_flight * (self.p_aim_cnt - p_aim_at_frame_capture)
+            lmb_hold_s_early = max(0.0, t_now - self._lmb_down_since_t) if lmb_down else 0.0
+            if (
+                lmb_down
+                and (not getattr(self, "_shot1_rescue_sent", False))
+                and (lmb_hold_s_early <= 0.025)
+                and float(np.hypot(self.p_aim_cnt[0], self.p_aim_cnt[1])) < 5.0
+            ):
+                dp_in_flight = np.zeros(2, dtype=float)
+            else:
+                eff_lag_s = self.visual_lag_s + float(np.clip(det_age_s, 0.0, 0.060))
+                p_aim_at_frame_capture = self._get_visible_aim_pos(t_now, lag_s=eff_lag_s)
+                dp_in_flight = eta_flight * (self.p_aim_cnt - p_aim_at_frame_capture)
             e_pred_px = e_raw_px + (M_stage_to_err @ dp_in_flight)
             # Smith predictor may shrink same-sign error (avoid over-sending while step settles),
             # NEVER cross zero into a phantom opposite-sign pull when raw crosshair is already on target!
@@ -2206,8 +2218,8 @@ class LiveGameSharedControlRunner:
                 lmb_down
                 and (not getattr(self, "_shot1_rescue_sent", False))
                 and (lmb_hold_s_now <= 0.025)
-                and (e_norm > max(r_lock, 4.0))
-                and (e_pred_norm > max(r_lock, 4.0))
+                and (e_norm > max(r_lock, 4.5))
+                and (e_pred_norm > max(r_lock, 4.5))
             )
             tap_guard_pass = is_shot1_rescue or (not in_tap_guard) or (e_pred_norm > max(r_lock, 4.5))
             # Respect servo settle while firing Shot-1 rescue at t=0ms so it lands <100ms before Bullet #2
@@ -2236,10 +2248,12 @@ class LiveGameSharedControlRunner:
                 fine_trim_px = min(float(self.small_error_px), 8.5)
                 is_initial_snap = False
                 if is_shot1_rescue:
-                    gain = min(0.88, max(self.kp_large_error, 0.84) * ff_trim)
-                    step_cap = 72.0
+                    gain = min(0.48, max(0.42, 0.45 * ff_trim))
+                    if (not in_pulse_immunity) and v_hand_norm > 160.0:
+                        gain *= 0.75
+                    step_cap = 38.0
                     use_boost_aim = True
-                    b_scale_aim = min(self.boost_scale, 1.20)
+                    b_scale_aim = min(self.boost_scale, 1.15)
                     b_dur_aim = self.boost_dur_ms
                 else:
                     is_fine = e_pred_norm <= fine_trim_px
@@ -2652,6 +2666,12 @@ class LiveGameSharedControlRunner:
                     p_stage_now = self.p_stage_est.copy()
 
                 t_step = time.perf_counter()
+                if hasattr(self, "eng_logger") and lmb_down and self.eng_logger._active is None:
+                    self.eng_logger._open_engagement(
+                        t_s=t_now - session_t0,
+                        p_stage_now=p_stage_now if self.mode == MODE_ASSIST_ON else np.zeros(2, dtype=float),
+                        weapon=self.gsi.active_weapon if self._gsi_started else "",
+                    )
                 if self.mode == MODE_ASSIST_ON:
                     locked_det, _ = self._step_live_assist(
                         t_now=t_step,
@@ -2704,7 +2724,14 @@ class LiveGameSharedControlRunner:
                         )
                     if tgt_px is not None:
                         with self._hw_lock:
-                            p_shot = self.p_stage_est.copy() if self.mode == MODE_ASSIST_ON else np.zeros(2, dtype=float)
+                            if self.mode == MODE_ASSIST_ON:
+                                p_shot = (
+                                    p_stage_now.copy()
+                                    if self._burst_shot_idx == 1
+                                    else self.p_stage_est.copy()
+                                )
+                            else:
+                                p_shot = np.zeros(2, dtype=float)
                         shot_anchor_mode = (
                             self._live_anchor_mode
                             if (self.mode == MODE_ASSIST_ON and locked_det is not None)

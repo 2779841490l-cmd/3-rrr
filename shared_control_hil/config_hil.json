@@ -68,7 +68,7 @@
         -0.592012
       ]
     ],
-    "mounting_angle_deg": -14.2615,
+    "mounting_angle_deg": -11.5782,
     "calib_elapsed_s": 1.5883,
     "recon_error_pct": 4.143,
     "safe_envelope_counts": 165.0,
@@ -79,16 +79,16 @@
     "spray_max_y_counts": 340.0,
     "J_screen_to_stage": [
       [
-        -2.864824,
-        0.586601
+        -3.009534,
+        0.501194
       ],
       [
-        -0.949723,
-        -3.179364
+        -0.836751,
+        -3.521056
       ]
     ],
-    "axis_x_pos_px_per_cnt": 0.2858,
-    "axis_x_neg_px_per_cnt": 0.3721,
+    "axis_x_pos_px_per_cnt": 0.283,
+    "axis_x_neg_px_per_cnt": 0.3562,
     "visual_calib_source": "YOLO_HEAD_FLOW",
     "recenter_trigger_counts": 15.0,
     "recenter_v_hand_min": 120.0,
