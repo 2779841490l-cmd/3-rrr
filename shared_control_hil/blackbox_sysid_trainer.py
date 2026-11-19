@@ -107,7 +107,128 @@ def _eng_mode(e: Dict[str, Any]) -> str:
     return "UNKNOWN"
 
 
-def _summarize_mode_split(engs: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+def _extract_mode_blocks(
+    engs: List[Dict[str, Any]],
+    min_n: int = 5,
+    pause_split_s: float = 4.0,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Dict[str, float]]]:
+    """Group consecutive same-mode fights into alternating blocks and compute exact matched-numerator/denominator active KPM."""
+    raw_blocks: List[Tuple[str, List[Dict[str, Any]]]] = []
+    cur: List[Dict[str, Any]] = []
+    for e in engs:
+        m = _eng_mode(e)
+        if m == "UNKNOWN":
+            continue
+        if cur and _eng_mode(cur[-1]) != m:
+            raw_blocks.append((_eng_mode(cur[0]), cur))
+            cur = [e]
+        else:
+            cur.append(e)
+    if cur:
+        raw_blocks.append((_eng_mode(cur[0]), cur))
+
+    matched: Dict[str, Dict[str, float]] = {
+        "ASSIST_ON": {"dur_s": 0.0, "kills": 0.0, "hs": 0.0},
+        "SHADOW_REFEREE_ONLY": {"dur_s": 0.0, "kills": 0.0, "hs": 0.0},
+    }
+    blocks_out: List[Dict[str, Any]] = []
+
+    for b_idx, (mode_name, sub) in enumerate(raw_blocks, start=1):
+        runs: List[List[Dict[str, Any]]] = []
+        r_cur: List[Dict[str, Any]] = [sub[0]]
+        for e_prev, e_now in zip(sub, sub[1:]):
+            gap = float(e_now["t_start_s"]) - float(e_prev["t_end_s"])
+            if 0.0 <= gap <= pause_split_s:
+                r_cur.append(e_now)
+            else:
+                runs.append(r_cur)
+                r_cur = [e_now]
+        runs.append(r_cur)
+
+        b_dur = 0.0
+        b_kills = 0
+        b_hs = 0
+        for run in runs:
+            if len(run) >= 2:
+                d_r = max(0.0, float(run[-1]["t_end_s"]) - float(run[0]["t_end_s"]))
+                # Skip run[0]'s kills so numerator and denominator span the exact same (run[0].t_end -> run[-1].t_end] window
+                k_r = sum(int(e.get("gsi_kills", 0)) for e in run[1:])
+                hs_r = sum(int(e.get("gsi_hs", 0)) for e in run[1:])
+                b_dur += d_r
+                b_kills += k_r
+                b_hs += hs_r
+        if mode_name in matched:
+            matched[mode_name]["dur_s"] += b_dur
+            matched[mode_name]["kills"] += b_kills
+            matched[mode_name]["hs"] += b_hs
+
+        if len(sub) >= min_n:
+            s1_ea = [float(e["shot1_ea_cnt"]) for e in sub if e.get("shot1_ea_cnt") is not None]
+            cps = [float(e["coupling_ratio"]) for e in sub if e.get("coupling_ratio") is not None]
+            tot_k = sum(int(e.get("gsi_kills", 0)) for e in sub)
+            tot_hs = sum(int(e.get("gsi_hs", 0)) for e in sub)
+            blocks_out.append({
+                "block_id": b_idx,
+                "mode": mode_name,
+                "n": len(sub),
+                "matched_dur_s": round(b_dur, 1),
+                "matched_kills": int(b_kills),
+                "total_kills": int(tot_k),
+                "total_hs": int(tot_hs),
+                "kpm": round(60.0 * b_kills / b_dur, 1) if b_dur >= 1.0 and b_kills > 0 else None,
+                "med_shots": round(float(np.median([int(e["n_shots"]) for e in sub])), 1),
+                "shot1_ea_med_cnt": round(float(np.median(s1_ea)), 1) if s1_ea else None,
+                "coupling_med": round(float(np.median(cps)), 3) if cps else None,
+            })
+
+    return blocks_out, matched
+
+
+def _stratify_by_shot1_eh(engs: List[Dict[str, Any]]) -> Dict[str, Dict[str, Dict[str, Any]]]:
+    """Causal Aiming Stratification: separate Do-No-Harm (<=30 cnt) vs Whiff-Rescue (30..80 cnt) vs Wide (>80 cnt)."""
+    tiers = [
+        ("on_target_<=30cnt", lambda v: v <= 30.0),
+        ("rescue_30_80cnt", lambda v: 30.0 < v <= 80.0),
+        ("wide_>80cnt", lambda v: v > 80.0),
+    ]
+    out: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    for t_name, pred in tiers:
+        out[t_name] = {}
+        for mode_name in ("ASSIST_ON", "SHADOW_REFEREE_ONLY"):
+            sub = [
+                e for e in engs
+                if _eng_mode(e) == mode_name
+                and e.get("shot1_eh_cnt") is not None
+                and pred(float(e["shot1_eh_cnt"]))
+            ]
+            if not sub:
+                out[t_name][mode_name] = {"n": 0}
+                continue
+            shots = [int(e["n_shots"]) for e in sub]
+            tot_k = sum(int(e.get("gsi_kills", 0)) for e in sub)
+            has_gsi = any(int(e.get("gsi_kills", 0)) > 0 for e in engs if _eng_mode(e) == mode_name)
+            s1 = [float(e["shots"][0]["e_actual_cnt"]) for e in sub if e.get("shots") and e["shots"][0].get("e_actual_cnt") is not None]
+            s2 = [float(e["shots"][1]["e_actual_cnt"]) for e in sub if len(e.get("shots", [])) > 1 and e["shots"][1].get("e_actual_cnt") is not None]
+            confl = sum(1 for e in sub if "CONFLICT" in e.get("diag_flags", []))
+            zero_k = sum(1 for e in sub if int(e.get("gsi_kills", 0)) == 0)
+            out[t_name][mode_name] = {
+                "n": len(sub),
+                "med_shots": round(float(np.median(shots)), 1),
+                "shots_per_kill": round(sum(shots) / tot_k, 2) if tot_k > 0 else None,
+                "zero_kill_pct": round(100.0 * zero_k / len(sub), 1) if has_gsi else None,
+                "s1_to_s2_ea": [
+                    round(float(np.median(s1)), 1) if s1 else None,
+                    round(float(np.median(s2)), 1) if s2 else None,
+                ],
+                "conflict_pct": round(100.0 * confl / len(sub), 1),
+            }
+    return out
+
+
+def _summarize_mode_split(
+    engs: List[Dict[str, Any]],
+    matched_stats: Optional[Dict[str, Dict[str, float]]] = None,
+) -> Dict[str, Dict[str, Any]]:
     def _agg(mode_name: str) -> Dict[str, Any]:
         sub = [e for e in engs if _eng_mode(e) == mode_name]
         if not sub:
@@ -127,7 +248,7 @@ def _summarize_mode_split(engs: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any
         for e0, e1 in zip(engs, engs[1:]):
             if _eng_mode(e0) == mode_name and _eng_mode(e1) == mode_name:
                 g = float(e1["t_start_s"]) - float(e0["t_end_s"])
-                if 0.05 < g < 3.5:
+                if 0.05 < g <= 4.0:
                     gaps.append(g)
                     cycles.append(float(e1["t_end_s"]) - float(e0["t_end_s"]))
 
@@ -142,8 +263,41 @@ def _summarize_mode_split(engs: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any
 
         gsi_kills = sum(int(e.get("gsi_kills", 0)) for e in sub)
         gsi_hs = sum(int(e.get("gsi_hs", 0)) for e in sub)
-        total_active_s = sum(cycles) if cycles else (sum(ttks) + 0.6 * len(sub))
+        has_gsi = gsi_kills > 0
+        m_entry = (matched_stats or {}).get(mode_name, {})
+        m_dur = float(m_entry.get("dur_s", 0.0))
+        m_kills = float(m_entry.get("kills", 0.0))
         med_cycle = float(np.median(cycles)) if cycles else None
+
+        # True Single-Kill efficiency separated cleanly from 0-kill whiffs and multi-kill sprays
+        sk_sub = [e for e in sub if int(e.get("gsi_kills", 0)) == 1]
+        if sk_sub:
+            sk_stks = [
+                int(e["shots_to_first_kill"]) if e.get("shots_to_first_kill") is not None else int(e["n_shots"])
+                for e in sk_sub
+            ]
+            sk_ttks = [
+                float(e["t_to_first_kill_s"]) if e.get("t_to_first_kill_s") is not None else (float(e["t_end_s"]) - float(e["t_start_s"]))
+                for e in sk_sub
+            ]
+            sk_12 = sum(1 for x in sk_stks if x <= 2)
+            sk_34 = sum(1 for x in sk_stks if 3 <= x <= 4)
+            sk_5p = sum(1 for x in sk_stks if x >= 5)
+            sk_dist = {
+                "1_2_shots": round(100.0 * sk_12 / len(sk_sub), 1),
+                "3_4_shots": round(100.0 * sk_34 / len(sk_sub), 1),
+                "5plus_shots": round(100.0 * sk_5p / len(sk_sub), 1),
+            }
+            sk_med_stk = round(float(np.median(sk_stks)), 1)
+            sk_med_ttk = round(float(np.median(sk_ttks)), 3)
+        else:
+            sk_dist = None
+            sk_med_stk = None
+            sk_med_ttk = None
+
+        zero_k = sum(1 for e in sub if int(e.get("gsi_kills", 0)) == 0)
+        multi_k = sum(1 for e in sub if int(e.get("gsi_kills", 0)) >= 2)
+        tot_shots = sum(shots)
 
         return {
             "n": len(sub),
@@ -161,7 +315,18 @@ def _summarize_mode_split(engs: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any
             "per_shot_ea_med_cnt": per_shot_ea,
             "gsi_kills": gsi_kills,
             "gsi_hs": gsi_hs,
-            "true_gsi_kpm": round(60.0 * gsi_kills / max(1.0, total_active_s), 1) if gsi_kills > 0 else None,
+            "matched_active_s": round(m_dur, 1),
+            "matched_gsi_kills": int(m_kills),
+            "true_gsi_kpm": round(60.0 * m_kills / m_dur, 1) if m_dur >= 1.0 and m_kills > 0 else None,
+            "sec_per_kill": round(m_dur / m_kills, 3) if m_dur >= 1.0 and m_kills > 0 else None,
+            "zero_kill_burst_pct": round(100.0 * zero_k / len(sub), 1) if has_gsi else None,
+            "multi_kill_burst_pct": round(100.0 * multi_k / len(sub), 1) if has_gsi else None,
+            "kills_per_burst": round(gsi_kills / len(sub), 3) if has_gsi else None,
+            "shots_per_kill": round(tot_shots / gsi_kills, 2) if has_gsi else None,
+            "single_kill_n": len(sk_sub),
+            "single_kill_med_stk": sk_med_stk,
+            "single_kill_med_ttk_s": sk_med_ttk,
+            "single_kill_dist_pct": sk_dist,
             "hs_eng_rate": round(hs / len(sub), 4),
             "hit_eng_rate": round((hs + bh) / len(sub), 4),
             "shot1_eh_med_cnt": round(float(np.median(s1_eh)), 1) if s1_eh else None,
@@ -193,7 +358,9 @@ def analyze_blackbox(jsonl_path: str = DEFAULT_JSONL_PATH, config_path: str = DE
                 pass
 
     step_id = _estimate_empirical_step_response(engs, px_per_cnt=px_per_cnt)
-    mode_split = _summarize_mode_split(engs)
+    alt_blocks, matched_stats = _extract_mode_blocks(engs)
+    mode_split = _summarize_mode_split(engs, matched_stats=matched_stats)
+    stratified = _stratify_by_shot1_eh(engs)
     cps = [float(e["coupling_ratio"]) for e in engs if e.get("coupling_ratio") is not None]
     pre_g: Counter = Counter()
     lmb_g: Counter = Counter()
@@ -207,6 +374,8 @@ def analyze_blackbox(jsonl_path: str = DEFAULT_JSONL_PATH, config_path: str = DE
     return {
         "n_engagements": len(engs),
         "mode_split": mode_split,
+        "alternating_blocks": alt_blocks,
+        "stratified_by_shot1_eh": stratified,
         "coupling_summary": {
             "n": len(cps),
             "p10": round(float(np.percentile(cps, 10)), 3) if cps else None,
@@ -295,26 +464,76 @@ def run_loaded_wall_sweep(config_path: str = DEFAULT_CONFIG_PATH, out_path: str 
 
 
 def print_kill_efficiency_summary(rep: Dict[str, Any]) -> None:
-    """Print concise Chinese Aim-Botz KPM & per-shot convergence A/B comparison."""
+    """Print 4-layer Chinese Aim-Botz Kill-Efficiency & Causal Aiming Evaluation."""
     ms = rep.get("mode_split", {})
     cp = rep.get("coupling_summary", {})
-    print("\n=== 实战击杀效率 A/B 简报 ===")
-    for tag, label in (("ASSIST_ON", "开启机械辅助"), ("SHADOW_REFEREE_ONLY", "纯手打对照")):
+    blocks = rep.get("alternating_blocks", [])
+    strat = rep.get("stratified_by_shot1_eh", {})
+
+    print("\n================ 1. 交替波次真实 KPM 对照 ================")
+    if blocks:
+        for b in blocks:
+            tag_cn = "开启辅助" if b["mode"] == "ASSIST_ON" else "纯手打  "
+            kpm_s = f"{b['kpm']} KPM" if b.get("kpm") is not None else f"n={b['n']} (无GSI)"
+            print(
+                f"  Block {b['block_id']:02d} [{tag_cn} n={b['n']:3d}] {kpm_s} ({b['matched_kills']}杀/{b['matched_dur_s']}s) | "
+                f"中位={b['med_shots']}发 | shot1_ea={b['shot1_ea_med_cnt']} | cp={b['coupling_med']}"
+            )
+    else:
+        print("  (暂无 >=5 轮的连续波次)")
+
+    print("\n================ 2. 真实击杀效率拆解 (KPM + STK + 空枪率) ================")
+    for tag, label in (("ASSIST_ON", "开启机械辅助"), ("SHADOW_REFEREE_ONLY", "纯手打对照  ")):
         d = ms.get(tag, {})
         if not d.get("n"):
             continue
-        sd = d.get("shot_dist_pct", {})
+        sd = d.get("single_kill_dist_pct") or d.get("shot_dist_pct", {})
         ps = d.get("per_shot_ea_med_cnt", {})
-        kpm_str = f"真GSI KPM={d['true_gsi_kpm']} ({d['gsi_kills']}杀/{d['gsi_hs']}爆头)" if d.get("true_gsi_kpm") else f"等效交火={d.get('est_bursts_per_min')}/分"
+        if d.get("true_gsi_kpm") is not None:
+            kpm_str = (
+                f"真KPM={d['true_gsi_kpm']} ({d['matched_gsi_kills']}杀/{d['matched_active_s']}s, "
+                f"平均每杀={d.get('sec_per_kill')}s, 每杀={d.get('shots_per_kill')}发)"
+            )
+        else:
+            kpm_str = f"等效交火={d.get('est_bursts_per_min')}/分 | 单只周期={d.get('med_cycle_s')}s"
+        stk_str = f"单杀分布(n={d.get('single_kill_n',0)}, 中位={d.get('single_kill_med_stk')}发/{d.get('single_kill_med_ttk_s')}s)" if d.get("single_kill_n") else "全部发数分布"
         print(
-            f"[{label} n={d['n']}] {kpm_str} | 切人={d.get('med_gap_s')}s + 开火={d.get('med_ttk_s')}s -> 单只周期={d.get('med_cycle_s')}s | "
-            f"发数分布 1-2发:{sd.get('1_2_shots')}% 3-4发:{sd.get('3_4_shots')}% 5+发:{sd.get('5plus_shots')}%"
+            f"[{label} n={d['n']}] {kpm_str}\n"
+            f"    切人={d.get('med_gap_s')}s + 开火={d.get('med_ttk_s')}s | "
+            f"{stk_str} 1-2发:{sd.get('1_2_shots')}% 3-4发:{sd.get('3_4_shots')}% 5+发:{sd.get('5plus_shots')}% | "
+            f"0杀空枪率={d.get('zero_kill_burst_pct')}% | 多杀={d.get('multi_kill_burst_pct')}%\n"
+            f"    Shot1~4 实际误差(cnt): {ps.get('shot1')} -> {ps.get('shot2')} -> {ps.get('shot3')} -> {ps.get('shot4')}"
         )
-        print(
-            f"    Shot1~4 实际误差(cnt): {ps.get('shot1')} -> {ps.get('shot2')} -> {ps.get('shot3')} -> {ps.get('shot4')} | "
-            f"PRE_SAT={d.get('pre_sat_pct')}% | 冲突={d.get('conflict_pct')}%"
-        )
-    print(f"[物理耦合效率] median={cp.get('median')} (p10={cp.get('p10')}, p90={cp.get('p90')}) | 推荐 visual_lag_ms={rep.get('recommended_live_control', {}).get('visual_lag_ms')}")
+
+    print("\n================ 3. 首枪手误分层因果检验 (到底有没有提高瞄准) ================")
+    tier_labels = (
+        ("on_target_<=30cnt", "层1: 已瞄准 <=30 cnt (检验: 绝不添乱)"),
+        ("rescue_30_80cnt", "层2: 轻微擦边 30~80 cnt (检验: 弹间救场)"),
+        ("wide_>80cnt", "层3: 大偏/转移 >80 cnt (检验: 控枪兜底)"),
+    )
+    for t_key, t_title in tier_labels:
+        td = strat.get(t_key, {})
+        a_d = td.get("ASSIST_ON", {})
+        s_d = td.get("SHADOW_REFEREE_ONLY", {})
+        if not (a_d.get("n") or s_d.get("n")):
+            continue
+        print(f"  {t_title}")
+        if a_d.get("n"):
+            print(
+                f"    ASSIST (n={a_d['n']:3d}): med={a_d['med_shots']}发 | 每杀={a_d['shots_per_kill']}发 | "
+                f"0杀={a_d['zero_kill_pct']}% | S1->S2={a_d['s1_to_s2_ea']} | 冲突={a_d['conflict_pct']}%"
+            )
+        if s_d.get("n"):
+            print(
+                f"    SHADOW (n={s_d['n']:3d}): med={s_d['med_shots']}发 | 每杀={s_d['shots_per_kill']}发 | "
+                f"0杀={s_d['zero_kill_pct']}% | S1->S2={s_d['s1_to_s2_ea']}"
+            )
+
+    a_ms = ms.get("ASSIST_ON", {})
+    print(
+        f"\n[4. 硬件健康度] 耦合率 median={cp.get('median')} (p10={cp.get('p10')}, p90={cp.get('p90')}) | "
+        f"冲突率={a_ms.get('conflict_pct')}% | PRE_SAT={a_ms.get('pre_sat_pct')}% | 推荐 visual_lag_ms={rep.get('recommended_live_control', {}).get('visual_lag_ms')}"
+    )
 
 
 def main() -> int:

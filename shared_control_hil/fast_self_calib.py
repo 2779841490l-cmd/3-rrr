@@ -329,22 +329,22 @@ class FastSelfCalibrator:
         du_b = np.zeros(2, dtype=float)
 
         if abs(d0) >= 1.2:
-            # S1 (single MG996R): scale stiction kick cleanly with X count demand + +X palm asymmetry (+X transfers ~2x harder)
-            pos_x_mul = 1.28 if dx > 2.2 else 1.0
+            # S1 (single MG996R): scale stiction kick cleanly with X count demand + bounded +X palm asymmetry
+            pos_x_mul = 1.16 if dx > 2.5 else 1.0
             if abs(dx) >= 4.0:
-                s1_floor = min(24.0, (5.0 + 1.30 * min(abs(dx), 14.0)) * pos_x_mul)
-                mag0 = min(35.0, max(s1_floor, abs(d0) * 0.72 * bs * pos_x_mul))
+                s1_floor = min(21.0, (4.5 + 1.15 * min(abs(dx), 14.0)) * pos_x_mul)
+                mag0 = min(32.0, max(s1_floor, abs(d0) * 0.65 * bs * pos_x_mul))
             else:
-                mag0 = min(14.0, max(4.0 if dx > 2.0 else 2.5, abs(d0) * 0.65 * bs * pos_x_mul))
+                mag0 = min(12.0, max(3.2 if dx > 2.0 else 2.2, abs(d0) * 0.56 * bs * pos_x_mul))
             if mag0 >= 1.5:
                 du_b[0] = math.copysign(mag0, d0)
 
         if abs(d1) >= 1.2:
             # S2/S3 (dual opposed short-arm Y): firmer +Y pull-down kick under palm friction while staying gentle upward
-            pull_dn_mul = 1.22 if dy > 2.2 else 0.95
-            y_floor = min(10.5, (2.8 + 0.72 * abs(d1)) * pull_dn_mul)
-            prop1 = abs(d1) * 0.50 * (bs / 1.30) * pull_dn_mul
-            mag1 = min(17.0, max(y_floor, prop1))
+            pull_dn_mul = 1.15 if dy > 2.5 else 0.95
+            y_floor = min(9.5, (2.5 + 0.65 * abs(d1)) * pull_dn_mul)
+            prop1 = abs(d1) * 0.46 * (bs / 1.30) * pull_dn_mul
+            mag1 = min(15.5, max(y_floor, prop1))
             du_b[1] = math.copysign(mag1, d1)
 
         if abs(du_b[0]) < 1.0 and abs(du_b[1]) < 1.0:
@@ -352,7 +352,7 @@ class FastSelfCalibrator:
 
         dur_base = 24.0 + 0.45 * min(dp_n, 45.0)
         dur_scaled = dur_base * (float(boost_dur_ms) / 32.0 if float(boost_dur_ms) > 0.0 else 1.0)
-        bst_ms = float(np.clip(dur_scaled, 26.0, 42.0))
+        bst_ms = float(np.clip(dur_scaled, 24.0, 40.0))
         b1, b2 = cls.clamp_servo_pair(float(e1 + du_b[0]), float(e2 + du_b[1]))
         return b1, b2, int(round(bst_ms * 1000.0))
 

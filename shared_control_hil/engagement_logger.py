@@ -257,14 +257,14 @@ class EngagementLogger:
     def on_stage_dispatch(self, t_now: float, dp_cmd_cnt: np.ndarray, sensor_xy: np.ndarray) -> None:
         if float(np.hypot(dp_cmd_cnt[0], dp_cmd_cnt[1])) >= 5.0:
             self._coupling_queue.append(
-                (float(t_now) + 0.045, np.asarray(dp_cmd_cnt, dtype=float).copy(), np.asarray(sensor_xy, dtype=float).copy())
+                (float(t_now) + 0.095, np.asarray(dp_cmd_cnt, dtype=float).copy(), np.asarray(sensor_xy, dtype=float).copy())
             )
 
     def poll_coupling(self, t_now: float, sensor_xy: np.ndarray, v_hand_norm: float) -> None:
         while self._coupling_queue and t_now >= self._coupling_queue[0][0]:
             _, dp_cmd, s0 = self._coupling_queue.popleft()
             cmd_norm = float(np.hypot(dp_cmd[0], dp_cmd[1]))
-            if cmd_norm < 5.0 or v_hand_norm > 90.0:
+            if cmd_norm < 5.0 or v_hand_norm > 110.0:
                 continue
             ds = np.asarray(sensor_xy, dtype=float) - s0
             proj = float(np.dot(ds, dp_cmd)) / max(1e-6, cmd_norm)
@@ -289,6 +289,7 @@ class EngagementLogger:
             "shots": [],
             "gsi_kills": 0,
             "gsi_hs": 0,
+            "kill_events": [],
             "coupling": pre_c,
             "pre_trace": list(self._pre_ring)[-18:],
             "trace": [],
@@ -338,11 +339,34 @@ class EngagementLogger:
             if self._active is not None:
                 self._active["gsi_kills"] += dk
                 self._active["gsi_hs"] += dhs
-            elif self.engagements:
-                self.engagements[-1]["gsi_kills"] += dk
-                self.engagements[-1]["gsi_hs"] += dhs
+                self._active["kill_events"].append(
+                    {
+                        "t_s": round(float(t_s), 3),
+                        "shots_so_far": len(self._active["shots"]),
+                        "dk": int(dk),
+                        "dhs": int(dhs),
+                    }
+                )
+            elif self.engagements and (float(t_s) - float(self.engagements[-1]["t_end_s"])) <= 0.65:
+                last_e = self.engagements[-1]
+                last_e["gsi_kills"] += dk
+                last_e["gsi_hs"] += dhs
+                kes = last_e.setdefault("kill_events", [])
+                n_s = int(last_e.get("n_shots", len(last_e.get("shots", []))))
+                kes.append(
+                    {
+                        "t_s": round(float(t_s), 3),
+                        "shots_so_far": n_s,
+                        "dk": int(dk),
+                        "dhs": int(dhs),
+                    }
+                )
+                if last_e.get("shots_to_first_kill") is None and kes:
+                    ke0 = kes[0]
+                    last_e["shots_to_first_kill"] = max(1, min(max(1, n_s), int(ke0["shots_so_far"]))) if n_s > 0 else None
+                    last_e["t_to_first_kill_s"] = round(max(0.0, float(ke0["t_s"]) - float(last_e["t_start_s"])), 3)
 
-        if self._active is not None and (not lmb_down) and (t_s - self._lmb_release_t) >= 0.40:
+        if self._active is not None and (not lmb_down) and (t_s - self._lmb_release_t) >= 0.22:
             return self._close_active()
         return None
 
@@ -374,7 +398,19 @@ class EngagementLogger:
         if not flags and best_hb == "HEAD_HIT":
             flags.append("OK")
 
-        eng["n_shots"] = len(eng["shots"])
+        n_s = len(eng["shots"])
+        kes = eng.get("kill_events", [])
+        if kes:
+            ke0 = kes[0]
+            stk = max(1, min(n_s, int(ke0["shots_so_far"])))
+            t_fk = round(max(0.0, float(ke0["t_s"]) - float(eng["t_start_s"])), 3)
+        else:
+            stk = None
+            t_fk = None
+
+        eng["n_shots"] = n_s
+        eng["shots_to_first_kill"] = stk
+        eng["t_to_first_kill_s"] = t_fk
         eng["best_hitbox"] = best_hb
         eng["shot1_eh_cnt"] = round(float(s0["e_hand_cnt"]), 2)
         eng["shot1_ea_cnt"] = round(float(s0["e_actual_cnt"]), 2)
@@ -399,6 +435,7 @@ class EngagementLogger:
 
         fields = [
             "eng_id", "t_start_s", "t_end_s", "n_shots", "weapon", "gsi_kills", "gsi_hs",
+            "shots_to_first_kill", "t_to_first_kill_s",
             "best_hitbox", "shot1_eh_cnt", "shot1_ea_cnt", "shot1_head_cnt", "shot1_dE_cnt",
             "min_ea_cnt", "min_head_cnt", "sp_pre_norm", "sp_max_norm",
             "stage_cmd_cnt", "sensor_meas_cnt", "coupling_ratio", "diag_flags",
