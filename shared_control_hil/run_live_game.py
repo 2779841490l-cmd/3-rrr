@@ -372,6 +372,14 @@ class LiveGameSharedControlRunner:
         self._spray_anchor_latched: Optional[str] = None
         self._cmd_history: deque = deque(maxlen=64)
         self._aim_cmd_history: deque = deque(maxlen=64)
+        self._dual_mouse_detected: bool = False
+        self._pre_micro_done_tid: Optional[int] = None
+        self._pre_micro_count: int = 0
+        self._pre_micro_sent_t: float = 0.0
+        self._pre_prev_epx: Optional[np.ndarray] = None
+        self._pre_prev_epx_t: float = 0.0
+        self._target_base_stage_cnt: np.ndarray = np.zeros(2, dtype=float)
+        self._last_wash_cmd_t: float = 0.0
         self._reload_live_control_params()
 
         self.in_game_trainer = InGameAutoTrainer(
@@ -470,6 +478,13 @@ class LiveGameSharedControlRunner:
         self._live_anchor_mode = "HEAD"
         self._live_anchor_px = None
         self._spray_anchor_latched = None
+        self._pre_micro_done_tid = None
+        self._pre_micro_count = 0
+        self._pre_micro_sent_t = 0.0
+        self._pre_prev_epx = None
+        self._pre_prev_epx_t = 0.0
+        self._target_base_stage_cnt = np.zeros(2, dtype=float)
+        self._last_wash_cmd_t = 0.0
         if hasattr(self, "_cmd_history"):
             self._cmd_history.clear()
         if hasattr(self, "_aim_cmd_history"):
@@ -604,6 +619,16 @@ class LiveGameSharedControlRunner:
         def _loop() -> None:
             last_t = time.perf_counter()
             last_sensor = np.array(self.trainer.sensor.get_position(), dtype=float)
+            has_hand_api = hasattr(self.trainer.sensor, "get_hand_position") and hasattr(
+                self.trainer.sensor, "get_hand_event_count"
+            )
+            last_hand_sensor = (
+                np.array(self.trainer.sensor.get_hand_position(), dtype=float)
+                if has_hand_api
+                else np.zeros(2, dtype=float)
+            )
+            v_hand_mouse_lp = np.zeros(2, dtype=float)
+            dual_logged = False
             with self._hw_lock:
                 prev_stage_cmd = self.p_stage_est.copy()
                 p_stage_d1 = self.p_stage_est.copy()
@@ -657,42 +682,63 @@ class LiveGameSharedControlRunner:
                 usb_spd = float(math.hypot(v_usb_lp[0], v_usb_lp[1]))
                 stg_spd = float(math.hypot(v_stg_lp[0], v_stg_lp[1]))
 
-                # 98 ms In-Pulse Immunity Window (covers full MG996R travel + 25ms LPF tail so servo settling
-                # never dumps a ~1000 cnt/s spike into v_hand_est); breaks fast on opposite turns (>380 cnt/s).
-                p_dir_n = float(math.hypot(pulse_dir[0], pulse_dir[1]))
-                in_pulse_win = (pulse_t > 0.0) and ((t_now - pulse_t) <= 0.098) and (p_dir_n > 0.5)
-                if in_pulse_win:
-                    p_hat = pulse_dir / p_dir_n
-                    v_par = float(np.dot(v_usb_lp, p_hat))
-                    if (-v_par) > 380.0:
-                        opp_turn_dur_s += dt
-                    else:
-                        opp_turn_dur_s = 0.0
-                    opp_confirmed = opp_turn_dur_s >= 0.020
-                    self._pulse_opp_turn_confirmed = bool(opp_confirmed)
-                    self._pulse_immunity_active = not opp_confirmed
-                    if v_par >= 0.0 and (usb_spd <= 1e-3 or v_par > (usb_spd * cos75)):
-                        # Angle < 75 deg wrt pulse vector: clamp aligned hand speed completely to 0.0
-                        v_hand_est = np.zeros(2, dtype=float)
-                    elif v_par > 0.0:
-                        v_hand_est = v_usb_lp - v_par * p_hat
-                    elif not opp_confirmed:
-                        v_hand_est = np.zeros(2, dtype=float)
-                    else:
-                        v_hand_est = v_usb_lp.copy()
-                else:
-                    opp_turn_dur_s = 0.0
+                # Dual-mouse auto-detection: read 1000 Hz ground-truth hand velocity with ZERO servo crosstalk!
+                hand_evts = int(self.trainer.sensor.get_hand_event_count()) if has_hand_api else 0
+                if has_hand_api:
+                    cur_hand_sensor = np.array(self.trainer.sensor.get_hand_position(), dtype=float)
+                    dp_hand = cur_hand_sensor - last_hand_sensor
+                    last_hand_sensor = cur_hand_sensor
+                    alpha_h = min(1.0, dt / 0.016)
+                    v_hand_mouse_lp = (1.0 - alpha_h) * v_hand_mouse_lp + alpha_h * (dp_hand / dt)
+
+                if hand_evts >= 5:
+                    self._dual_mouse_detected = True
+                    if not dual_logged:
+                        dual_logged = True
+                        print(
+                            "\n[Dual-Mouse Auto-Detected] Separating true 1000 Hz Hand Mouse velocity "
+                            "from 3-RRR Stage Mouse (zero servo crosstalk)!",
+                            flush=True,
+                        )
+                    v_hand_est = v_hand_mouse_lp.copy()
                     self._pulse_opp_turn_confirmed = False
                     self._pulse_immunity_active = False
-                    cone_active = (t_now - last_cmd_1k_t) <= 0.145 and cone_budget > 20.0
-                    if stg_spd > 1.0 or cone_active:
-                        u_hat = (v_stg_lp / stg_spd) if (stg_spd >= cone_budget and stg_spd > 1.0) else cone_dir
-                        allow_spd = max(stg_spd, cone_budget if cone_active else 0.0)
-                        proj = float(np.dot(v_usb_lp, u_hat))
-                        stage_attrib = min(max(0.0, proj), 1.30 * allow_spd) * u_hat
-                        v_hand_est = v_usb_lp - stage_attrib
+                else:
+                    # Single-mouse fallback: 98 ms In-Pulse Immunity Window + stage velocity subtraction
+                    p_dir_n = float(math.hypot(pulse_dir[0], pulse_dir[1]))
+                    in_pulse_win = (pulse_t > 0.0) and ((t_now - pulse_t) <= 0.098) and (p_dir_n > 0.5)
+                    if in_pulse_win:
+                        p_hat = pulse_dir / p_dir_n
+                        v_par = float(np.dot(v_usb_lp, p_hat))
+                        if (-v_par) > 380.0:
+                            opp_turn_dur_s += dt
+                        else:
+                            opp_turn_dur_s = 0.0
+                        opp_confirmed = opp_turn_dur_s >= 0.020
+                        self._pulse_opp_turn_confirmed = bool(opp_confirmed)
+                        self._pulse_immunity_active = not opp_confirmed
+                        if v_par >= 0.0 and (usb_spd <= 1e-3 or v_par > (usb_spd * cos75)):
+                            v_hand_est = np.zeros(2, dtype=float)
+                        elif v_par > 0.0:
+                            v_hand_est = v_usb_lp - v_par * p_hat
+                        elif not opp_confirmed:
+                            v_hand_est = np.zeros(2, dtype=float)
+                        else:
+                            v_hand_est = v_usb_lp.copy()
                     else:
-                        v_hand_est = v_usb_lp.copy()
+                        opp_turn_dur_s = 0.0
+                        self._pulse_opp_turn_confirmed = False
+                        self._pulse_immunity_active = False
+                        cone_active = (t_now - last_cmd_1k_t) <= 0.145 and cone_budget > 20.0
+                        if stg_spd > 1.0 or cone_active:
+                            u_hat = (v_stg_lp / stg_spd) if (stg_spd >= cone_budget and stg_spd > 1.0) else cone_dir
+                            allow_spd = max(stg_spd, cone_budget if cone_active else 0.0)
+                            proj = float(np.dot(v_usb_lp, u_hat))
+                            stage_attrib = min(max(0.0, proj), 1.30 * allow_spd) * u_hat
+                            v_hand_est = v_usb_lp - stage_attrib
+                        else:
+                            v_hand_est = v_usb_lp.copy()
+
                 lmb_now = bool(self.keys.is_down(VK_LBUTTON))
                 w_d = bool(self.keys.is_down(VK_W))
                 a_d = bool(self.keys.is_down(VK_A))
@@ -708,7 +754,16 @@ class LiveGameSharedControlRunner:
 
                 rec_key = any(self.keys.is_down(vk) for vk in (VK_R, VK_1, VK_2, VK_3, VK_Q))
                 vh_1k_norm = float(math.hypot(v_hand_est[0], v_hand_est[1]))
-                if self._pulse_immunity_active:
+                if self._dual_mouse_detected:
+                    if vh_1k_norm >= 220.0:
+                        self._last_high_flick_1k_t = t_now
+                        self._hand_settled_1k_since_t = 0.0
+                    elif vh_1k_norm <= 40.0:
+                        if getattr(self, "_hand_settled_1k_since_t", 0.0) <= 0.0:
+                            self._hand_settled_1k_since_t = t_now
+                    elif vh_1k_norm >= 85.0:
+                        self._hand_settled_1k_since_t = 0.0
+                elif self._pulse_immunity_active:
                     if getattr(self, "_hand_settled_1k_since_t", 0.0) <= 0.0:
                         self._hand_settled_1k_since_t = t_now
                 elif vh_1k_norm >= 240.0:
@@ -1844,29 +1899,32 @@ class LiveGameSharedControlRunner:
         p_stage_now: np.ndarray,
         dispatch_fn: Optional[Callable[..., bool]] = None,
         det_age_s: float = 0.0,
+        rec_key_down: bool = False,
     ) -> Tuple[Optional[TargetDetection], float]:
         """
-        Execute one 144 Hz tick of Two-Stage (Fast Ballistic Snap + Smooth Fine Trim)
-        & Zero-Shake Follow-Recoil control:
-          1. Idle Ballistic Snap (`kp_snap=0.85` + `B_CMD` stiction break) locks onto head in <95ms,
-             followed by boost-free Fine Trim (`kp_small_head`) without reversal halving.
-          2. First-shot Tap Guard (`85ms`) + boost-free 25 Hz follow-recoil + smooth exponential
-             LMB-release decay eliminate ViewPunch / B_CMD screen shake during shooting.
-          3. Smith predictor uses strictly dispatched `p_stage_now - p_visible` (never unsent candidates).
+        Execute one 144 Hz tick of Dual-Mouse Freeze-Hold + Terminal PRE Micro-Snap + Inter-Bullet Rescue:
+          1. Freeze-Hold between targets: stage stays 100% rigid inside comfort zone (|x|<=135, |y|<=155)
+             for 0.90s after LMB release so washout NEVER injects phantom drift during fast Aim Botz switches.
+          2. Terminal PRE Micro-Snap: using true 1000 Hz hand-mouse velocity, fires ONE clean micro-step
+             (<=38 cnt) ONLY after hand truly stops (<=35 cnt/s) inside 3.8..22 px off-head.
+          3. Adaptive SHOT1_RESCUE (t=0ms) + AK-47 vertical feedforward (Shots 2-6) + Smith predictor.
         """
         disp = self._dispatch_stage_manifold_open_loop if dispatch_fn is None else dispatch_fn
         limits = np.array([self.live_max_x_cnt, self.live_max_y_cnt], dtype=float)
-        aim_env_lo = np.array([-min(170.0, self.live_max_x_cnt), -120.0], dtype=float)
-        aim_env_hi = np.array([min(170.0, self.live_max_x_cnt), 110.0], dtype=float)
+        aim_env_lo = np.array([-min(190.0, self.live_max_x_cnt), -165.0], dtype=float)
+        aim_env_hi = np.array([min(190.0, self.live_max_x_cnt), 225.0], dtype=float)
         v_hand_norm = float(np.hypot(v_hand_raw[0], v_hand_raw[1]))
         roi_c = 0.5 * float(roi_rgb.shape[0])
         roi_center_arr = np.array([roi_c, roi_c], dtype=float)
 
-        # 98 ms In-Pulse Immunity Window: never blame coupled B_CMD surge + servo tail on user flicks
+        # 98 ms In-Pulse Immunity Window (single-mouse mode only; dual-mouse reads true hand mouse directly)
         last_pulse_t = float(getattr(self, "_last_pulse_cmd_t", 0.0))
         pulse_age_s = t_now - last_pulse_t
-        in_pulse_immunity = (last_pulse_t > 0.0) and (pulse_age_s <= 0.098) and (
-            not getattr(self, "_pulse_opp_turn_confirmed", False)
+        in_pulse_immunity = (
+            (not getattr(self, "_dual_mouse_detected", False))
+            and (last_pulse_t > 0.0)
+            and (pulse_age_s <= 0.098)
+            and (not getattr(self, "_pulse_opp_turn_confirmed", False))
         )
         if in_pulse_immunity and (not getattr(self, "_tracker_running", False)):
             p_dir = getattr(self, "_last_pulse_dir", np.zeros(2, dtype=float))
@@ -1890,17 +1948,24 @@ class LiveGameSharedControlRunner:
             self._lmb_down_since_t = t_now
             self._shot1_rescue_sent = False
             self._need_switch_recenter = False
-            if float(np.hypot(self.p_aim_cnt[0], self.p_aim_cnt[1])) < 5.0:
-                self._aim_cmd_history = [(float(t_now) - 1.0, self.p_aim_cnt.copy())]
+            if (t_now - self._last_aim_cmd_t) >= 0.110:
+                self._aim_cmd_history = deque([(float(t_now) - 1.0, self.p_aim_cnt.copy())], maxlen=64)
+            if (t_now - getattr(self, "_pre_micro_sent_t", 0.0)) > 0.280:
+                self._target_base_stage_cnt = p_stage_now.copy()
         if lmb_released:
             self._last_lmb_release_t = t_now
             self._prev_recoil_off_px = None
             self._mono_tripped = False
             self._spray_anchor_latched = None
             self._live_anchor_mode = "HEAD"
-            p_tot_rel = self.p_aim_cnt + self.p_recoil_cnt
-            if float(np.hypot(p_tot_rel[0], p_tot_rel[1])) >= 2.0:
-                self._need_switch_recenter = True
+            self._pre_micro_done_tid = None
+            self._pre_micro_count = 0
+            # Fold recoil offset into resting p_aim_cnt with ZERO physical stage jump (Freeze-Hold!)
+            p_tot_rel = np.clip(self.p_aim_cnt + self.p_recoil_cnt, -limits, limits)
+            self.p_aim_cnt = np.clip(p_tot_rel, aim_env_lo, aim_env_hi)
+            self.p_recoil_cnt = p_tot_rel - self.p_aim_cnt
+            self._aim_cmd_history = deque([(float(t_now) - 1.0, self.p_aim_cnt.copy())], maxlen=64)
+            self._need_switch_recenter = bool(abs(float(p_tot_rel[0])) > 140.0 or abs(float(p_tot_rel[1])) > 160.0)
 
         # When idle and CS2 recoil has recovered, keep c_eff anchored at screen center
         # so Aim Botz bright green foliage/wall logos cannot bias pre-shot aim.
@@ -1909,25 +1974,25 @@ class LiveGameSharedControlRunner:
             if float(np.hypot(c_px[0] - roi_c, c_px[1] - roi_c)) > 2.5:
                 c_eff_px = roi_center_arr
 
-        # Track true human hand settle & high-flick timestamps (suppressed inside 85 ms pulse immunity)
+        # Track true human hand settle & high-flick timestamps
         if not in_pulse_immunity:
-            if v_hand_norm >= 240.0:
+            if v_hand_norm >= 220.0:
                 self._last_high_flick_t = t_now
-            if v_hand_norm <= 155.0:
+            if v_hand_norm <= 40.0:
                 self._settled_low_vh_ticks = getattr(self, "_settled_low_vh_ticks", 0) + 1
             else:
                 self._settled_low_vh_ticks = 0
         else:
             self._settled_low_vh_ticks = max(getattr(self, "_settled_low_vh_ticks", 0), 2)
 
-        # Active washout ONLY when target is actually swiped off crosshair OR extreme turn (never wipe mid-lock!)
+        # Freeze-Hold during fast switches: clear target lock on fast flicks, but ONLY washout if near rail!
         in_snap_guard = (t_now - self._last_snap_t) <= 0.120
         has_near_tgt = any(
             float(np.hypot(float(d.head_px[0]) - float(c_eff_px[0]), float(d.head_px[1]) - float(c_eff_px[1])))
             <= float(self.max_aim_dist_px)
             for d in dets_px
         )
-        recent_burst_tail = (t_now - self._last_lmb_release_t) <= 0.180
+        recent_burst_tail = (t_now - self._last_lmb_release_t) <= 0.140
         if (not in_pulse_immunity) and (not lmb_down) and (not recent_burst_tail) and v_hand_norm > 520.0:
             self._flick_hi_cnt += 1
         else:
@@ -1939,30 +2004,30 @@ class LiveGameSharedControlRunner:
         if flick_trigger:
             self._lock_target_id = None
             self._snap_done_tid = None
+            self._pre_micro_done_tid = None
+            self._pre_micro_count = 0
             self._lock_dir_sign[:] = 0.0
             self._mono_tripped = False
             self._last_high_flick_t = t_now
             self._settled_low_vh_ticks = 0
-            decay_aim = math.exp(-dt_s / 0.12)
-            self.p_aim_cnt = self.p_aim_cnt * decay_aim
-            if float(np.hypot(self.p_recoil_cnt[0], self.p_recoil_cnt[1])) >= 2.0:
-                self.p_recoil_cnt = self.p_recoil_cnt * math.exp(-dt_s / 0.10)
-            else:
-                self.p_recoil_cnt[:] = 0.0
-            p_wash = self._soft_saturate_stage_cmd(self.p_aim_cnt + self.p_recoil_cnt, limits, soft_cap=260.0)
-            stage_norm = float(np.hypot(p_stage_now[0], p_stage_now[1]))
-            if stage_norm >= 12.0 and (t_now - self._last_aim_cmd_t) >= 0.045:
-                is_zero = float(np.hypot(p_wash[0], p_wash[1])) < 4.0
-                if is_zero:
-                    self.p_aim_cnt[:] = 0.0
-                    self.p_recoil_cnt[:] = 0.0
-                    p_wash = np.zeros(2, dtype=float)
-                if disp(p_wash, is_recenter=is_zero, cooldown_s=0.045, freeze_play_g=False, use_boost=False):
-                    self._last_aim_cmd_t = t_now
-                    self._cmd_history.append((float(t_now), p_wash.copy()))
-                    self._aim_cmd_history.append((float(t_now), self.p_aim_cnt.copy()))
+            near_rail = abs(float(p_stage_now[0])) > 135.0 or abs(float(p_stage_now[1])) > 155.0
+            if near_rail and (not has_near_tgt):
+                decay_aim = math.exp(-dt_s / 0.10)
+                self.p_aim_cnt = self.p_aim_cnt * decay_aim
+                self.p_recoil_cnt = self.p_recoil_cnt * decay_aim
+                p_wash = self._soft_saturate_stage_cmd(self.p_aim_cnt + self.p_recoil_cnt, limits, soft_cap=260.0)
+                if (t_now - self._last_wash_cmd_t) >= 0.045:
+                    is_zero = float(np.hypot(p_wash[0], p_wash[1])) < 4.0
+                    if is_zero:
+                        self.p_aim_cnt[:] = 0.0
+                        self.p_recoil_cnt[:] = 0.0
+                        p_wash = np.zeros(2, dtype=float)
+                    if disp(p_wash, is_recenter=is_zero, cooldown_s=0.045, freeze_play_g=False, use_boost=False):
+                        self._last_wash_cmd_t = t_now
+                        self._cmd_history.append((float(t_now), p_wash.copy()))
+                        self._aim_cmd_history.append((float(t_now), self.p_aim_cnt.copy()))
             if hasattr(self, "eng_logger"):
-                self.eng_logger.record_frame(t_now, None, v_hand_raw, self.p_aim_cnt, self.p_recoil_cnt, "FLICK_WASHOUT")
+                self.eng_logger.record_frame(t_now, None, v_hand_raw, self.p_aim_cnt, self.p_recoil_cnt, "FLICK_HOLD")
             return None, 1e9
 
         locked_det, locked_dist_px = self._select_locked_target(
@@ -2035,38 +2100,33 @@ class LiveGameSharedControlRunner:
                             recoil_due = True
         else:
             self._prev_recoil_off_px = None
-            rec_norm = float(np.hypot(self.p_recoil_cnt[0], self.p_recoil_cnt[1]))
-            is_fast_switch = (v_hand_norm >= 165.0) or bool(getattr(self, "_need_switch_recenter", False))
-            tau_rec = 0.055 if v_hand_norm >= 165.0 else (0.075 if is_fast_switch else 0.13)
-            if rec_norm >= 3.0:
-                p_rec_cand = self.p_recoil_cnt * math.exp(-max(0.002, dt_s) / tau_rec)
-                if float(np.hypot(p_rec_cand[0] - self.p_recoil_cnt[0], p_rec_cand[1] - self.p_recoil_cnt[1])) >= 1.5:
-                    recoil_due = True
-            elif rec_norm >= 0.5:
-                p_rec_cand[:] = 0.0
-                recoil_due = True
 
-        # Full [0, 0] washout during not-lmb_down without stealing LMB cooldown
-        need_sw_reset = bool(getattr(self, "_need_switch_recenter", False))
+        # Freeze-Hold Washout: ZERO stage drift during fast Aim Botz switches (<0.90s inside comfort zone)!
+        # Only wash back to neutral on reload/weapon-switch (R/1/2/3/Q), true idle pause (>=0.90s), or rail overflow.
         p_tot_now = self.p_aim_cnt + p_rec_cand
         p_tot_norm_now = float(np.hypot(p_tot_now[0], p_tot_now[1]))
         p_aim_norm_now = float(np.hypot(self.p_aim_cnt[0], self.p_aim_cnt[1]))
-        if need_sw_reset and p_tot_norm_now < 1.5:
-            need_sw_reset = False
+        in_comfort_zone = (abs(float(p_tot_now[0])) <= 135.0) and (abs(float(p_tot_now[1])) <= 155.0)
+        if p_tot_norm_now < 2.0:
             self._need_switch_recenter = False
-        pan_bleed_active = (not lmb_down) and (p_tot_norm_now >= 1.5) and (
-            (locked_det is None)
-            or (v_hand_norm >= 140.0)
-            or ((t_now - self._last_lmb_release_t) >= 0.050)
+        since_rel_s = t_now - self._last_lmb_release_t
+        since_eng_s = t_now - self._last_engage_t
+        true_idle_pause = (since_rel_s >= 0.90) and (since_eng_s >= 0.85) and (v_hand_norm <= 35.0)
+        rail_bleed_safe = (not in_comfort_zone) and (
+            ((locked_det is None) and (v_hand_norm >= 550.0))
+            or ((since_rel_s >= 0.45) and (v_hand_norm <= 35.0))
+        )
+        pan_bleed_active = (not lmb_down) and (p_tot_norm_now >= 2.0) and (
+            bool(rec_key_down) or true_idle_pause or rail_bleed_safe
         )
         if pan_bleed_active:
             if p_tot_norm_now < 4.0:
                 self.p_aim_cnt[:] = 0.0
                 p_rec_cand[:] = 0.0
-                self._aim_cmd_history = [(float(t_now) - 1.0, np.zeros(2, dtype=float))]
+                self._aim_cmd_history = deque([(float(t_now) - 1.0, np.zeros(2, dtype=float))], maxlen=64)
                 recoil_due = True
             else:
-                tau_bleed = 0.045 if v_hand_norm >= 140.0 else 0.065
+                tau_bleed = 0.065 if (rec_key_down or rail_bleed_safe) else 0.14
                 decay_f = math.exp(-max(0.002, dt_s) / tau_bleed)
                 if p_aim_norm_now >= 0.5:
                     self.p_aim_cnt = self.p_aim_cnt * decay_f
@@ -2127,12 +2187,7 @@ class LiveGameSharedControlRunner:
             # PURE aim Smith predictor: exclude p_rec_goal / p_recoil_cnt so horizontal recoil steps
             # NEVER generate phantom aim errors or horizontal ping-pong oscillation!
             lmb_hold_s_early = max(0.0, t_now - self._lmb_down_since_t) if lmb_down else 0.0
-            if (
-                lmb_down
-                and (not getattr(self, "_shot1_rescue_sent", False))
-                and (lmb_hold_s_early <= 0.025)
-                and float(np.hypot(self.p_aim_cnt[0], self.p_aim_cnt[1])) < 5.0
-            ):
+            if (t_now - self._last_aim_cmd_t) >= 0.110:
                 dp_in_flight = np.zeros(2, dtype=float)
             else:
                 eff_lag_s = self.visual_lag_s + float(np.clip(det_age_s, 0.0, 0.060))
@@ -2150,16 +2205,12 @@ class LiveGameSharedControlRunner:
             if tid_cur != self._lock_target_id:
                 recent_burst = lmb_down or ((t_now - self._last_lmb_release_t) <= 0.200)
                 if recent_burst and self._snap_done_tid is not None:
-                    # Preserve snap completion across transient track ID flicker during bursts
                     self._snap_done_tid = tid_cur
-                elif (not lmb_down) and float(np.hypot(self.p_aim_cnt[0] + p_rec_cand[0], self.p_aim_cnt[1] + p_rec_cand[1])) > 16.0:
-                    # Switching to a new Bot before firing: cut BOTH leftover aim & recoil offsets cleanly toward neutral
-                    self.p_aim_cnt = self.p_aim_cnt * 0.25
-                    p_rec_cand = p_rec_cand * 0.25
-                    self.p_recoil_cnt = p_rec_cand.copy()
-                    recoil_due = True
-                    self._need_switch_recenter = True
-                    pan_bleed_active = True
+                if not lmb_down:
+                    self._pre_micro_done_tid = None
+                    self._pre_micro_count = 0
+                    self._pre_prev_epx = None
+                    self._target_base_stage_cnt = p_stage_now.copy()
                 dp_init = self.calibrator.aim_error_to_stage_delta(float(e_pred_px[0]), float(e_pred_px[1]))
                 self._lock_target_id = tid_cur
                 self._lock_start_t = t_now
@@ -2170,6 +2221,17 @@ class LiveGameSharedControlRunner:
                 self._mono_cmd_t = 0.0
                 self._mono_tripped = False
                 self._mono_trip_t = 0.0
+
+            vis_stable = False
+            if not lmb_down:
+                if (
+                    self._pre_prev_epx is not None
+                    and 0.004 <= (t_now - self._pre_prev_epx_t) <= 0.060
+                    and float(np.hypot(e_raw_px[0] - self._pre_prev_epx[0], e_raw_px[1] - self._pre_prev_epx[1])) <= 2.2
+                ):
+                    vis_stable = True
+                self._pre_prev_epx = e_raw_px.copy()
+                self._pre_prev_epx_t = t_now
 
             if not lmb_down:
                 self._mono_tripped = False
@@ -2197,19 +2259,29 @@ class LiveGameSharedControlRunner:
                 # During spray, allow cooperative manual + stage pull-down up to 680 cnt/s (~170 px/s)
                 hand_settled = v_hand_norm <= 680.0
                 last_flick_t = getattr(self, "_last_high_flick_t", 0.0)
-            elif getattr(self, "_tracker_running", False):
-                # Pre-shot: ultra-conservative Do-No-Harm guard; never fire into human flick deceleration
+            elif getattr(self, "_dual_mouse_detected", False):
+                # Dual-mouse ground truth: true hand stop (<=35 cnt/s for >=25ms, >=45ms after high flick)
                 settled_1k_t = getattr(self, "_hand_settled_1k_since_t", 0.0)
-                hand_settled = (v_hand_norm <= 70.0) and (
-                    (settled_1k_t > 0.0 and (t_now - settled_1k_t) >= 0.040) or v_hand_norm <= 35.0
+                hand_settled = (v_hand_norm <= 35.0) and (
+                    settled_1k_t > 0.0 and (t_now - settled_1k_t) >= 0.025
+                )
+                last_flick_t = max(
+                    getattr(self, "_last_high_flick_t", 0.0),
+                    getattr(self, "_last_high_flick_1k_t", 0.0),
+                )
+            elif getattr(self, "_tracker_running", False):
+                # Single-mouse fallback: strict Do-No-Harm stop confirmation
+                settled_1k_t = getattr(self, "_hand_settled_1k_since_t", 0.0)
+                hand_settled = (v_hand_norm <= 35.0) and (
+                    settled_1k_t > 0.0 and (t_now - settled_1k_t) >= 0.040
                 )
                 last_flick_t = max(
                     getattr(self, "_last_high_flick_t", 0.0),
                     getattr(self, "_last_high_flick_1k_t", 0.0),
                 )
             else:
-                hand_settled = (v_hand_norm <= 70.0) and (
-                    getattr(self, "_settled_low_vh_ticks", 0) >= 4 or v_hand_norm <= 35.0
+                hand_settled = (v_hand_norm <= 35.0) and (
+                    getattr(self, "_settled_low_vh_ticks", 0) >= 3
                 )
                 last_flick_t = getattr(self, "_last_high_flick_t", 0.0)
             since_flick_s = t_now - last_flick_t
@@ -2218,20 +2290,33 @@ class LiveGameSharedControlRunner:
                 lmb_down
                 and (not getattr(self, "_shot1_rescue_sent", False))
                 and (lmb_hold_s_now <= 0.025)
-                and (e_norm > max(r_lock, 4.5))
-                and (e_pred_norm > max(r_lock, 4.5))
+                and (e_norm > max(r_lock, 5.0))
+                and (e_pred_norm > max(r_lock, 5.0))
             )
-            tap_guard_pass = is_shot1_rescue or (not in_tap_guard) or (e_pred_norm > max(r_lock, 4.5))
-            # Respect servo settle while firing Shot-1 rescue at t=0ms so it lands <100ms before Bullet #2
+            pre_deadband_px = max(r_lock, 3.8) if self._pre_micro_count == 0 else max(r_lock, 2.6)
+            is_pre_micro = (
+                (not lmb_down)
+                and ((t_now - self._last_lmb_release_t) >= 0.130)
+                and (since_flick_s >= (0.045 if getattr(self, "_dual_mouse_detected", False) else 0.065))
+                and (vis_stable or (not getattr(self, "_tracker_running", False)))
+                and (locked_det.seen_frames >= 2)
+                and (self._pre_micro_count < 2)
+                and (e_norm <= 18.0)
+                and (e_norm > pre_deadband_px)
+                and (e_pred_norm > pre_deadband_px)
+                and hand_settled
+            )
+            tap_guard_pass = is_shot1_rescue or (not in_tap_guard) or (e_pred_norm > max(r_lock, 5.0))
             in_flight_n = float(np.hypot(dp_in_flight[0], dp_in_flight[1]))
             if is_shot1_rescue:
                 eff_aim_cd = 0.0
+            elif is_pre_micro:
+                eff_aim_cd = 0.0 if self._pre_micro_count == 0 else 0.115
             elif lmb_down:
                 eff_aim_cd = 0.095 if in_flight_n >= 14.0 else max(self.aim_cooldown_s, 0.085)
             else:
                 eff_aim_cd = max(self.aim_cooldown_s, 0.130)
-            # 100% hands-off PRE: zero pre-shot aim moves (recenter washout only); all aim assist runs under LMB
-            pre_range_ok = bool(lmb_down)
+            pre_range_ok = bool(lmb_down) or bool(is_pre_micro)
             aim_due = (
                 (not self._mono_tripped)
                 and pre_range_ok
@@ -2246,44 +2331,63 @@ class LiveGameSharedControlRunner:
                 eta_cp = self.eng_logger.get_effective_coupling(default=0.90, min_samples=3) if hasattr(self, "eng_logger") else 1.0
                 ff_trim = float(np.clip(1.0 / max(0.88, eta_cp), 1.0, 1.10))
                 fine_trim_px = min(float(self.small_error_px), 8.5)
-                is_initial_snap = False
-                if is_shot1_rescue:
-                    gain = min(0.48, max(0.42, 0.45 * ff_trim))
-                    if (not in_pulse_immunity) and v_hand_norm > 160.0:
-                        gain *= 0.75
-                    step_cap = 38.0
+                is_initial_snap = bool(is_pre_micro and self._pre_micro_count == 0)
+                if is_pre_micro:
+                    if self._pre_micro_count == 0:
+                        gain = min(0.78, max(0.68, 0.72 * ff_trim))
+                        step_cap = 45.0
+                        use_boost_aim = True
+                        b_scale_aim = min(self.boost_scale, 1.15)
+                        b_dur_aim = min(self.boost_dur_ms, 25.0)
+                    else:
+                        gain = min(0.56, max(0.46, 0.52 * ff_trim))
+                        step_cap = 18.0
+                        use_boost_aim = False
+                        b_scale_aim = 1.0
+                        b_dur_aim = 20.0
+                elif is_shot1_rescue:
+                    # Adaptive cooperative gain using true 1000 Hz hand velocity!
+                    if (not in_pulse_immunity) and v_hand_norm > 200.0:
+                        gain = min(0.38, max(0.30, 0.34 * ff_trim))
+                        step_cap = 32.0
+                    elif (not in_pulse_immunity) and v_hand_norm > 80.0:
+                        gain = min(0.50, max(0.42, 0.46 * ff_trim))
+                        step_cap = 40.0
+                    else:
+                        gain = min(0.64, max(0.56, 0.60 * ff_trim))
+                        step_cap = 48.0
                     use_boost_aim = True
-                    b_scale_aim = min(self.boost_scale, 1.15)
+                    b_scale_aim = min(self.boost_scale, 1.16)
                     b_dur_aim = self.boost_dur_ms
                 else:
                     is_fine = e_pred_norm <= fine_trim_px
-                    base_gain = min(0.44, max(self.kp_small_head, 0.36)) if is_fine else min(0.56, max(self.kp_large_error, 0.46))
-                    gain = min(0.58, base_gain * ff_trim)
+                    base_gain = min(0.46, max(self.kp_small_head, 0.38)) if is_fine else min(0.58, max(self.kp_large_error, 0.48))
+                    gain = min(0.60, base_gain * ff_trim)
                     if (not in_pulse_immunity) and v_hand_norm > 340.0:
                         gain *= 0.65
-                    step_cap = 52.0
+                    step_cap = 54.0
                     use_boost_aim = True
                     b_scale_aim = min(self.boost_scale, 1.18)
                     b_dur_aim = self.boost_dur_ms
 
                 dp_stage = self.calibrator.aim_error_to_stage_delta(float(e_pred_px[0]), float(e_pred_px[1])) * gain
-                # Early AK-47 vertical feedforward (Bullets 1-4, 30..420ms; skipped during t=0ms is_shot1_rescue)
+                # AK-47 vertical feedforward (Bullets 2-6, 55..550ms; prevents +16px recoil float by Bullet 5)
                 if (
                     lmb_down
-                    and float(e_raw_px[1]) >= -1.0
+                    and float(e_raw_px[1]) >= 1.0
                     and float(e_pred_px[1]) >= 0.0
                     and hasattr(self, "ak_calibrator")
                 ):
                     lmb_hold_s_ff = max(0.0, t_now - self._lmb_down_since_t)
-                    if 0.030 <= lmb_hold_s_ff <= 0.420:
+                    if 0.055 <= lmb_hold_s_ff <= 0.550:
                         shot_f = lmb_hold_s_ff / 0.100
-                        idx_k = int(min(4, max(0, int(shot_f))))
+                        idx_k = int(min(5, max(0, int(shot_f))))
                         pts_ak = getattr(self.ak_calibrator, "pull_waypoints_cnt", None)
                         if pts_ak is not None and len(pts_ak) > idx_k + 1:
                             y_cur = float(pts_ak[idx_k, 1]) if idx_k > 0 else 0.0
                             y_nxt = float(pts_ak[idx_k + 1, 1])
                             dy_bullet = max(0.0, y_nxt - y_cur)
-                            ff_y = float(np.clip(0.38 * dy_bullet * (min(0.055, eff_aim_cd) / 0.100), 0.0, 10.0))
+                            ff_y = float(np.clip(0.62 * dy_bullet * (min(0.085, eff_aim_cd) / 0.100), 0.0, 18.0))
                             dp_stage[1] += ff_y
                 # Spray X-corridor anti-shake: when crosshair X is already inside head/neck width (<=3.0 px),
                 # keep vertical spray pull laser-straight instead of micro-chasing X jitter sideways.
@@ -2317,11 +2421,11 @@ class LiveGameSharedControlRunner:
                     dp_n = float(np.hypot(dp_stage[0], dp_stage[1]))
 
                 rev_cd_ok = (not is_rev_step) or ((t_now - self._last_aim_cmd_t) >= max(self.aim_cooldown_s, 0.120))
-                boost_min_dp = 4.5 if is_shot1_rescue else 6.0
-                bcmd_ok = is_shot1_rescue or ((t_now - getattr(self, "_last_bcmd_t", 0.0)) >= 0.075)
+                boost_min_dp = 4.5 if (is_shot1_rescue or is_initial_snap) else 6.0
+                bcmd_ok = is_shot1_rescue or is_initial_snap or ((t_now - getattr(self, "_last_bcmd_t", 0.0)) >= 0.075)
                 use_boost_final = bool(
                     use_boost_aim
-                    and lmb_down
+                    and (lmb_down or is_initial_snap)
                     and dp_n >= boost_min_dp
                     and (not is_rev_step)
                     and bcmd_ok
@@ -2340,18 +2444,13 @@ class LiveGameSharedControlRunner:
                             p_rec_goal[1] = new_rec_y
                             recoil_due = True
                     p_aim_cand = np.clip(self.p_aim_cnt + dp_stage, aim_env_lo, aim_env_hi)
-                    if not lmb_down:
-                        # Keep pre-shot displacement modest (<= 65 cnt) so PRE never steals LMB spray budget
-                        pre_n = float(np.hypot(p_aim_cand[0], p_aim_cand[1]))
-                        if pre_n > 65.0:
-                            p_aim_cand = p_aim_cand * (65.0 / pre_n)
                     # Gentle per-axis washout bleed only when that axis approaches ceiling
                     for ax, ceil_ax in ((0, 225.0), (1, 255.0)):
                         if abs(float(p_aim_cand[ax] + p_rec_cand[ax])) > ceil_ax:
                             p_aim_cand[ax] *= math.exp(-max(0.002, dt_s) / 0.14)
                     p_cmd_cand = self._soft_saturate_stage_cmd(p_aim_cand + p_rec_cand, limits, soft_cap=(250.0, 285.0))
                     cd_req = self.recoil_cooldown_s if (lmb_down and recoil_due) else self.aim_cooldown_s
-                    hw_cd_req = 0.0 if is_shot1_rescue else min(float(cd_req), 0.018)
+                    hw_cd_req = 0.0 if (is_shot1_rescue or is_initial_snap) else min(float(cd_req), 0.018)
                     sent = disp(
                         p_cmd_cand,
                         is_recenter=False,
@@ -2362,12 +2461,19 @@ class LiveGameSharedControlRunner:
                         boost_dur_ms=b_dur_aim,
                     )
                     if sent:
+                        if is_pre_micro and self._pre_micro_count == 0 and (t_now - self._last_aim_cmd_t) >= 0.110:
+                            self._aim_cmd_history = deque([(float(t_now) - 1.0, self.p_aim_cnt.copy())], maxlen=64)
+                            self._target_base_stage_cnt = p_stage_now.copy()
                         self.p_aim_cnt = p_aim_cand
                         self._last_aim_cmd_t = t_now
                         self._last_engage_t = t_now
                         self._need_switch_recenter = False
                         if is_shot1_rescue:
                             self._shot1_rescue_sent = True
+                        if is_pre_micro:
+                            self._pre_micro_count += 1
+                            self._pre_micro_done_tid = tid_cur
+                            self._pre_micro_sent_t = t_now
                         self._prev_trim_dp = dp_stage.copy()
                         self._prev_trim_t = t_now
                         if use_boost_final:
@@ -2386,14 +2492,27 @@ class LiveGameSharedControlRunner:
                             self._mono_e0_x = abs(float(e_raw_px[0]))
                             self._mono_cmd_t = t_now
                         if hasattr(self, "eng_logger"):
+                            if is_shot1_rescue:
+                                g_tag = "SHOT1_RESCUE"
+                            elif is_pre_micro:
+                                g_tag = "PRE_MICRO_SNAP" if self._pre_micro_count == 1 else "PRE_MICRO_TRIM"
+                            else:
+                                g_tag = "LOCK_TRIM"
                             self.eng_logger.record_frame(
                                 t_now, e_raw_px, v_hand_raw, self.p_aim_cnt, self.p_recoil_cnt,
-                                "SHOT1_RESCUE" if is_shot1_rescue else ("LOCK_SNAP" if is_initial_snap else "LOCK_TRIM"),
+                                g_tag,
                                 dp_stage,
                             )
             elif hasattr(self, "eng_logger"):
                 if not lmb_down:
-                    g_reason = "PRE_HANDS_OFF"
+                    if not hand_settled:
+                        g_reason = "PRE_MOVING"
+                    elif e_norm <= pre_deadband_px:
+                        g_reason = "PRE_ON_HEAD"
+                    elif self._pre_micro_count >= 2:
+                        g_reason = "PRE_DONE"
+                    else:
+                        g_reason = "PRE_WAIT"
                 elif self._mono_tripped:
                     g_reason = "MONO_TRIP"
                 elif not tap_guard_pass:
@@ -2457,34 +2576,44 @@ class LiveGameSharedControlRunner:
             self._yolo_miss_since_t = None
             self._lock_target_id = None
             self._snap_done_tid = None
+            self._pre_micro_done_tid = None
+            self._pre_micro_count = 0
+            self._pre_prev_epx = None
             self._lock_dir_sign[:] = 0.0
             self._mono_tripped = False
             idle_s = t_now - self._last_engage_t
             stage_norm = float(np.hypot(p_stage_now[0], p_stage_now[1]))
-            if recoil_due:
+            safe_to_recenter = bool(rec_key_down) or (
+                (idle_s >= 0.90) and ((t_now - self._last_lmb_release_t) >= 0.90) and (v_hand_norm <= 35.0)
+            ) or (
+                (not in_comfort_zone) and (v_hand_norm >= 550.0 or (idle_s >= 0.45 and v_hand_norm <= 35.0))
+            )
+            if safe_to_recenter and recoil_due:
                 _dispatch_recoil_only(0.035)
-            elif stage_norm >= 18.0 and idle_s >= self.recenter_idle_s:
-                p_step = self.p_aim_cnt * 0.45
+            elif safe_to_recenter and stage_norm >= 18.0 and (t_now - self._last_wash_cmd_t) >= 0.055:
+                p_step = self.p_aim_cnt * 0.55
                 sent = disp(
                     p_step,
                     is_recenter=False,
-                    cooldown_s=0.045,
+                    cooldown_s=0.055,
                     freeze_play_g=False,
                     use_boost=False,
                 )
                 if sent:
+                    self._last_wash_cmd_t = t_now
                     self.p_aim_cnt = p_step
                     self._cmd_history.append((float(t_now), p_step.copy()))
                     self._aim_cmd_history.append((float(t_now), self.p_aim_cnt.copy()))
-            elif stage_norm >= 2.0 and idle_s >= self.recenter_idle_s:
+            elif safe_to_recenter and stage_norm >= 2.0 and (t_now - self._last_wash_cmd_t) >= 0.055:
                 sent = disp(
                     np.zeros(2, dtype=float),
                     is_recenter=True,
-                    cooldown_s=0.045,
+                    cooldown_s=0.055,
                     freeze_play_g=False,
                     use_boost=False,
                 )
                 if sent:
+                    self._last_wash_cmd_t = t_now
                     self.p_aim_cnt[:] = 0.0
                     self.p_recoil_cnt[:] = 0.0
                     self._cmd_history.append((float(t_now), np.zeros(2, dtype=float)))
@@ -2666,10 +2795,15 @@ class LiveGameSharedControlRunner:
                     p_stage_now = self.p_stage_est.copy()
 
                 t_step = time.perf_counter()
+                p_stage_rel_open = (
+                    (p_stage_now - self._target_base_stage_cnt)
+                    if (self.mode == MODE_ASSIST_ON and (t_step - getattr(self, "_pre_micro_sent_t", 0.0)) <= 0.280)
+                    else np.zeros(2, dtype=float)
+                )
                 if hasattr(self, "eng_logger") and lmb_down and self.eng_logger._active is None:
                     self.eng_logger._open_engagement(
                         t_s=t_now - session_t0,
-                        p_stage_now=p_stage_now if self.mode == MODE_ASSIST_ON else np.zeros(2, dtype=float),
+                        p_stage_now=p_stage_rel_open,
                         weapon=self.gsi.active_weapon if self._gsi_started else "",
                     )
                 if self.mode == MODE_ASSIST_ON:
@@ -2683,6 +2817,7 @@ class LiveGameSharedControlRunner:
                         v_hand_raw=v_hand_raw,
                         p_stage_now=p_stage_now,
                         det_age_s=(max(0.0, t_step - last_det_t) if det_gen > 0 else 0.0),
+                        rec_key_down=rec_key,
                     )
                 else:
                     locked_det, _ = self._select_locked_target(dets_px, c_px)
@@ -2725,11 +2860,12 @@ class LiveGameSharedControlRunner:
                     if tgt_px is not None:
                         with self._hw_lock:
                             if self.mode == MODE_ASSIST_ON:
-                                p_shot = (
+                                p_abs = (
                                     p_stage_now.copy()
                                     if self._burst_shot_idx == 1
                                     else self.p_stage_est.copy()
                                 )
+                                p_shot = p_abs - self._target_base_stage_cnt
                             else:
                                 p_shot = np.zeros(2, dtype=float)
                         shot_anchor_mode = (

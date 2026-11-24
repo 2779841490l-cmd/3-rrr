@@ -180,6 +180,12 @@ class HighPrecisionMouseSensor:
         self._event_count = 0
         self._last_motion_t = time.perf_counter()
 
+        # Dual-mouse support: independently track the user's hand mouse (rejected by stage filter)
+        self._hand_total_x = 0
+        self._hand_total_y = 0
+        self._hand_event_count = 0
+        self._hand_last_motion_t = 0.0
+
         self._running = False
         self._thread = None
         self._ready_evt = threading.Event()
@@ -259,6 +265,21 @@ class HighPrecisionMouseSensor:
         with self._lock:
             return float(self._last_motion_t)
 
+    def get_hand_position(self) -> Tuple[int, int]:
+        """Return cumulative raw counts from non-stage physical hand mouse(s) in dual-mouse setups."""
+        with self._lock:
+            return self._hand_total_x, self._hand_total_y
+
+    def get_hand_event_count(self) -> int:
+        """Return number of raw motion packets received from non-stage physical hand mouse(s)."""
+        with self._lock:
+            return int(self._hand_event_count)
+
+    def get_hand_last_motion_time(self) -> float:
+        """Return perf_counter timestamp of the most recent hand-mouse motion packet."""
+        with self._lock:
+            return float(self._hand_last_motion_t)
+
     def _raw_input_loop(self):
         attach_interactive_desktop()
         hinst = kernel32.GetModuleHandleW(None)
@@ -291,7 +312,16 @@ class HighPrecisionMouseSensor:
                             nm = self._dev_name[key]
                             self.per_device[nm] = self.per_device.get(nm, 0) + abs(dx) + abs(dy)
                         if not self._dev_ok[key]:
-                            self.rejected_counts += abs(dx) + abs(dy)
+                            if dx != 0 or dy != 0:
+                                nm = self._dev_name[key]
+                                self.rejected_counts += abs(dx) + abs(dy)
+                                if "TENCENT" not in nm:
+                                    t_h = time.perf_counter()
+                                    with self._lock:
+                                        self._hand_total_x += dx
+                                        self._hand_total_y += dy
+                                        self._hand_event_count += 1
+                                        self._hand_last_motion_t = t_h
                             dx = dy = 0
                         if dx != 0 or dy != 0:
                             t_evt = time.perf_counter()
