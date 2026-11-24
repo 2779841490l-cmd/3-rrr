@@ -244,6 +244,322 @@ def _stratify_by_shot1_ea(engs: List[Dict[str, Any]]) -> Dict[str, Dict[str, Dic
     return _stratify_by_field(engs, "shot1_ea_cnt", tiers)
 
 
+def _paired_inference(diffs: List[float], higher_is_better: bool = True) -> Dict[str, Any]:
+    """Compute paired mean/median, 95% bootstrap CI, exact/MC two-sided sign-flip permutation p-value, and win counts."""
+    m = len(diffs)
+    if m == 0:
+        return {"n_pairs": 0}
+    arr = np.asarray(diffs, dtype=float)
+    mean_diff = float(np.mean(arr))
+    med_diff = float(np.median(arr))
+    if higher_is_better:
+        wins_on = int(np.sum(arr > 1e-9))
+        wins_off = int(np.sum(arr < -1e-9))
+    else:
+        wins_on = int(np.sum(arr < -1e-9))
+        wins_off = int(np.sum(arr > 1e-9))
+    ties = m - wins_on - wins_off
+
+    ci95_low: Optional[float] = None
+    ci95_high: Optional[float] = None
+    p_two_sided: Optional[float] = None
+    prob_assist_better: Optional[float] = None
+
+    if m >= 2:
+        rng = np.random.default_rng(42)
+        idx = rng.integers(0, m, size=(10000, m))
+        boot_means = arr[idx].mean(axis=1)
+        ci95_low = round(float(np.percentile(boot_means, 2.5)), 4)
+        ci95_high = round(float(np.percentile(boot_means, 97.5)), 4)
+        if higher_is_better:
+            prob_assist_better = round(float(np.mean(boot_means > 0.0)), 4)
+        else:
+            prob_assist_better = round(float(np.mean(boot_means < 0.0)), 4)
+
+        obs_abs = abs(mean_diff)
+        if m <= 15:
+            # Exact sign-flip enumeration over all 2^m assignments
+            n_perms = 1 << m
+            n_ge = 0
+            chunk = 4096
+            for start in range(0, n_perms, chunk):
+                end = min(n_perms, start + chunk)
+                ints = np.arange(start, end, dtype=np.uint32)[:, None]
+                bits = ((ints >> np.arange(m, dtype=np.uint32)) & 1).astype(float)
+                signs = 2.0 * bits - 1.0
+                p_means = (signs @ arr) / float(m)
+                n_ge += int(np.sum(np.abs(p_means) >= (obs_abs - 1e-12)))
+            p_two_sided = round(float(n_ge / float(n_perms)), 5)
+        else:
+            n_mc = 20000
+            signs = rng.choice([-1.0, 1.0], size=(n_mc, m))
+            p_means = (signs @ arr) / float(m)
+            n_ge = int(np.sum(np.abs(p_means) >= (obs_abs - 1e-12)))
+            p_two_sided = round(float((n_ge + 1) / float(n_mc + 1)), 5)
+
+    return {
+        "n_pairs": m,
+        "mean_diff": round(mean_diff, 4),
+        "med_diff": round(med_diff, 4),
+        "ci95": [ci95_low, ci95_high] if ci95_low is not None else None,
+        "p_two_sided": p_two_sided,
+        "prob_assist_better": prob_assist_better,
+        "wins_on": wins_on,
+        "wins_off": wins_off,
+        "ties": ties,
+    }
+
+
+def _window_metrics(sub: List[Dict[str, Any]], has_gsi: bool) -> Dict[str, Any]:
+    """Compute per-micro-window performance and covariate balance metrics."""
+    n = len(sub)
+    cycle_dur_s = max(0.0, float(sub[-1]["t_end_s"]) - float(sub[0]["t_end_s"])) if n >= 2 else 0.0
+    cycle_kills = sum(int(e.get("gsi_kills", 0)) for e in sub[1:]) if n >= 2 else 0
+    kpm = (60.0 * cycle_kills / cycle_dur_s) if (has_gsi and cycle_dur_s >= 0.6) else None
+    tot_kills = sum(int(e.get("gsi_kills", 0)) for e in sub)
+    mean_shots = float(np.mean([int(e["n_shots"]) for e in sub]))
+    if has_gsi:
+        fast_cnt = sum(
+            1 for e in sub
+            if int(e.get("gsi_kills", 0)) >= 1
+            and int(e["shots_to_first_kill"] if e.get("shots_to_first_kill") is not None else e["n_shots"]) <= 2
+        )
+        zero_k_pct = 100.0 * sum(1 for e in sub if int(e.get("gsi_kills", 0)) == 0) / float(n)
+    else:
+        fast_cnt = sum(1 for e in sub if e.get("best_hitbox") == "HEAD_HIT")
+        zero_k_pct = 100.0 * sum(1 for e in sub if e.get("best_hitbox") == "WHIFF") / float(n)
+    fast_kill_pct = 100.0 * fast_cnt / float(n)
+    s1_eh = [float(e["shot1_eh_cnt"]) for e in sub if e.get("shot1_eh_cnt") is not None]
+    s1_ea = [float(e["shot1_ea_cnt"]) for e in sub if e.get("shot1_ea_cnt") is not None]
+    moving_frac = sum(1 for e in sub if bool(e.get("moving_target"))) / float(n)
+    return {
+        "n": n,
+        "cycle_dur_s": round(cycle_dur_s, 3),
+        "cycle_kills": int(cycle_kills),
+        "tot_kills": int(tot_kills),
+        "kpm": kpm,
+        "mean_shots": mean_shots,
+        "fast_kill_pct": fast_kill_pct,
+        "zero_kill_pct": zero_k_pct,
+        "shot1_eh_med": float(np.median(s1_eh)) if s1_eh else None,
+        "shot1_ea_med": float(np.median(s1_ea)) if s1_ea else None,
+        "moving_frac": moving_frac,
+    }
+
+
+def _summarize_paired_list(
+    pairs: List[Tuple[int, Dict[str, Any], Dict[str, Any]]],
+    has_gsi: bool,
+) -> Dict[str, Any]:
+    """Run paired inference across a list of (pair_id, on_metrics, off_metrics) entries."""
+    if not pairs:
+        return {"n_pairs": 0}
+    kpm_diffs = [
+        float(on_m["kpm"]) - float(off_m["kpm"])
+        for _, on_m, off_m in pairs
+        if on_m.get("kpm") is not None and off_m.get("kpm") is not None
+    ]
+    fast_diffs = [float(on_m["fast_kill_pct"]) - float(off_m["fast_kill_pct"]) for _, on_m, off_m in pairs]
+    zero_diffs = [float(on_m["zero_kill_pct"]) - float(off_m["zero_kill_pct"]) for _, on_m, off_m in pairs]
+    shots_diffs = [float(on_m["mean_shots"]) - float(off_m["mean_shots"]) for _, on_m, off_m in pairs]
+    ea_diffs = [
+        float(on_m["shot1_ea_med"]) - float(off_m["shot1_ea_med"])
+        for _, on_m, off_m in pairs
+        if on_m.get("shot1_ea_med") is not None and off_m.get("shot1_ea_med") is not None
+    ]
+    eh_diffs = [
+        float(on_m["shot1_eh_med"]) - float(off_m["shot1_eh_med"])
+        for _, on_m, off_m in pairs
+        if on_m.get("shot1_eh_med") is not None and off_m.get("shot1_eh_med") is not None
+    ]
+    on_kpm = [float(on_m["kpm"]) for _, on_m, off_m in pairs if on_m.get("kpm") is not None and off_m.get("kpm") is not None]
+    off_kpm = [float(off_m["kpm"]) for _, on_m, off_m in pairs if on_m.get("kpm") is not None and off_m.get("kpm") is not None]
+    return {
+        "n_pairs": len(pairs),
+        "n_eng_on": sum(int(on_m["n"]) for _, on_m, _ in pairs),
+        "n_eng_off": sum(int(off_m["n"]) for _, _, off_m in pairs),
+        "mean_kpm_on": round(float(np.mean(on_kpm)), 2) if on_kpm else None,
+        "mean_kpm_off": round(float(np.mean(off_kpm)), 2) if off_kpm else None,
+        "kpm": _paired_inference(kpm_diffs, higher_is_better=True) if has_gsi else {"n_pairs": 0},
+        "fast_kill_pct": _paired_inference(fast_diffs, higher_is_better=True),
+        "zero_kill_pct": _paired_inference(zero_diffs, higher_is_better=False),
+        "mean_shots": _paired_inference(shots_diffs, higher_is_better=False),
+        "shot1_ea_med": _paired_inference(ea_diffs, higher_is_better=False),
+        "shot1_eh_balance": _paired_inference(eh_diffs, higher_is_better=False),
+    }
+
+
+def _analyze_blind_paired_crossover(engs: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Paired sign-flip permutation and bootstrap CI over BLIND_AB matched pairs (or adjacent blocks fallback)."""
+    has_gsi = any(int(e.get("gsi_kills", 0)) > 0 for e in engs)
+    by_pair: Dict[int, Dict[str, List[Dict[str, Any]]]] = {}
+    for e in engs:
+        if not bool(e.get("blind_ab")):
+            continue
+        pid = e.get("blind_pair_id")
+        m = _eng_mode(e)
+        if pid is None or m not in ("ASSIST_ON", "SHADOW_REFEREE_ONLY"):
+            continue
+        by_pair.setdefault(int(pid), {"ASSIST_ON": [], "SHADOW_REFEREE_ONLY": []})[m].append(e)
+
+    matched_pairs: List[Tuple[int, Dict[str, Any], Dict[str, Any]]] = []
+    for pid in sorted(by_pair.keys()):
+        on_sub = by_pair[pid]["ASSIST_ON"]
+        off_sub = by_pair[pid]["SHADOW_REFEREE_ONLY"]
+        if len(on_sub) >= 2 and len(off_sub) >= 2:
+            matched_pairs.append((pid, _window_metrics(on_sub, has_gsi), _window_metrics(off_sub, has_gsi)))
+
+    source = "blind_ab_pairs"
+    if not matched_pairs:
+        source = "adjacent_blocks"
+        runs: List[Tuple[str, List[Dict[str, Any]]]] = []
+        cur: List[Dict[str, Any]] = []
+        for e in engs:
+            m = _eng_mode(e)
+            if m not in ("ASSIST_ON", "SHADOW_REFEREE_ONLY"):
+                continue
+            if cur and _eng_mode(cur[-1]) != m:
+                runs.append((_eng_mode(cur[0]), cur))
+                cur = [e]
+            else:
+                cur.append(e)
+        if cur:
+            runs.append((_eng_mode(cur[0]), cur))
+        significant_runs = [(m, sub) for m, sub in runs if len(sub) >= 4]
+        pid_idx = 0
+        i = 0
+        while i + 1 < len(significant_runs):
+            m0, s0 = significant_runs[i]
+            m1, s1 = significant_runs[i + 1]
+            if m0 != m1:
+                pid_idx += 1
+                on_sub, off_sub = (s0, s1) if m0 == "ASSIST_ON" else (s1, s0)
+                matched_pairs.append((pid_idx, _window_metrics(on_sub, has_gsi), _window_metrics(off_sub, has_gsi)))
+                i += 2
+            else:
+                i += 1
+
+    stat_pairs = [
+        p for p in matched_pairs
+        if (0.5 * (float(p[1]["moving_frac"]) + float(p[2]["moving_frac"]))) < 0.4
+    ]
+    mov_pairs = [
+        p for p in matched_pairs
+        if (0.5 * (float(p[1]["moving_frac"]) + float(p[2]["moving_frac"]))) >= 0.4
+    ]
+    return {
+        "source": source,
+        "has_gsi": has_gsi,
+        "overall": _summarize_paired_list(matched_pairs, has_gsi=has_gsi),
+        "stationary": _summarize_paired_list(stat_pairs, has_gsi=has_gsi),
+        "moving": _summarize_paired_list(mov_pairs, has_gsi=has_gsi),
+    }
+
+
+def _analyze_conditional_kill_conversion(engs: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Human-state-invariant evaluation: bin engagements by pure pre-assist human Shot-1 error
+    (`shot1_eh_cnt`) across stationary vs moving targets, plus covariate-adjusted summary.
+    """
+    has_gsi = any(int(e.get("gsi_kills", 0)) > 0 for e in engs)
+    bins = [
+        ("eh_0_18cnt", 0.0, 18.0),
+        ("eh_18_32cnt", 18.0, 32.0),
+        ("eh_32_50cnt", 32.0, 50.0),
+        ("eh_50_80cnt", 50.0, 80.0),
+        ("eh_80plus_cnt", 80.0, float("inf")),
+    ]
+
+    def _subset_eval(pool: List[Dict[str, Any]]) -> Dict[str, Any]:
+        table: Dict[str, Dict[str, Any]] = {}
+        pooled_weights: List[Tuple[float, Dict[str, Any], Dict[str, Any]]] = []
+        for b_name, lo, hi in bins:
+            row: Dict[str, Any] = {}
+            for m_name in ("ASSIST_ON", "SHADOW_REFEREE_ONLY"):
+                sub = [
+                    e for e in pool
+                    if _eng_mode(e) == m_name
+                    and e.get("shot1_eh_cnt") is not None
+                    and lo <= float(e["shot1_eh_cnt"]) < hi
+                ]
+                if not sub:
+                    row[m_name] = {"n": 0}
+                    continue
+                n = len(sub)
+                tot_shots = sum(int(e["n_shots"]) for e in sub)
+                tot_k = sum(int(e.get("gsi_kills", 0)) for e in sub)
+                if has_gsi:
+                    one_taps = sum(
+                        1 for e in sub
+                        if int(e.get("gsi_kills", 0)) >= 1
+                        and int(e["shots_to_first_kill"] if e.get("shots_to_first_kill") is not None else e["n_shots"]) == 1
+                    )
+                    le2 = sum(
+                        1 for e in sub
+                        if int(e.get("gsi_kills", 0)) >= 1
+                        and int(e["shots_to_first_kill"] if e.get("shots_to_first_kill") is not None else e["n_shots"]) <= 2
+                    )
+                    zero_k = sum(1 for e in sub if int(e.get("gsi_kills", 0)) == 0)
+                else:
+                    one_taps = sum(1 for e in sub if e.get("shots") and e["shots"][0].get("hitbox") == "HEAD_HIT")
+                    le2 = sum(
+                        1 for e in sub
+                        if any(s.get("hitbox") == "HEAD_HIT" for s in e.get("shots", [])[:2])
+                    )
+                    zero_k = sum(1 for e in sub if e.get("best_hitbox") == "WHIFF")
+                s1_ea = [float(e["shot1_ea_cnt"]) for e in sub if e.get("shot1_ea_cnt") is not None]
+                row[m_name] = {
+                    "n": n,
+                    "one_tap_pct": round(100.0 * one_taps / float(n), 1),
+                    "le2_kill_pct": round(100.0 * le2 / float(n), 1),
+                    "zero_kill_pct": round(100.0 * zero_k / float(n), 1),
+                    "mean_shots": round(tot_shots / float(n), 2),
+                    "shots_per_kill": round(tot_shots / float(tot_k), 2) if (has_gsi and tot_k > 0) else None,
+                    "s1_ea_med": round(float(np.median(s1_ea)), 1) if s1_ea else None,
+                }
+            table[b_name] = row
+            a_r = row.get("ASSIST_ON", {})
+            s_r = row.get("SHADOW_REFEREE_ONLY", {})
+            if int(a_r.get("n", 0)) >= 3 and int(s_r.get("n", 0)) >= 3:
+                pooled_weights.append((float(a_r["n"] + s_r["n"]), a_r, s_r))
+
+        adjusted: Optional[Dict[str, Any]] = None
+        if pooled_weights:
+            w_tot = sum(w for w, _, _ in pooled_weights)
+            on_le2 = sum(w * float(a["le2_kill_pct"]) for w, a, _ in pooled_weights) / w_tot
+            off_le2 = sum(w * float(s["le2_kill_pct"]) for w, _, s in pooled_weights) / w_tot
+            on_zk = sum(w * float(a["zero_kill_pct"]) for w, a, _ in pooled_weights) / w_tot
+            off_zk = sum(w * float(s["zero_kill_pct"]) for w, _, s in pooled_weights) / w_tot
+            on_ms = sum(w * float(a["mean_shots"]) for w, a, _ in pooled_weights) / w_tot
+            off_ms = sum(w * float(s["mean_shots"]) for w, _, s in pooled_weights) / w_tot
+            adjusted = {
+                "matched_engagements": int(w_tot),
+                "bins_used": len(pooled_weights),
+                "on_le2_kill_pct": round(on_le2, 1),
+                "off_le2_kill_pct": round(off_le2, 1),
+                "delta_le2_kill_pct": round(on_le2 - off_le2, 1),
+                "on_zero_kill_pct": round(on_zk, 1),
+                "off_zero_kill_pct": round(off_zk, 1),
+                "delta_zero_kill_pct": round(on_zk - off_zk, 1),
+                "on_mean_shots": round(on_ms, 2),
+                "off_mean_shots": round(off_ms, 2),
+                "delta_mean_shots": round(on_ms - off_ms, 2),
+            }
+        return {"bins": table, "covariate_adjusted": adjusted}
+
+    mov_pool = [e for e in engs if bool(e.get("moving_target"))]
+    stat_pool = [e for e in engs if not bool(e.get("moving_target"))]
+    out: Dict[str, Any] = {
+        "has_gsi": has_gsi,
+        "all": _subset_eval(engs),
+    }
+    if any(_eng_mode(e) == "ASSIST_ON" for e in stat_pool) or any(_eng_mode(e) == "SHADOW_REFEREE_ONLY" for e in stat_pool):
+        out["stationary"] = _subset_eval(stat_pool)
+    if mov_pool:
+        out["moving"] = _subset_eval(mov_pool)
+    return out
+
+
 def _summarize_mode_split(
     engs: List[Dict[str, Any]],
     matched_stats: Optional[Dict[str, Dict[str, float]]] = None,
@@ -381,6 +697,8 @@ def analyze_blackbox(jsonl_path: str = DEFAULT_JSONL_PATH, config_path: str = DE
     mode_split = _summarize_mode_split(engs, matched_stats=matched_stats)
     stratified_eh = _stratify_by_shot1_eh(engs)
     stratified_ea = _stratify_by_shot1_ea(engs)
+    blind_crossover = _analyze_blind_paired_crossover(engs)
+    conditional_conv = _analyze_conditional_kill_conversion(engs)
     cps = [float(e["coupling_ratio"]) for e in engs if e.get("coupling_ratio") is not None]
     pre_g: Counter = Counter()
     lmb_g: Counter = Counter()
@@ -395,6 +713,8 @@ def analyze_blackbox(jsonl_path: str = DEFAULT_JSONL_PATH, config_path: str = DE
         "n_engagements": len(engs),
         "mode_split": mode_split,
         "alternating_blocks": alt_blocks,
+        "blind_paired_crossover": blind_crossover,
+        "conditional_conversion": conditional_conv,
         "stratified_by_shot1_eh": stratified_eh,
         "stratified_by_shot1_ea": stratified_ea,
         "coupling_summary": {
@@ -576,6 +896,80 @@ def print_kill_efficiency_summary(rep: Dict[str, Any]) -> None:
         f"\n[4. 硬件健康度] 耦合率 median={cp.get('median')} (p10={cp.get('p10')}, p90={cp.get('p90')}) | "
         f"冲突率={a_ms.get('conflict_pct')}% | PRE_SAT={a_ms.get('pre_sat_pct')}% | 推荐 visual_lag_ms={rep.get('recommended_live_control', {}).get('visual_lag_ms')}"
     )
+
+    bc = rep.get("blind_paired_crossover", {})
+    if bc and bc.get("overall", {}).get("n_pairs", 0) >= 1:
+        src_cn = "F4 双盲微窗配对 (消除手感起伏与心理预期)" if bc.get("source") == "blind_ab_pairs" else "相邻波次配对 (非双盲参考)"
+        print(f"\n================ 5. 配对交叉统计检验 ({src_cn}) ================")
+        for scope_key, scope_title in (("overall", "全部配对"), ("stationary", "静止靶配对"), ("moving", "移动靶配对")):
+            sc = bc.get(scope_key, {})
+            if sc.get("n_pairs", 0) < 1:
+                continue
+            print(f"  [{scope_title}: {sc['n_pairs']}对 | ON={sc.get('n_eng_on',0)}轮 vs OFF={sc.get('n_eng_off',0)}轮]")
+            if sc.get("mean_kpm_on") is not None and sc.get("kpm", {}).get("n_pairs", 0) >= 1:
+                kd = sc["kpm"]
+                print(
+                    f"    配对 KPM    : ON={sc['mean_kpm_on']} vs OFF={sc['mean_kpm_off']} | "
+                    f"差值={kd['mean_diff']:+.2f} | 95%CI={kd.get('ci95')} | p={kd.get('p_two_sided')} | "
+                    f"P(助>手)={kd.get('prob_assist_better')} | 胜负={kd['wins_on']}:{kd['wins_off']}"
+                )
+            for m_key, m_lbl, unit in (
+                ("fast_kill_pct", "<=2发击杀率", "%"),
+                ("zero_kill_pct", "0杀空枪率  ", "%"),
+                ("mean_shots", "每轮发数   ", "发"),
+                ("shot1_ea_med", "首枪误差ea ", "cnt"),
+                ("shot1_eh_balance", "手感均衡eh ", "cnt"),
+            ):
+                md = sc.get(m_key, {})
+                if md.get("n_pairs", 0) >= 1:
+                    print(
+                        f"    {m_lbl}: ON-OFF={md['mean_diff']:+.2f}{unit} (中位={md['med_diff']:+.2f}) | "
+                        f"95%CI={md.get('ci95')} | p={md.get('p_two_sided')} | 胜负={md['wins_on']}:{md['wins_off']}"
+                    )
+
+    cc = rep.get("conditional_conversion", {})
+    if cc and cc.get("all"):
+        print("\n================ 6. 同等人类起手误差条件转化率 (彻底剥离人手状态波动) ================")
+        bin_titles = (
+            ("eh_0_18cnt", "0~18 cnt  (正中)"),
+            ("eh_18_32cnt", "18~32 cnt (头边)"),
+            ("eh_32_50cnt", "32~50 cnt (救场)"),
+            ("eh_50_80cnt", "50~80 cnt (中偏)"),
+            ("eh_80plus_cnt", ">=80 cnt  (大偏)"),
+        )
+        for scope_key, scope_title in (("all", "全部交火"), ("stationary", "静止目标"), ("moving", "移动目标")):
+            sc = cc.get(scope_key)
+            if not sc:
+                continue
+            adj = sc.get("covariate_adjusted")
+            bins_d = sc.get("bins", {})
+            any_rows = any(bins_d.get(k, {}).get("ASSIST_ON", {}).get("n", 0) or bins_d.get(k, {}).get("SHADOW_REFEREE_ONLY", {}).get("n", 0) for k, _ in bin_titles)
+            if not any_rows:
+                continue
+            print(f"  [{scope_title}]")
+            if adj is not None:
+                print(
+                    f"    * 同等手感标化总评 (matched n={adj['matched_engagements']}, {adj['bins_used']}档): "
+                    f"<=2发击杀 {adj['on_le2_kill_pct']}% vs {adj['off_le2_kill_pct']}% ({adj['delta_le2_kill_pct']:+.1f}%) | "
+                    f"0杀空枪 {adj['on_zero_kill_pct']}% vs {adj['off_zero_kill_pct']}% ({adj['delta_zero_kill_pct']:+.1f}%) | "
+                    f"均发 {adj['on_mean_shots']} vs {adj['off_mean_shots']} ({adj['delta_mean_shots']:+.2f})"
+                )
+            for b_key, b_lbl in bin_titles:
+                bd = bins_d.get(b_key, {})
+                a_r = bd.get("ASSIST_ON", {})
+                s_r = bd.get("SHADOW_REFEREE_ONLY", {})
+                if not (a_r.get("n") or s_r.get("n")):
+                    continue
+                parts = []
+                if a_r.get("n"):
+                    parts.append(
+                        f"ON(n={a_r['n']:3d}): <=2发={a_r['le2_kill_pct']}% 1发={a_r['one_tap_pct']}% 空={a_r['zero_kill_pct']}% 均发={a_r['mean_shots']} S1={a_r['s1_ea_med']}"
+                    )
+                if s_r.get("n"):
+                    parts.append(
+                        f"OFF(n={s_r['n']:3d}): <=2发={s_r['le2_kill_pct']}% 1发={s_r['one_tap_pct']}% 空={s_r['zero_kill_pct']}% 均发={s_r['mean_shots']} S1={s_r['s1_ea_med']}"
+                    )
+                print(f"    {b_lbl} | " + " || ".join(parts))
 
 
 def main() -> int:

@@ -81,6 +81,7 @@ VK_Q = 0x51
 VK_R = 0x52
 VK_S = 0x53
 VK_W = 0x57
+VK_F4 = 0x73
 VK_F5 = 0x74
 VK_F6 = 0x75
 VK_F7 = 0x76
@@ -92,6 +93,7 @@ MODE_PAUSED = "PAUSED"
 MODE_ASSIST_ON = "ASSIST_ON"
 MODE_SHADOW = "SHADOW_REFEREE_ONLY"
 MODE_AK_SPRAY = "AK_SPRAY_LOCK"
+BLIND_WINDOW_ENGAGEMENTS = 5
 
 STATE_LABEL_MAP = {
     STATE_1_FLICK_DORMANT: "DORMANT",
@@ -390,6 +392,18 @@ class LiveGameSharedControlRunner:
         self._tgt_moving_frames: int = 0
         self._cap_hand_history: deque = deque(maxlen=64)
         self._hand_px_per_cnt_samples: deque = deque(maxlen=45)
+        self.blind_ab_active: bool = False
+        self.blind_window_size: int = BLIND_WINDOW_ENGAGEMENTS
+        self._blind_rng = np.random.default_rng()
+        self._blind_pair_id: int = 0
+        self._blind_slot_idx: int = 0
+        self._blind_pair_arms: Tuple[str, str] = (MODE_ASSIST_ON, MODE_SHADOW)
+        self._blind_next_pair_arms: Tuple[str, str] = (MODE_SHADOW, MODE_ASSIST_ON)
+        self._blind_eng_in_win: int = 0
+        self._blind_switch_pending: bool = False
+        self._blind_pending_since_t: float = 0.0
+        self._last_is_moving_tgt: bool = False
+        self._last_v_world_x_px_s: float = 0.0
         self._reload_live_control_params()
 
         self.in_game_trainer = InGameAutoTrainer(
@@ -882,6 +896,7 @@ class LiveGameSharedControlRunner:
         )
         print("-" * 78)
         print("Hotkeys (Non-Blocking Win32 GetAsyncKeyState):")
+        print("  [F4 ]  Toggle BLIND_AB (Double-Blind 5-Engagement Randomized Crossover -> Paired p-value)")
         print("  [F5 ]  60s In-Game Loaded Auto-Train (Bot red-box in ROI -> Stage1 Jacobian + Stage2 Damping)")
         print("  [F6 ]  Loaded-Hand 5-Iter AK-47 ILC Calibration (hold mouse with palm weight!) -> ak47_recoil_profile.json")
         print("  [F7 ]  Toggle AK_SPRAY_LOCK (hold LMB: 100 Hz boosted ILC pull-down, release: 3-step recenter)")
@@ -896,11 +911,12 @@ class LiveGameSharedControlRunner:
         print("  2. Equip AK-47, keep hand weight naturally on mouse, press [F6] & follow prompt for 5-iter loaded spray ILC.")
         print("-" * 78)
         self.mode = MODE_PAUSED
-        print(f"[STATE] Entered {self.mode}. Alt-tab into CS2 and press F5/F8 (calib) or F9 (activate).")
+        print(f"[STATE] Entered {self.mode}. Alt-tab into CS2 and press F5/F8 (calib), F4 (blind A/B test), or F9 (manual).")
         return self.roi_fps_bench
 
     def trigger_f5_in_game_autotrain(self) -> Dict:
         """Pause assist, calibrate loaded YOLO head Jacobian (Stage 1) + zero-overshoot damping (Stage 2)."""
+        self._clear_blind_ab_state()
         prev_mode = self.mode
         self._wait_hw_idle()
         self.mode = MODE_PAUSED
@@ -1008,6 +1024,7 @@ class LiveGameSharedControlRunner:
 
     def toggle_f9_mode(self) -> str:
         """Toggle PAUSED/AK_SPRAY_LOCK -> ASSIST_ON <-> SHADOW_REFEREE_ONLY."""
+        self._clear_blind_ab_state()
         self._hide_vision_hud()
         if self.mode in (MODE_PAUSED, MODE_AK_SPRAY):
             self.recenter_to_neutral(duration_s=0.18)
@@ -1025,8 +1042,128 @@ class LiveGameSharedControlRunner:
         print(f"\n[F9] Switched Mode -> {self.mode}")
         return self.mode
 
+    def _sample_blind_pair_arms(self) -> Tuple[str, str]:
+        """Sample balanced permuted pair order: (ASSIST_ON, SHADOW) or (SHADOW, ASSIST_ON)."""
+        if int(self._blind_rng.integers(0, 2)) == 0:
+            return (MODE_ASSIST_ON, MODE_SHADOW)
+        return (MODE_SHADOW, MODE_ASSIST_ON)
+
+    def _clear_blind_ab_state(self) -> None:
+        self.blind_ab_active = False
+        self._blind_switch_pending = False
+        self._blind_eng_in_win = 0
+
+    def toggle_f4_blind_ab(self, seed: Optional[int] = None) -> str:
+        """Toggle Double-Blind Permuted 5-Engagement Micro-Crossover (BLIND_AB) <-> PAUSED."""
+        if self.blind_ab_active:
+            self.trigger_f10_pause()
+            print("[F4] Exited BLIND_AB -> PAUSED.")
+            return self.mode
+
+        if seed is not None:
+            self._blind_rng = np.random.default_rng(int(seed))
+        self._hide_vision_hud()
+        self.recenter_to_neutral(duration_s=0.18)
+        self._reset_live_lock_and_stage_state()
+        self.ctrl.reset_episode()
+        self.vision.reset_filters()
+        self._prev_gray = None
+
+        self.blind_ab_active = True
+        self._blind_pair_id = 1
+        self._blind_slot_idx = 0
+        self._blind_eng_in_win = 0
+        self._blind_switch_pending = False
+        self._blind_pending_since_t = 0.0
+        self._blind_pair_arms = self._sample_blind_pair_arms()
+        self._blind_next_pair_arms = self._sample_blind_pair_arms()
+        self.mode = self._blind_pair_arms[0]
+        print(
+            "\n[F4] Entered BLIND_AB (Double-Blind 5-Engagement Permuted Crossover | Pair #01 started). "
+            "Shoot normally for 2-4 min (~10+ pairs), then press END/Ctrl+C for unblinded paired report!",
+            flush=True,
+        )
+        return "BLIND_AB"
+
+    def _step_blind_ab_crossover(
+        self,
+        t_now: float,
+        lmb_down: bool,
+        v_hand_norm: float,
+        min_tgt_dist_px: float,
+        closed_eng: Optional[Dict[str, Any]],
+        dispatch_fn: Optional[Callable[..., bool]] = None,
+    ) -> None:
+        """Advance 5-engagement double-blind micro-windows and zero the stage cleanly before SHADOW arms."""
+        if not self.blind_ab_active:
+            return
+        disp = self._dispatch_stage_manifold_open_loop if dispatch_fn is None else dispatch_fn
+
+        if closed_eng is not None and (not self._blind_switch_pending):
+            self._blind_eng_in_win += 1
+            if self._blind_eng_in_win >= int(self.blind_window_size):
+                self._blind_switch_pending = True
+                self._blind_pending_since_t = float(t_now)
+
+        if not self._blind_switch_pending:
+            return
+        if lmb_down or (hasattr(self, "eng_logger") and self.eng_logger._active is not None):
+            return
+
+        next_mode = self._blind_pair_arms[1] if self._blind_slot_idx == 0 else self._blind_next_pair_arms[0]
+        if next_mode == MODE_SHADOW:
+            stage_norm = float(np.hypot(self.p_stage_est[0], self.p_stage_est[1]))
+            if stage_norm >= 2.0:
+                safe_gap = (v_hand_norm >= 320.0 and min_tgt_dist_px > 34.0) or (
+                    (float(t_now) - float(self._blind_pending_since_t)) >= 0.16
+                )
+                if safe_gap:
+                    sent = disp(
+                        np.zeros(2, dtype=float),
+                        is_recenter=True,
+                        cooldown_s=0.040,
+                        freeze_play_g=False,
+                        use_boost=False,
+                    )
+                    if sent:
+                        self.p_aim_cnt[:] = 0.0
+                        self.p_recoil_cnt[:] = 0.0
+                        self._target_base_stage_cnt[:] = 0.0
+                        self._cmd_history.append((float(t_now), np.zeros(2, dtype=float)))
+                        self._aim_cmd_history.append((float(t_now), np.zeros(2, dtype=float)))
+                stage_norm = float(np.hypot(self.p_stage_est[0], self.p_stage_est[1]))
+                if stage_norm >= 2.0:
+                    return
+
+            self.p_aim_cnt[:] = 0.0
+            self.p_recoil_cnt[:] = 0.0
+            self._target_base_stage_cnt[:] = 0.0
+            self._lock_target_id = None
+            self._snap_done_tid = None
+            self._pre_micro_done_tid = None
+            self._pre_micro_count = 0
+            self.ctrl.p_stage_cur = np.zeros(2, dtype=float)
+
+        if self._blind_slot_idx == 0:
+            self._blind_slot_idx = 1
+            self.mode = self._blind_pair_arms[1]
+        else:
+            done_pair = int(self._blind_pair_id)
+            self._blind_pair_id += 1
+            self._blind_slot_idx = 0
+            self._blind_pair_arms = self._blind_next_pair_arms
+            self._blind_next_pair_arms = self._sample_blind_pair_arms()
+            self.mode = self._blind_pair_arms[0]
+            print(
+                f"[BLIND_AB] Completed matched Pair #{done_pair:02d} -> starting Pair #{self._blind_pair_id:02d}",
+                flush=True,
+            )
+        self._blind_eng_in_win = 0
+        self._blind_switch_pending = False
+
     def toggle_f7_ak_spray(self) -> str:
         """Toggle AK_SPRAY_LOCK <-> PAUSED for 100 Hz closed-loop AK-47 point-lock recoil control."""
+        self._clear_blind_ab_state()
         self._wait_hw_idle()
         self.recenter_to_neutral(duration_s=0.18)
         self.ctrl.reset_episode()
@@ -1048,6 +1185,7 @@ class LiveGameSharedControlRunner:
 
     def trigger_f6_loaded_ak_ilc(self) -> Dict:
         """Run 5-iteration loaded-hand AK-47 ILC compensation (rest palm naturally on mouse!)."""
+        self._clear_blind_ab_state()
         self._wait_hw_idle()
         self.mode = MODE_PAUSED
         self.recenter_to_neutral(duration_s=0.18)
@@ -1395,6 +1533,7 @@ class LiveGameSharedControlRunner:
 
     def trigger_f10_pause(self) -> None:
         """Emergency smooth recenter to (1496, 1466) us and pause ROI capture."""
+        self._clear_blind_ab_state()
         self.mode = MODE_PAUSED
         self.recenter_to_neutral(duration_s=0.20)
         self.ctrl.reset_episode()
@@ -1605,16 +1744,25 @@ class LiveGameSharedControlRunner:
                     "faults": verdict.faults,
                 },
                 weapon=str(gsi_snap.get("active_weapon", "")),
+                blind_ab=self.blind_ab_active,
+                blind_pair_id=(self._blind_pair_id if self.blind_ab_active else None),
+                blind_slot=(self._blind_slot_idx if self.blind_ab_active else None),
             )
 
         px_int = int(round(float(verdict.p_stage_cnt[0])))
         py_int = int(round(float(verdict.p_stage_cnt[1])))
-        print(
-            f"[Shot #{self.shot_count:03d} | Mode: {mode_now} | State: {short_state}] "
-            f"InitErr: {verdict.e_hand_cnt:.1f} cnt -> FinalErr: {verdict.e_actual_cnt:.1f} cnt "
-            f"[{verdict.hitbox}] | Gain dE: {verdict.delta_e_cnt:+.1f} cnt | StagePos: ({px_int:+d}, {py_int:+d})",
-            flush=True,
-        )
+        if self.blind_ab_active:
+            print(
+                f"[Shot #{self.shot_count:03d} | Mode: BLIND_AB | Pair #{self._blind_pair_id:02d}] Recorded (blinded)",
+                flush=True,
+            )
+        else:
+            print(
+                f"[Shot #{self.shot_count:03d} | Mode: {mode_now} | State: {short_state}] "
+                f"InitErr: {verdict.e_hand_cnt:.1f} cnt -> FinalErr: {verdict.e_actual_cnt:.1f} cnt "
+                f"[{verdict.hitbox}] | Gain dE: {verdict.delta_e_cnt:+.1f} cnt | StagePos: ({px_int:+d}, {py_int:+d})",
+                flush=True,
+            )
         return verdict
 
     def _build_session_report(self, session_dur_s: float) -> Dict:
@@ -1697,6 +1845,21 @@ class LiveGameSharedControlRunner:
         report = self._build_session_report(session_dur_s)
         eng_summary = self.eng_logger.finalize_and_save() if hasattr(self, "eng_logger") else {}
         report["engagement_summary"] = eng_summary
+
+        rep_bb: Optional[Dict[str, Any]] = None
+        if eng_summary.get("total_engagements", 0) >= 4 and eng_summary.get("jsonl_path"):
+            try:
+                from shared_control_hil.blackbox_sysid_trainer import (
+                    analyze_blackbox,
+                    print_kill_efficiency_summary,
+                )
+
+                rep_bb = analyze_blackbox(jsonl_path=eng_summary["jsonl_path"], config_path=self.config_path)
+                report["blind_crossover"] = rep_bb.get("blind_paired_crossover")
+                report["conditional_conversion"] = rep_bb.get("conditional_conversion")
+            except Exception:
+                rep_bb = None
+
         with open(self.report_path, "w", encoding="utf-8") as f:
             json.dump(report, f, indent=2, ensure_ascii=False)
 
@@ -1746,6 +1909,11 @@ class LiveGameSharedControlRunner:
         snap_path = self._save_shot_snapshots_grid()
         if snap_path:
             print(f"[Saved] Live blackbox shot snapshots ({len(self._shot_snapshots)}) -> {snap_path}")
+        if rep_bb is not None:
+            try:
+                print_kill_efficiency_summary(rep_bb)
+            except Exception:
+                pass
         print("=" * 78)
         return report
 
@@ -1951,6 +2119,8 @@ class LiveGameSharedControlRunner:
 
         cur_thresh = 30.0 + 0.25 * px_per_hand_cnt * abs(float(v_hand_raw[0]))
         is_moving = (self._tgt_moving_frames >= 2) and (abs(float(self._tgt_v_world_px_s[0])) >= cur_thresh)
+        self._last_is_moving_tgt = bool(is_moving)
+        self._last_v_world_x_px_s = float(self._tgt_v_world_px_s[0])
         return self._tgt_v_drift_px_s.copy(), self._tgt_v_world_px_s.copy(), bool(is_moving)
 
     def _select_aim_anchor_px(
@@ -2026,6 +2196,8 @@ class LiveGameSharedControlRunner:
           3. Stationary targets retain terminal PRE Micro-Snap, adaptive SHOT1_RESCUE, and AK feedforward.
         """
         disp = self._dispatch_stage_manifold_open_loop if dispatch_fn is None else dispatch_fn
+        self._last_is_moving_tgt = False
+        self._last_v_world_x_px_s = 0.0
         limits = np.array([self.live_max_x_cnt, self.live_max_y_cnt], dtype=float)
         aim_env_lo = np.array([-min(190.0, self.live_max_x_cnt), -165.0], dtype=float)
         aim_env_hi = np.array([min(190.0, self.live_max_x_cnt), 225.0], dtype=float)
@@ -2816,7 +2988,7 @@ class LiveGameSharedControlRunner:
         """Main non-blocking high-frequency loop for real CS2 gameplay."""
         session_t0 = time.perf_counter()
         self.startup_self_check()
-        self.keys.flush((VK_F5, VK_F6, VK_F7, VK_F8, VK_F9, VK_F10, VK_END, VK_LBUTTON))
+        self.keys.flush((VK_F4, VK_F5, VK_F6, VK_F7, VK_F8, VK_F9, VK_F10, VK_END, VK_LBUTTON))
         self._start_1khz_state_tracker()
         self.vision.start_async_yolo()
         gsi_cfg_path = ensure_cs2_gsi_config(port=30001)
@@ -2842,6 +3014,10 @@ class LiveGameSharedControlRunner:
                 if self.keys.pressed_once(VK_END):
                     print("\n[END] Shutting down safely...")
                     break
+                if self.keys.pressed_once(VK_F4):
+                    self.toggle_f4_blind_ab()
+                    last_step_t = time.perf_counter()
+                    continue
                 if self.keys.pressed_once(VK_F10):
                     self.trigger_f10_pause()
                     continue
@@ -3001,16 +3177,19 @@ class LiveGameSharedControlRunner:
                         t_s=t_now - session_t0,
                         p_stage_now=p_stage_rel_open,
                         weapon=self.gsi.active_weapon if self._gsi_started else "",
+                        blind_ab=self.blind_ab_active,
+                        blind_pair_id=(self._blind_pair_id if self.blind_ab_active else None),
+                        blind_slot=(self._blind_slot_idx if self.blind_ab_active else None),
                     )
+                hand_xy_for_det: Optional[np.ndarray] = None
+                if self._dual_mouse_detected and self._cap_hand_history:
+                    ref_det_t = float(last_det_t) if det_gen > 0 else float(t_cap)
+                    for th_c, hxy_c in self._cap_hand_history:
+                        if th_c <= ref_det_t + 0.002:
+                            hand_xy_for_det = hxy_c
+                        else:
+                            break
                 if self.mode == MODE_ASSIST_ON:
-                    hand_xy_for_det: Optional[np.ndarray] = None
-                    if self._dual_mouse_detected and self._cap_hand_history:
-                        ref_det_t = float(last_det_t) if det_gen > 0 else float(t_cap)
-                        for th_c, hxy_c in self._cap_hand_history:
-                            if th_c <= ref_det_t + 0.002:
-                                hand_xy_for_det = hxy_c
-                            else:
-                                break
                     locked_det, _ = self._step_live_assist(
                         t_now=t_step,
                         dt_s=dt_s,
@@ -3026,12 +3205,25 @@ class LiveGameSharedControlRunner:
                         hand_xy_at_det=hand_xy_for_det,
                     )
                 else:
+                    self._last_is_moving_tgt = False
+                    self._last_v_world_x_px_s = 0.0
                     locked_det, _ = self._select_locked_target(
                         dets_px,
                         c_px,
                         v_hand_norm=float(np.hypot(v_hand_raw[0], v_hand_raw[1])),
                         lmb_down=lmb_down,
                     )
+                    if locked_det is not None:
+                        self._update_locked_target_motion(
+                            int(locked_det.target_id),
+                            np.asarray(locked_det.head_px, dtype=float),
+                            float(last_det_t) if det_gen > 0 else float(t_step),
+                            hand_xy_for_det,
+                            v_hand_raw,
+                            np.zeros((2, 2), dtype=float),
+                        )
+                if hasattr(self, "eng_logger") and locked_det is not None:
+                    self.eng_logger.mark_target_motion(self._last_is_moving_tgt, self._last_v_world_x_px_s)
 
                 out = self.ctrl.step(
                     dt_s=dt_s,
@@ -3117,14 +3309,36 @@ class LiveGameSharedControlRunner:
                         lmb_down=lmb_down,
                         p_stage_now=p_stage_now if self.mode == MODE_ASSIST_ON else np.zeros(2, dtype=float),
                         gsi=self.gsi if self._gsi_started else None,
+                        blind_ab=self.blind_ab_active,
+                        blind_pair_id=(self._blind_pair_id if self.blind_ab_active else None),
+                        blind_slot=(self._blind_slot_idx if self.blind_ab_active else None),
                     )
                     if closed_eng is not None and closed_eng.get("gsi_kills", 0) > 0:
-                        print(
-                            f"[KILL #{closed_eng['eng_id']:02d} | {closed_eng['weapon']} | HS={closed_eng['gsi_hs']}/{closed_eng['gsi_kills']}] "
-                            f"Shot1: {closed_eng['shot1_eh_cnt']:.0f}->{closed_eng['shot1_ea_cnt']:.0f} cnt | "
-                            f"sp_pre={closed_eng['sp_pre_norm']:.0f} | cp={closed_eng['coupling_ratio']} | {closed_eng['diag_flags']}",
-                            flush=True,
-                        )
+                        if self.blind_ab_active:
+                            p_tag = closed_eng.get("blind_pair_id") or self._blind_pair_id
+                            print(
+                                f"[KILL #{closed_eng['eng_id']:02d} | BLIND_AB Pair #{p_tag:02d} | "
+                                f"{closed_eng['weapon']} | HS={closed_eng['gsi_hs']}/{closed_eng['gsi_kills']}]",
+                                flush=True,
+                            )
+                        else:
+                            print(
+                                f"[KILL #{closed_eng['eng_id']:02d} | {closed_eng['weapon']} | HS={closed_eng['gsi_hs']}/{closed_eng['gsi_kills']}] "
+                                f"Shot1: {closed_eng['shot1_eh_cnt']:.0f}->{closed_eng['shot1_ea_cnt']:.0f} cnt | "
+                                f"sp_pre={closed_eng['sp_pre_norm']:.0f} | cp={closed_eng['coupling_ratio']} | {closed_eng['diag_flags']}",
+                                flush=True,
+                            )
+                    min_tgt_dist_px = min(
+                        (float(np.hypot(d.head_px[0] - c_px[0], d.head_px[1] - c_px[1])) for d in dets_px),
+                        default=1e9,
+                    )
+                    self._step_blind_ab_crossover(
+                        t_now=t_step,
+                        lmb_down=lmb_down,
+                        v_hand_norm=float(np.hypot(v_hand_raw[0], v_hand_raw[1])),
+                        min_tgt_dist_px=min_tgt_dist_px,
+                        closed_eng=closed_eng,
+                    )
 
                 # Push ring frame for fault-attribution lookback
                 err_vec = out.residual_err_cnt

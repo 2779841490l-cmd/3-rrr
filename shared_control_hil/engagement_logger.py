@@ -274,7 +274,15 @@ class EngagementLogger:
             if self._active is not None:
                 self._active["coupling"].append(sample)
 
-    def _open_engagement(self, t_s: float, p_stage_now: np.ndarray, weapon: str) -> None:
+    def _open_engagement(
+        self,
+        t_s: float,
+        p_stage_now: np.ndarray,
+        weapon: str,
+        blind_ab: bool = False,
+        blind_pair_id: Optional[int] = None,
+        blind_slot: Optional[int] = None,
+    ) -> None:
         sp_norm = float(np.hypot(p_stage_now[0], p_stage_now[1]))
         now_perf = time.perf_counter()
         pre_c = [(c, m) for t_c, c, m in self._recent_coupling if (now_perf - t_c) <= 0.35]
@@ -283,6 +291,11 @@ class EngagementLogger:
             "t_start_s": round(float(t_s), 3),
             "t_end_s": round(float(t_s), 3),
             "weapon": str(weapon or "unknown"),
+            "blind_ab": bool(blind_ab),
+            "blind_pair_id": int(blind_pair_id) if blind_pair_id is not None else None,
+            "blind_slot": int(blind_slot) if blind_slot is not None else None,
+            "moving_target": False,
+            "peak_v_world_px_s": 0.0,
             "sp_pre_cnt": [round(float(p_stage_now[0]), 2), round(float(p_stage_now[1]), 2)],
             "sp_pre_norm": round(sp_norm, 2),
             "sp_max_norm": round(sp_norm, 2),
@@ -295,15 +308,36 @@ class EngagementLogger:
             "trace": [],
         }
 
+    def mark_target_motion(self, is_moving: bool, v_world_x_px_s: float = 0.0) -> None:
+        """Record whether the engaged target exhibited true world-space motion."""
+        if self._active is None:
+            return
+        if is_moving:
+            self._active["moving_target"] = True
+        self._active["peak_v_world_px_s"] = round(
+            max(float(self._active.get("peak_v_world_px_s", 0.0)), abs(float(v_world_x_px_s))),
+            1,
+        )
+
     def on_shot(
         self,
         t_s: float,
         p_stage_now: np.ndarray,
         verdict_dict: Dict[str, Any],
         weapon: str = "",
+        blind_ab: bool = False,
+        blind_pair_id: Optional[int] = None,
+        blind_slot: Optional[int] = None,
     ) -> None:
         if self._active is None:
-            self._open_engagement(t_s, p_stage_now, weapon)
+            self._open_engagement(
+                t_s,
+                p_stage_now,
+                weapon,
+                blind_ab=blind_ab,
+                blind_pair_id=blind_pair_id,
+                blind_slot=blind_slot,
+            )
         assert self._active is not None
         if weapon and self._active["weapon"] == "unknown":
             self._active["weapon"] = str(weapon)
@@ -319,6 +353,9 @@ class EngagementLogger:
         lmb_down: bool,
         p_stage_now: np.ndarray,
         gsi: Optional[CS2GSIListener] = None,
+        blind_ab: bool = False,
+        blind_pair_id: Optional[int] = None,
+        blind_slot: Optional[int] = None,
     ) -> Optional[Dict[str, Any]]:
         lmb_pressed = lmb_down and (not self._prev_lmb)
         lmb_released = self._prev_lmb and (not lmb_down)
@@ -326,7 +363,14 @@ class EngagementLogger:
 
         dk, dhs, weapon = gsi.pop_delta() if gsi is not None else (0, 0, "")
         if lmb_pressed and self._active is None:
-            self._open_engagement(t_s, p_stage_now, weapon)
+            self._open_engagement(
+                t_s,
+                p_stage_now,
+                weapon,
+                blind_ab=blind_ab,
+                blind_pair_id=blind_pair_id,
+                blind_slot=blind_slot,
+            )
         if lmb_down and self._active is not None:
             self._active["sp_max_norm"] = round(
                 max(self._active["sp_max_norm"], float(np.hypot(p_stage_now[0], p_stage_now[1]))), 2
@@ -434,8 +478,9 @@ class EngagementLogger:
                 f.write(json.dumps(e, ensure_ascii=False) + "\n")
 
         fields = [
-            "eng_id", "t_start_s", "t_end_s", "n_shots", "weapon", "gsi_kills", "gsi_hs",
-            "shots_to_first_kill", "t_to_first_kill_s",
+            "eng_id", "t_start_s", "t_end_s", "n_shots", "weapon",
+            "blind_ab", "blind_pair_id", "blind_slot", "moving_target", "peak_v_world_px_s",
+            "gsi_kills", "gsi_hs", "shots_to_first_kill", "t_to_first_kill_s",
             "best_hitbox", "shot1_eh_cnt", "shot1_ea_cnt", "shot1_head_cnt", "shot1_dE_cnt",
             "min_ea_cnt", "min_head_cnt", "sp_pre_norm", "sp_max_norm",
             "stage_cmd_cnt", "sensor_meas_cnt", "coupling_ratio", "diag_flags",
