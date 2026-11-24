@@ -56,7 +56,7 @@ def _estimate_empirical_step_response(engs: List[Dict[str, Any]], px_per_cnt: fl
         for i, fr in enumerate(tr):
             dp = fr.get("dp")
             e0 = fr.get("e_px")
-            if dp is None or e0 is None or fr.get("gate") not in ("LOCK_TRIM", "LOCK_SNAP", "SHOT1_RESCUE", "PRE_MICRO_SNAP"):
+            if dp is None or e0 is None or fr.get("gate") not in ("LOCK_TRIM", "LOCK_SNAP", "SHOT1_RESCUE", "PRE_MICRO_SNAP", "PRE_TRACK_SNAP"):
                 continue
             if abs(float(dp[0])) < 22.0:
                 continue
