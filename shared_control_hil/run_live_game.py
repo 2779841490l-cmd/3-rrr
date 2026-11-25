@@ -792,13 +792,13 @@ class LiveGameSharedControlRunner:
                 rec_key = any(self.keys.is_down(vk) for vk in (VK_R, VK_1, VK_2, VK_3, VK_Q))
                 vh_1k_norm = float(math.hypot(v_hand_est[0], v_hand_est[1]))
                 if self._dual_mouse_detected:
-                    if vh_1k_norm >= 480.0:
+                    if vh_1k_norm >= 260.0:
                         self._last_high_flick_1k_t = t_now
                         self._hand_settled_1k_since_t = 0.0
-                    elif vh_1k_norm <= 80.0:
+                    elif vh_1k_norm <= 40.0:
                         if getattr(self, "_hand_settled_1k_since_t", 0.0) <= 0.0:
                             self._hand_settled_1k_since_t = t_now
-                    elif vh_1k_norm >= 135.0:
+                    elif vh_1k_norm >= 85.0:
                         self._hand_settled_1k_since_t = 0.0
                 elif self._pulse_immunity_active:
                     if getattr(self, "_hand_settled_1k_since_t", 0.0) <= 0.0:
@@ -2227,8 +2227,8 @@ class LiveGameSharedControlRunner:
         self._last_is_moving_tgt = False
         self._last_v_world_x_px_s = 0.0
         limits = np.array([self.live_max_x_cnt, self.live_max_y_cnt], dtype=float)
-        aim_env_lo = np.array([-min(190.0, self.live_max_x_cnt), -165.0], dtype=float)
-        aim_env_hi = np.array([min(190.0, self.live_max_x_cnt), 225.0], dtype=float)
+        aim_env_lo = np.array([-min(115.0, self.live_max_x_cnt), -150.0], dtype=float)
+        aim_env_hi = np.array([min(115.0, self.live_max_x_cnt), 235.0], dtype=float)
         v_hand_norm = float(np.hypot(v_hand_raw[0], v_hand_raw[1]))
         prev_vh_norm = float(getattr(self, "_prev_vh_norm", 0.0))
         self._prev_vh_norm = v_hand_norm
@@ -2295,9 +2295,9 @@ class LiveGameSharedControlRunner:
         # Track true human hand settle, peak whip velocity & high-flick timestamps
         if not in_pulse_immunity:
             self._recent_peak_vh = max(v_hand_norm, 0.92 * float(getattr(self, "_recent_peak_vh", 0.0)))
-            if v_hand_norm >= 480.0:
+            if v_hand_norm >= 260.0:
                 self._last_high_flick_t = t_now
-            if v_hand_norm <= 60.0:
+            if v_hand_norm <= 40.0:
                 self._settled_low_vh_ticks = getattr(self, "_settled_low_vh_ticks", 0) + 1
             else:
                 self._settled_low_vh_ticks = 0
@@ -2336,7 +2336,7 @@ class LiveGameSharedControlRunner:
             self._mono_tripped = False
             self._last_high_flick_t = t_now
             self._settled_low_vh_ticks = 0
-            outside_comfort = abs(float(p_stage_now[0])) > 55.0 or abs(float(p_stage_now[1])) > 65.0
+            outside_comfort = abs(float(p_stage_now[0])) > 35.0 or abs(float(p_stage_now[1])) > 55.0
             if outside_comfort and (not has_close_tgt_34):
                 decay_aim = math.exp(-max(0.002, dt_s) / 0.065)
                 self.p_aim_cnt = self.p_aim_cnt * decay_aim
@@ -2432,8 +2432,8 @@ class LiveGameSharedControlRunner:
         p_tot_now = self.p_aim_cnt + p_rec_cand
         p_tot_norm_now = float(np.hypot(p_tot_now[0], p_tot_now[1]))
         p_aim_norm_now = float(np.hypot(self.p_aim_cnt[0], self.p_aim_cnt[1]))
-        in_comfort_zone = (abs(float(p_tot_now[0])) <= 55.0) and (abs(float(p_tot_now[1])) <= 65.0)
-        outer_rail = (abs(float(p_tot_now[0])) > 145.0) or (abs(float(p_tot_now[1])) > 165.0)
+        in_comfort_zone = (abs(float(p_tot_now[0])) <= 35.0) and (abs(float(p_tot_now[1])) <= 55.0)
+        outer_rail = (abs(float(p_tot_now[0])) > 95.0) or (abs(float(p_tot_now[1])) > 165.0)
         if p_tot_norm_now < 2.0:
             self._need_switch_recenter = False
         since_rel_s = t_now - self._last_lmb_release_t
@@ -2475,7 +2475,7 @@ class LiveGameSharedControlRunner:
                 return False
             # Per-axis soft-washout p_aim_cnt only when that axis approaches ceiling
             p_sum_pre = self.p_aim_cnt + p_rec_cand
-            axis_ceil = (225.0, 255.0)
+            axis_ceil = (105.0, 255.0)
             for ax in (0, 1):
                 if abs(float(p_sum_pre[ax])) > axis_ceil[ax]:
                     self.p_aim_cnt[ax] *= math.exp(-max(0.002, dt_s) / 0.14)
@@ -2521,16 +2521,13 @@ class LiveGameSharedControlRunner:
             if is_moving_tgt:
                 age_x = float(np.clip(det_age_s, 0.0, 0.025)) * float(v_drift_px_s[0])
                 e_raw_px[0] += float(np.clip(age_x, -4.5, 4.5))
-                dir_vx = 1.0 if float(v_drift_px_s[0]) >= 0.0 else -1.0
-                e_along_vx = float(e_raw_px[0]) * dir_vx
                 if (
                     (float(v_drift_px_s[0]) * float(v_world_px_s[0])) > 0.0
-                    and e_along_vx >= -2.5
+                    and (float(e_raw_px[0]) * float(v_drift_px_s[0])) > 0.0
+                    and abs(float(e_raw_px[0])) >= 4.2
                 ):
-                    r_guard = self._compute_deadband_px(locked_det)
-                    if abs(float(e_raw_px[0])) > r_guard or abs(float(v_drift_px_s[0])) >= 65.0:
-                        has_pos_drift = True
-                        lead_x_px = float(np.clip(0.135 * float(v_drift_px_s[0]), -22.0, 22.0))
+                    has_pos_drift = True
+                    lead_x_px = float(np.clip(0.060 * float(v_drift_px_s[0]), -7.5, 7.5))
                 self._live_anchor_px = anchor_px + np.array([lead_x_px, 0.0], dtype=float)
             e_norm = float(np.hypot(e_raw_px[0], e_raw_px[1]))
             r_lock = self._compute_deadband_px(locked_det)
@@ -2556,12 +2553,23 @@ class LiveGameSharedControlRunner:
                     continue
                 if (float(e_raw_px[ax]) * float(e_no_lead_pred_px[ax])) <= 0.0:
                     e_no_lead_pred_px[ax] = 0.0
-            e_pred_px = np.array(
-                [float(e_no_lead_pred_px[0]) + lead_x_px, float(e_no_lead_pred_px[1])],
-                dtype=float,
+
+            vh_x_abs = 0.0 if in_pulse_immunity else abs(float(v_hand_raw[0]))
+            lmb_hold_s_now = max(0.0, t_now - self._lmb_down_since_t) if lmb_down else 0.0
+            is_shot1_window = bool(
+                lmb_down and (not getattr(self, "_shot1_rescue_sent", False)) and lmb_hold_s_now <= 0.025
             )
-            if abs(float(e_raw_px[0])) >= 2.8 and (float(e_raw_px[0]) * float(e_pred_px[0])) < 0.0:
-                e_pred_px[0] = 0.0
+            if not lmb_down:
+                x_allow = (not is_moving_tgt) and (abs(float(e_raw_px[0])) >= 3.8)
+            elif is_shot1_window:
+                x_allow = (vh_x_abs <= 380.0) and (abs(float(e_raw_px[0])) >= 4.2)
+            else:
+                x_allow = (vh_x_abs <= 180.0) and (abs(float(e_raw_px[0])) >= 4.5)
+
+            pred_x = (float(e_no_lead_pred_px[0]) + (lead_x_px if lmb_down else 0.0)) if x_allow else 0.0
+            if float(e_raw_px[0]) * pred_x <= 0.0:
+                pred_x = 0.0
+            e_pred_px = np.array([pred_x, float(e_no_lead_pred_px[1])], dtype=float)
             e_pred_norm = float(np.hypot(e_pred_px[0], e_pred_px[1]))
 
             tid_cur = int(locked_det.target_id)
@@ -2624,14 +2632,14 @@ class LiveGameSharedControlRunner:
                 hand_settled = True
                 last_flick_t = 0.0
             elif lmb_down:
-                # During fire/pursuit, unlock full cooperative tracking up to 2200 cnt/s
+                # During fire/pursuit, vertical recoil Y stays live (X yields automatically via x_allow)
                 hand_settled = v_hand_norm <= 2200.0
                 last_flick_t = getattr(self, "_last_high_flick_t", 0.0)
             elif getattr(self, "_dual_mouse_detected", False):
-                # Dual-mouse ground truth: calm hand settle (<=75 cnt/s for >=18ms)
+                # Dual-mouse strict calm stop (<=38 cnt/s for >=25ms): zero pre-shot wheel-grabbing
                 settled_1k_t = getattr(self, "_hand_settled_1k_since_t", 0.0)
-                hand_settled = (v_hand_norm <= 75.0) and (
-                    settled_1k_t > 0.0 and (t_now - settled_1k_t) >= 0.018
+                hand_settled = (v_hand_norm <= 38.0) and (
+                    settled_1k_t > 0.0 and (t_now - settled_1k_t) >= 0.025
                 )
                 last_flick_t = max(
                     getattr(self, "_last_high_flick_t", 0.0),
@@ -2640,89 +2648,52 @@ class LiveGameSharedControlRunner:
             elif getattr(self, "_tracker_running", False):
                 # Single-mouse fallback: strict Do-No-Harm stop confirmation
                 settled_1k_t = getattr(self, "_hand_settled_1k_since_t", 0.0)
-                hand_settled = (v_hand_norm <= 55.0) and (
-                    settled_1k_t > 0.0 and (t_now - settled_1k_t) >= 0.030
+                hand_settled = (v_hand_norm <= 35.0) and (
+                    settled_1k_t > 0.0 and (t_now - settled_1k_t) >= 0.040
                 )
                 last_flick_t = max(
                     getattr(self, "_last_high_flick_t", 0.0),
                     getattr(self, "_last_high_flick_1k_t", 0.0),
                 )
             else:
-                hand_settled = (v_hand_norm <= 55.0) and (
+                hand_settled = (v_hand_norm <= 38.0) and (
                     getattr(self, "_settled_low_vh_ticks", 0) >= 2
                 )
                 last_flick_t = getattr(self, "_last_high_flick_t", 0.0)
             since_flick_s = t_now - last_flick_t
-            lmb_hold_s_now = max(0.0, t_now - self._lmb_down_since_t) if lmb_down else 0.0
-            lead_active = bool(is_moving_tgt and abs(lead_x_px) >= 3.0)
+            lead_active = bool(x_allow and is_moving_tgt and abs(lead_x_px) >= 3.0)
             in_flight_n = float(np.hypot(dp_in_flight[0], dp_in_flight[1]))
             is_shot1_rescue = (
-                lmb_down
-                and (not getattr(self, "_shot1_rescue_sent", False))
-                and (lmb_hold_s_now <= 0.025)
-                and (e_norm > max(r_lock, 5.0) or lead_active)
-                and (e_pred_norm > max(r_lock, 5.0) or lead_active)
+                is_shot1_window
+                and (e_pred_norm > max(r_lock, 4.0) or lead_active)
             )
             pre_deadband_px = max(r_lock, 3.8) if self._pre_micro_count == 0 else max(r_lock, 2.6)
             flick_settle_req = (
-                0.020
+                0.040
                 if getattr(self, "_dual_mouse_detected", False)
-                else (0.045 if getattr(self, "_tracker_running", False) else 0.065)
+                else (0.060 if getattr(self, "_tracker_running", False) else 0.065)
             )
             is_pre_micro = (
                 (not lmb_down)
+                and (not is_moving_tgt)
                 and ((t_now - self._last_lmb_release_t) >= 0.130)
                 and (since_flick_s >= flick_settle_req)
-                and (vis_stable or is_moving_tgt or (not getattr(self, "_tracker_running", False)))
+                and (vis_stable or (not getattr(self, "_tracker_running", False)))
                 and (locked_det.seen_frames >= 2)
-                and (self._pre_micro_count < (1 if is_moving_tgt else 2))
-                and (e_pred_norm <= 24.0)
-                and (e_norm > pre_deadband_px or lead_active)
+                and (self._pre_micro_count < 2)
+                and (e_pred_norm <= 22.0)
+                and (e_norm > pre_deadband_px)
                 and (e_pred_norm > pre_deadband_px)
                 and hand_settled
             )
-            is_pre_decel = False
-            e_landing_px = e_no_lead_pred_px.copy()
-            if (
-                (not lmb_down)
-                and (not is_pre_micro)
-                and getattr(self, "_dual_mouse_detected", False)
-                and (not is_moving_tgt)
-                and ((t_now - self._last_lmb_release_t) >= 0.130)
-                and (locked_det.seen_frames >= 2)
-                and (self._pre_micro_count == 0)
-                and (in_flight_n < 2.0)
-                and (75.0 < v_hand_norm <= 340.0)
-                and (v_hand_norm < (prev_vh_norm - 8.0))
-                and (v_hand_norm <= 0.72 * float(getattr(self, "_recent_peak_vh", 0.0)))
-                and (de_no_stg is not None)
-                and (0.004 <= dt_pre <= 0.045)
-                and (e_norm <= (prev_e_norm + 0.8))
-            ):
-                e_landing_px = e_no_lead_pred_px + np.clip(0.040 * (de_no_stg / dt_pre), -12.0, 12.0)
-                for ax in (0, 1):
-                    if float(e_landing_px[ax]) * float(e_raw_px[ax]) <= 0.0:
-                        e_landing_px[ax] = 0.0
-                    elif abs(float(e_landing_px[ax])) > abs(float(e_no_lead_pred_px[ax])):
-                        e_landing_px[ax] = float(e_no_lead_pred_px[ax])
-                e_land_norm = float(np.hypot(e_landing_px[0], e_landing_px[1]))
-                is_pre_decel = (4.5 < e_land_norm <= 18.0)
-
-            is_any_pre = bool(is_pre_micro or is_pre_decel)
-            j_col0 = math.hypot(
-                float(self.calibrator.J_screen_to_stage[0, 0]),
-                float(self.calibrator.J_screen_to_stage[1, 0]),
-            )
-            j_scale = float(np.clip(j_col0 / 3.35, 1.0, 2.1))
-            tap_guard_pass = is_shot1_rescue or is_moving_tgt or (not in_tap_guard) or (e_pred_norm > max(r_lock, 5.0))
+            is_any_pre = bool(is_pre_micro)
+            tap_guard_pass = is_shot1_rescue or (not in_tap_guard) or (e_pred_norm > max(r_lock, 4.5))
             if is_shot1_rescue:
                 eff_aim_cd = 0.0
             elif is_any_pre:
                 eff_aim_cd = 0.0 if self._pre_micro_count == 0 else 0.115
-            elif lmb_down and is_moving_tgt:
-                eff_aim_cd = 0.062
             elif lmb_down:
-                eff_aim_cd = 0.090 if in_flight_n >= (18.0 * j_scale) else max(self.aim_cooldown_s, 0.075)
+                eff_aim_cd = 0.068
             else:
                 eff_aim_cd = max(self.aim_cooldown_s, 0.130)
             pre_range_ok = bool(lmb_down) or is_any_pre
@@ -2731,84 +2702,52 @@ class LiveGameSharedControlRunner:
                 and pre_range_ok
                 and tap_guard_pass
                 and (t_now - self._last_aim_cmd_t) >= eff_aim_cd
-                and (e_norm > r_lock or lead_active)
                 and e_pred_norm > r_lock
-                and (e_norm >= min(self.min_aim_dist_px, r_lock) or lead_active)
-                and (hand_settled or is_pre_decel)
+                and (e_pred_norm >= min(self.min_aim_dist_px, r_lock) or lead_active)
+                and hand_settled
             )
             if aim_due:
                 eta_cp = self.eng_logger.get_effective_coupling(default=0.90, min_samples=3) if hasattr(self, "eng_logger") else 1.0
                 ff_trim = float(np.clip(1.0 / max(0.88, eta_cp), 1.0, 1.10))
-                fine_trim_px = min(float(self.small_error_px), 8.5)
                 is_initial_snap = bool(is_any_pre and self._pre_micro_count == 0)
-                if is_pre_decel:
-                    e_pred_px = e_landing_px.copy()
-                    gain = 0.72
-                    step_cap = min(68.0, 36.0 * j_scale)
-                    use_boost_aim = True
-                    b_scale_aim = min(self.boost_scale, 1.12)
-                    b_dur_aim = 22.0
-                elif is_pre_micro:
-                    if is_moving_tgt:
-                        gain = min(0.70, max(0.60, 0.65 * ff_trim))
-                        step_cap = min(84.0, 44.0 * j_scale)
-                        use_boost_aim = True
-                        b_scale_aim = min(self.boost_scale, 1.15)
-                        b_dur_aim = min(self.boost_dur_ms, 25.0)
-                    elif self._pre_micro_count == 0:
-                        gain = min(0.78, max(0.68, 0.72 * ff_trim))
-                        step_cap = min(92.0, 48.0 * j_scale)
+                if is_pre_micro:
+                    if self._pre_micro_count == 0:
+                        gain_x = min(0.72, max(0.62, 0.68 * ff_trim))
+                        gain_y = gain_x
+                        x_step_cap = 68.0
+                        y_step_cap = 68.0
                         use_boost_aim = True
                         b_scale_aim = min(self.boost_scale, 1.15)
                         b_dur_aim = min(self.boost_dur_ms, 25.0)
                     else:
-                        gain = min(0.62, max(0.52, 0.58 * ff_trim))
-                        step_cap = min(58.0, 30.0 * j_scale)
+                        gain_x = min(0.58, max(0.48, 0.55 * ff_trim))
+                        gain_y = gain_x
+                        x_step_cap = 36.0
+                        y_step_cap = 36.0
                         use_boost_aim = False
                         b_scale_aim = 1.0
                         b_dur_aim = 20.0
                 elif is_shot1_rescue:
-                    if is_moving_tgt and (float(v_drift_px_s[0]) * float(v_world_px_s[0])) >= -15.0:
-                        gain = min(0.80, max(0.70, 0.75 * ff_trim))
-                        step_cap = min(125.0, 72.0 * j_scale)
-                    elif (not in_pulse_immunity) and v_hand_norm > 200.0:
-                        gain = min(0.38, max(0.30, 0.34 * ff_trim))
-                        step_cap = min(125.0, 32.0 * j_scale)
-                    elif (not in_pulse_immunity) and v_hand_norm > 80.0:
-                        gain = min(0.50, max(0.42, 0.46 * ff_trim))
-                        step_cap = min(125.0, 40.0 * j_scale)
-                    else:
-                        gain = min(0.64, max(0.56, 0.60 * ff_trim))
-                        step_cap = min(125.0, 48.0 * j_scale)
+                    gain_y = min(0.66, max(0.56, 0.60 * ff_trim))
+                    y_step_cap = 68.0
+                    gain_x = min(0.62, (0.56 if vh_x_abs <= 140.0 else 0.38) * ff_trim) if x_allow else 0.0
+                    x_step_cap = 48.0 if x_allow else 0.0
+                    use_boost_aim = True
+                    b_scale_aim = min(self.boost_scale, 1.15)
+                    b_dur_aim = self.boost_dur_ms
+                else:
+                    gain_y = min(0.64, max(0.54, 0.58 * ff_trim))
+                    y_step_cap = 68.0
+                    gain_x = min(0.58, (0.52 if is_moving_tgt else 0.46) * ff_trim) if x_allow else 0.0
+                    x_step_cap = (48.0 if is_moving_tgt else 40.0) if x_allow else 0.0
                     use_boost_aim = True
                     b_scale_aim = min(self.boost_scale, 1.16)
                     b_dur_aim = self.boost_dur_ms
-                else:
-                    if is_moving_tgt:
-                        gain = min(0.70, max(0.60, 0.65 * ff_trim))
-                        if (not in_pulse_immunity) and v_hand_norm > 1200.0:
-                            gain *= 0.65
-                        step_cap = min(120.0, 68.0 * j_scale)
-                    else:
-                        is_fine = e_pred_norm <= fine_trim_px
-                        base_gain = min(0.46, max(self.kp_small_head, 0.38)) if is_fine else min(0.58, max(self.kp_large_error, 0.48))
-                        gain = min(0.60, base_gain * ff_trim)
-                        if (not in_pulse_immunity) and v_hand_norm > 340.0:
-                            gain *= 0.65
-                        step_cap = min(120.0, 54.0 * j_scale)
-                    use_boost_aim = True
-                    b_scale_aim = min(self.boost_scale, 1.18)
-                    b_dur_aim = self.boost_dur_ms
 
-                if has_pos_drift and (not is_pre_decel):
-                    ts_p = 0.062
-                    hz_s = (self.visual_lag_s + 0.5 * ts_p) + ((1.0 - gain) / max(0.35, gain)) * ts_p
-                    lead_x_exact = float(np.clip(hz_s * float(v_drift_px_s[0]), -22.0, 22.0))
-                    e_pred_px[0] = float(e_no_lead_pred_px[0]) + lead_x_exact
-                if abs(float(e_raw_px[0])) >= 2.8 and (float(e_raw_px[0]) * float(e_pred_px[0])) < 0.0:
-                    e_pred_px[0] = 0.0
-
-                dp_stage = self.calibrator.aim_error_to_stage_delta(float(e_pred_px[0]), float(e_pred_px[1])) * gain
+                dp_stage = self.calibrator.aim_error_to_stage_delta(
+                    float(gain_x * e_pred_px[0]),
+                    float(gain_y * e_pred_px[1]),
+                )
                 # AK-47 vertical feedforward (Bullets 2-6, 55..550ms; prevents +16px recoil float by Bullet 5)
                 if (
                     lmb_down
@@ -2827,9 +2766,6 @@ class LiveGameSharedControlRunner:
                             dy_bullet = max(0.0, y_nxt - y_cur)
                             ff_y = float(np.clip(0.62 * dy_bullet * (min(0.085, eff_aim_cd) / 0.100), 0.0, 18.0))
                             dp_stage[1] += ff_y
-                # Spray X-corridor anti-shake (stationary only; keep X live on moving targets)
-                if lmb_down and (not is_moving_tgt) and abs(float(e_pred_px[0])) <= max(3.0, 0.95 * r_lock) and abs(float(e_raw_px[0])) <= 4.5:
-                    dp_stage[0] = 0.0
                 # During spray, peel opposing vertical delta off p_recoil_cnt first instead of fighting via -Y p_aim_cnt
                 if lmb_down and abs(self.p_recoil_cnt[1]) >= 10.0 and (dp_stage[1] * self.p_recoil_cnt[1]) < 0.0:
                     recoil_peel = min(abs(float(self.p_recoil_cnt[1])), abs(float(dp_stage[1])))
@@ -2837,40 +2773,30 @@ class LiveGameSharedControlRunner:
                     p_rec_goal[1] = p_rec_cand[1]
                     recoil_due = True
                     dp_stage[1] = 0.0
-                # Anti-reversal damping: if an axis flips direction soon after a >=7 cnt step, damp 0.35x & block boost
-                # Never damp downward (+Y) recoil pull during LMB spray; allow X pursuit aligned with confirmed target velocity.
+
                 is_rev_step = False
-                recent_strafe_flip = is_moving_tgt and (
-                    (t_now - float(getattr(self, "_tgt_last_strafe_flip_t", -1.0))) <= 0.20
-                )
-                dp_vel_align_x = (
-                    float(self.calibrator.aim_error_to_stage_delta(float(v_world_px_s[0]), 0.0)[0])
-                    if is_moving_tgt
-                    else 0.0
-                )
-                x_aligned_pursuit = is_moving_tgt and ((float(dp_stage[0]) * dp_vel_align_x) > 0.0)
-                if (not is_initial_snap) and (t_now - getattr(self, "_prev_trim_t", 0.0)) <= 0.32:
-                    prev_dp = getattr(self, "_prev_trim_dp", np.zeros(2, dtype=float))
-                    for ax in (0, 1):
-                        if lmb_down and ax == 1 and float(dp_stage[1]) > 0.0:
-                            continue
-                        if ax == 0 and (recent_strafe_flip or x_aligned_pursuit):
-                            continue
-                        if abs(float(prev_dp[ax])) >= 7.0 and (float(dp_stage[ax]) * float(prev_dp[ax])) < 0.0:
-                            dp_stage[ax] *= 0.35
-                            is_rev_step = True
+                prev_dp = getattr(self, "_prev_trim_dp", np.zeros(2, dtype=float))
+                recent_rev_win = (not is_initial_snap) and ((t_now - getattr(self, "_prev_trim_t", 0.0)) <= 0.32)
+                if not x_allow:
+                    # Preserve verticality by clamping mounting cross-coupling when X yields to human hand
+                    dp_stage[0] = float(np.clip(dp_stage[0], -3.0, 3.0))
+                else:
+                    if recent_rev_win and abs(float(prev_dp[0])) >= 7.0 and (float(dp_stage[0]) * float(prev_dp[0])) < 0.0:
+                        dp_stage[0] *= 0.35
+                        is_rev_step = True
+                    if (not is_moving_tgt) and e_pred_norm > 9.0 and (float(dp_stage[0]) * float(self._lock_dir_sign[0])) < 0.0:
+                        dp_stage[0] *= 0.72
+                    dp_stage[0] = float(np.clip(dp_stage[0], -x_step_cap, x_step_cap))
+
+                if recent_rev_win and not (lmb_down and float(dp_stage[1]) > 0.0):
+                    if abs(float(prev_dp[1])) >= 7.0 and (float(dp_stage[1]) * float(prev_dp[1])) < 0.0:
+                        dp_stage[1] *= 0.35
+                        is_rev_step = True
+                if (not is_moving_tgt) and e_pred_norm > 9.0 and not (lmb_down and float(dp_stage[1]) > 0.0):
+                    if (float(dp_stage[1]) * float(self._lock_dir_sign[1])) < 0.0:
+                        dp_stage[1] *= 0.72
+                dp_stage[1] = float(np.clip(dp_stage[1], -y_step_cap, max(y_step_cap, 76.0)))
                 dp_n = float(np.hypot(dp_stage[0], dp_stage[1]))
-                if dp_n > step_cap:
-                    dp_stage = dp_stage * (step_cap / dp_n)
-                    dp_n = step_cap
-                # Keep full inter-bullet authority within 9px and on moving targets; never throttle downward (+Y) recoil pull
-                if (not is_moving_tgt) and e_pred_norm > 9.0:
-                    for ax in (0, 1):
-                        if lmb_down and ax == 1 and float(dp_stage[1]) > 0.0:
-                            continue
-                        if (float(dp_stage[ax]) * float(self._lock_dir_sign[ax])) < 0.0:
-                            dp_stage[ax] *= 0.72
-                    dp_n = float(np.hypot(dp_stage[0], dp_stage[1]))
 
                 rev_cd_ok = (not is_rev_step) or ((t_now - self._last_aim_cmd_t) >= max(self.aim_cooldown_s, 0.120))
                 boost_min_dp = 4.5 if (is_shot1_rescue or is_initial_snap) else 6.0
@@ -2897,7 +2823,7 @@ class LiveGameSharedControlRunner:
                             recoil_due = True
                     p_aim_cand = np.clip(self.p_aim_cnt + dp_stage, aim_env_lo, aim_env_hi)
                     # Gentle per-axis washout bleed only when that axis approaches ceiling
-                    for ax, ceil_ax in ((0, 225.0), (1, 255.0)):
+                    for ax, ceil_ax in ((0, 105.0), (1, 255.0)):
                         if abs(float(p_aim_cand[ax] + p_rec_cand[ax])) > ceil_ax:
                             p_aim_cand[ax] *= math.exp(-max(0.002, dt_s) / 0.14)
                     p_cmd_cand = self._soft_saturate_stage_cmd(p_aim_cand + p_rec_cand, limits, soft_cap=(250.0, 285.0))
@@ -2946,10 +2872,6 @@ class LiveGameSharedControlRunner:
                         if hasattr(self, "eng_logger"):
                             if is_shot1_rescue:
                                 g_tag = "SHOT1_RESCUE"
-                            elif is_pre_decel:
-                                g_tag = "PRE_DECEL_SNAP"
-                            elif is_pre_micro and is_moving_tgt:
-                                g_tag = "PRE_TRACK_SNAP"
                             elif is_pre_micro:
                                 g_tag = "PRE_MICRO_SNAP" if self._pre_micro_count == 1 else "PRE_MICRO_TRIM"
                             else:
@@ -3053,7 +2975,7 @@ class LiveGameSharedControlRunner:
                     and (v_hand_norm >= 520.0)
                 )
                 or (
-                    ((abs(float(p_stage_now[0])) > 145.0) or (abs(float(p_stage_now[1])) > 165.0))
+                    ((abs(float(p_stage_now[0])) > 95.0) or (abs(float(p_stage_now[1])) > 165.0))
                     and ((t_now - self._last_lmb_release_t) >= 0.35)
                     and (v_hand_norm <= 35.0)
                 )
